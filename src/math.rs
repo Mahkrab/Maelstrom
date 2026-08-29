@@ -51,7 +51,7 @@ impl Vec3 {
     /// `quantity` is included in an input error so callers can identify which
     /// vector failed validation.
     ///
-    /// # Errors
+    /// ### Errors
     ///
     /// Returns [`NumericalError`] when a component is non-finite or when the
     /// squared length overflows `f32`.

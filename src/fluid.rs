@@ -22,7 +22,7 @@ pub struct InteractionSets {
 impl InteractionSets {
     /// ### Validates and stores interaction rows
     ///
-    /// # Errors
+    /// ### Errors
     ///
     /// Returns [`NumericalError`] when a row:
     ///
@@ -128,7 +128,7 @@ impl ArtificialPressure {
     /// `reference_separation` must be strictly between zero and
     /// `support_radius` so its Poly6 weight can be used a a denominator.
     ///
-    /// # Errors
+    /// ### Errors
     ///
     /// Returns [`NumericalError`] when an input is non-finite, when `strength`
     /// is negative, when `exponent` or `support_radius` is not positive, or
@@ -187,7 +187,7 @@ impl ArtificialPressure {
     ///
     /// Separations at or beyond kernel support return exactly `0.0`.
     ///
-    /// # Errors
+    /// ### Errors
     ///
     /// Returns [`NumericalError`] when `distance` is negative or non-finite, or
     /// when the kernel-ratio calculation becomes non-finite.
@@ -221,7 +221,7 @@ pub struct PbfParameters {
 impl PbfParameters {
     /// ### Creates validated PBF settings/config
     ///
-    /// # Errors
+    /// ### Errors
     ///
     /// Returns [`NumericalError`] when the support radius, rest density or
     /// relaxation is not positive and finite, or when the artificial-pressure
@@ -297,7 +297,7 @@ pub struct JacobiStage {
 /// `distance < support_radius` are returned. The original ascending order is
 /// preserved.
 ///
-/// # Errors
+/// ### Errors
 ///
 /// Returns [`NumericalError`] for invalid intraction data, a missing particle,
 /// a non-positive support radius, a non-finite position or a non-finite distance.
@@ -318,7 +318,7 @@ pub fn active_interactions(
 /// The support sum includes the particle itself exactly once. Fixed
 /// interactions outside current kernel support do not contribute.
 ///
-/// # Errors
+/// ### Errors
 ///
 /// Returns [`NumericalError`] under the same conditions as
 /// [`normalised_density`], when `particle_mass` is not positive and finite, or
@@ -344,7 +344,7 @@ pub fn estimate_density(
 /// Terms are added in ascending particle-index order, including the particle's
 /// own Poly6 weight at its ordered position.
 ///
-/// # Errors
+/// ### Errors
 ///
 /// Returns [`NumericalError`] for invalid interaction data, a missing particle,
 /// a non-positive support radius, a non-finite position or a non-finite result.
@@ -366,7 +366,7 @@ pub fn normalised_density(
 /// The result is `normalised_density / normalised_rest_density - 1` and is not
 /// clamped. A negative result therefore remains meaningful.
 ///
-/// # Errors
+/// ### Errors
 ///
 /// Returns [`NumericalError`] when density is negative or non-finite, rest
 /// density is not positive and finite, or the calculation becomes non-finite.
@@ -389,7 +389,7 @@ pub fn density_constraint(
 /// the current positions. Coincident particles receive zero directions from
 /// [`crate::kernel::spiky_direction`].
 ///
-/// # Errors
+/// ### Errors
 ///
 /// Returns [`NumericalError`] for invalid interaction data, a missing particle,
 /// invalid radii or rest density, non-finite positions, or non-finite results.
@@ -419,7 +419,7 @@ pub fn substituted_directions(
 /// Squared directions are summed in ascending particle-index order, including
 /// the owner at its ordered position.
 ///
-/// # Errors
+/// ### Errors
 ///
 /// Returns [`NumericalError`] when `constraint` is non-finite, `relaxation` is
 /// not positive and finite, or the calculation becomes non-finite.
@@ -455,7 +455,7 @@ pub fn relaxed_multiplier(
 /// densities, constraints and multipliers first, then calculates every
 /// correction from the same positions and the completed multiplier list.
 ///
-/// # Errors
+/// ### Errors
 ///
 /// Returns [`NumericalError`] when the position and interaction counts differ,
 /// supplied interaction data is invalid, any position is non-finite, or any

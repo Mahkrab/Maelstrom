@@ -10,7 +10,7 @@ use crate::{NumericalError, math::Vec3, validation};
 /// This returns `accepted_velocity + external_acceleration * timestep`; it does
 /// not modify the supplied velocity.
 ///
-/// # Errors
+/// ### Errors
 ///
 /// Returns [`NumericalError`] for a non-positive timestep, non-finite input or
 /// non-finite result.
@@ -35,7 +35,7 @@ pub fn post_acceleration_velocity(
 
 /// ### Predicts a position from the accelerated velocity
 ///
-/// # Errors
+/// ### Errors
 ///
 /// Returns [`NumericalError`] for a non-positive timestep, non-finite input or
 /// non-finite result.
@@ -59,7 +59,7 @@ pub fn predict_position(
 ///
 /// The velocity includes every correction already present in `final_position`.
 ///
-/// # Errors
+/// ### Errors
 ///
 /// Returns [`NumericalError`] for a non-positive timestep, non-finite input or
 /// non-finite result.

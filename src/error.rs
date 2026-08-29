@@ -59,6 +59,8 @@ pub enum NumericalError {
         expected: usize,
         actual: usize,
     },
+    /// A lattice support ratio would require an impractical enumeration.
+    SupportRatioTooLarge { ratio: f32, maximum: f32 },
 }
 
 impl fmt::Display for NumericalError {
@@ -138,6 +140,10 @@ impl fmt::Display for NumericalError {
             } => write!(
                 formatter,
                 "{quantity} length must be {expected}, got {actual}"
+            ),
+            Self::SupportRatioTooLarge { ratio, maximum } => write!(
+                formatter,
+                "lattice support ratio must be at most {maximum}, got {ratio}"
             ),
         }
     }

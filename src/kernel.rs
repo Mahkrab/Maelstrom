@@ -14,7 +14,7 @@ use crate::{NumericalError, math::Vec3, validation};
 /// - `distance < support_radius` returns the Poly6 weight;
 /// - `distance >= support_radius` returns exactly `0.0`.
 ///
-/// # Errors
+/// ### Errors
 ///
 /// Returns [`NumericalError`] when `distance` is negative or non-finite, when
 /// `support_radius`  is not positive and finite, or when an intermediate value
@@ -47,7 +47,7 @@ pub fn poly6(distance: f32, support_radius: f32) -> Result<f32, NumericalError> 
 /// A zero displacement has no unique direction, so it returns [`Vec3::ZERO`].
 /// Displacements at or beyond `support_radius` also return zero.
 ///
-/// # Errors
+/// ### Errors
 ///
 /// Returns [`NumericalError`] when an input is non-finite, when
 /// `support_radius` is not positive, or when an intermediate value cannot be

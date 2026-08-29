@@ -34,7 +34,7 @@ pub struct CflDiagnostic {
 ///
 /// The result is diagnostic only: this function never changes `timestep`.
 ///
-/// # Errors
+/// ### Errors
 ///
 /// Returns [`NumericalError`] when a scalar parameter is not positive and
 /// finite, a velocity is non-finite, or the speed or limit calculation

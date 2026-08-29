@@ -18,7 +18,7 @@ impl Plane {
     /// `unit_length_squared_tolerance` is the accepted absolute difference
     /// between `normal.length_squared()` and `1.0`.
     ///
-    /// # Errors
+    /// ### Errors
     ///
     /// Returns [`NumericalError`] when:
     ///
@@ -71,7 +71,7 @@ impl Plane {
     ///
     /// A negative value means that `point` is outside the permitted halfspace.
     ///
-    /// # Errors
+    /// ### Errors
     ///
     /// Returns [`NumericalError`] when `point` is non-finite or the calculation
     /// produces a non-finite value.
@@ -85,7 +85,7 @@ impl Plane {
     ///
     /// Points already inside or exactly on the plane are returned unchanged.
     ///
-    /// # Errors
+    /// ### Errors
     ///
     /// Returns [`NumericalError`] when the point or projection becomes
     /// ninfinite.
@@ -104,7 +104,7 @@ impl Plane {
 
     /// Returns whether `point` is inside or exactly on the plane.
     ///
-    /// # Errors
+    /// ### Errors
     ///
     /// Returns [`NumericalError`] under the same conditions as
     /// [`Plane::constraint`].
@@ -118,7 +118,7 @@ impl Plane {
 /// Each plane is applied exactly once in slice order. The output of one plane
 /// becomes the input to the next.
 ///
-/// # Errors
+/// ### Errors
 ///
 /// Returns [`NumericalError`] when the input or any projection becomes
 /// non-finite.
