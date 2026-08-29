@@ -1,0 +1,43 @@
+schema_version = 1
+name = "falling-block-12"
+description = "Twelve-by-twelve-by-twelve fluid lattice inside a static six-plane box"
+randomness = "none"
+allow_coincident_particles = false
+
+[configuration]
+source = "file"
+path = "../config/defaults-v1.toml"
+
+[particles]
+construction = "lattice"
+first_identity = 0
+origin_m = [0.2, 0.4, 0.2]
+counts = [12, 12, 12]
+spacing_m = 0.05
+endpoint_rule = "counted_half_open"
+order = "x_then_y_then_z"
+initial_velocity_m_s = [0.0, 0.0, 0.0]
+
+[[planes]]
+normal = [1.0, 0.0, 0.0]
+offset_m = 0.0
+
+[[planes]]
+normal = [-1.0, 0.0, 0.0]
+offset_m = -1.0
+
+[[planes]]
+normal = [0.0, 1.0, 0.0]
+offset_m = 0.0
+
+[[planes]]
+normal = [0.0, -1.0, 0.0]
+offset_m = -1.2
+
+[[planes]]
+normal = [0.0, 0.0, 1.0]
+offset_m = 0.0
+
+[[planes]]
+normal = [0.0, 0.0, -1.0]
+offset_m = -1.0
