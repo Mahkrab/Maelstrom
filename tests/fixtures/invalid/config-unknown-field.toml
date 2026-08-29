@@ -1,0 +1,6 @@
+schema_version = 1
+name = "invalid-unknown-field"
+description = "Must fail because the numerical field is unknown"
+
+[numerical]
+fixed_timestep_seconds = 0.008333334

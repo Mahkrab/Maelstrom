@@ -1,0 +1,19 @@
+schema_version = 1
+name = "invalid-out-of-bounds"
+description = "Must fail because the particle is below the floor"
+randomness = "none"
+
+[configuration]
+source = "built_in_defaults"
+
+[particles]
+construction = "explicit"
+
+[[particles.items]]
+identity = 0
+position_m = [0.0, -0.01, 0.0]
+velocity_m_s = [0.0, 0.0, 0.0]
+
+[[planes]]
+normal = [0.0, 1.0, 0.0]
+offset_m = 0.0

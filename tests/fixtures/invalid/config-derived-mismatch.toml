@@ -1,0 +1,6 @@
+schema_version = 1
+name = "invalid-derived-assertion"
+description = "Must fail because support radius is derived from spacing"
+
+[derived]
+support_radius_m = 0.2
