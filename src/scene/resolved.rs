@@ -38,7 +38,7 @@ pub const MAX_LATTICE_PARTICLES: usize = 1_000_000;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Particle {
     /// Stable particle identity.
-    pub identity: u64, // Who are you?? Who am I?? 
+    pub identity: u64, // Who are you?? Who am I??
     /// Initial particle position in metres.
     pub position_m: Vec3,
     /// Initial particle velocity in metres per second.
@@ -335,7 +335,7 @@ pub fn resolve_scene(
 ///
 /// ### Errors
 ///
-/// TODO: convert to list. 
+/// TODO: convert to list.
 /// Returns [`SceneError`] for filesystem, parsing, resolution or validation
 /// failures.
 pub fn load_resolved_scene(

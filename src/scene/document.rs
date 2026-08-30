@@ -14,7 +14,7 @@ pub enum ConfigurationSource {
     File,
 }
 
-/// Connects a scene to a base configuration and its scene-specific .changes. 
+/// Connects a scene to a base configuration and its scene-specific .changes.
 ///
 /// A file selection needs a relative path. a scene overlay is applied after
 /// that base configuration and before any command-line override.
@@ -50,7 +50,8 @@ pub enum LatticeOrder {
 /// States whether building the scene may introduce random values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RandomnessPolicy { // Bit random eh
+pub enum RandomnessPolicy {
+    // Bit random eh
     /// No random generation is performed.
     None,
 }

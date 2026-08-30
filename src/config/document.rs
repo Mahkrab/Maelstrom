@@ -26,9 +26,9 @@ pub struct NumericalOverrides {
     pub correction_kernel: Option<String>,
     /// Optional solver-update ordering policy.
     pub solver_update_policy: Option<String>,
-    /// Optional external acceleration vector in ms^-2. 
-    /// 
-    /// <sub>come back when LaTeX is avaliable in inline rustdoc? I know there is a workarund...<sub> 
+    /// Optional external acceleration vector in ms^-2.
+    ///
+    /// <sub>come back when LaTeX is avaliable in inline rustdoc? I know there is a workarund...</sub>
     pub external_acceleration_m_s2: Option<[f32; 3]>,
     /// Optional fixed timestep in seconds.
     pub fixed_timestep_s: Option<f32>,

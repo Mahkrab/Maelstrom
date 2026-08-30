@@ -1,8 +1,8 @@
 //! # Versioned numerical configuration
 //!
 //! TOML documents are parsed into explicit layers before their numerical
-//! values are validated and resolved. 
-//! 
+//! values are validated and resolved.
+//!
 //! Always follows the same order:
 //!  
 //! - built-in default values

@@ -1,5 +1,4 @@
-//! TODO Add top level comments here. Pretty please. 
-
+//! TODO Add top level comments here. Pretty please.
 
 use crate::{boundary::Plane, math::Vec3};
 

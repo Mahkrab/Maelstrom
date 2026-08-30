@@ -1,4 +1,4 @@
-//! TODO: Addd top level documntation. 
+//! TODO: Addd top level documntation.
 
 use crate::{config::ResolvedConfiguration, math::Vec3, validation};
 

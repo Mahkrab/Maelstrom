@@ -73,9 +73,9 @@ pub struct NumericalModel {
     pub correction_kernel: String,
     /// Ordering used to update the solver state.
     pub solver_update_policy: String,
-    /// External acceleration in metres per second squared. 
-    /// 
-    /// TODO: Maybe implement LateX parsing in inline rustdoc. 
+    /// External acceleration in metres per second squared.
+    ///
+    /// TODO: Maybe implement LateX parsing in inline rustdoc.
     pub external_acceleration_m_s2: Vec3,
     /// Fixed timestep in seconds.
     pub fixed_timestep_s: f32,
