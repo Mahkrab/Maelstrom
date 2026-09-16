@@ -9,80 +9,84 @@ use serde::{Deserialize, Serialize};
 
 use super::{CONFIG_SCHEMA_VERSION, ConfigError};
 
-/// Numerical values that a configration layer may replace.
+/// Partial numerical settings applied over a lower layer.
+///
+/// An absent field keeps the value selected by the earlier layer.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NumericalOverrides {
-    // Lots of optional
-    /// Optional scalar representation for all numerical inputs and derived values.
+    /// Scalar representation for all numerical inputs and derived values.
     pub scalar_precision: Option<String>,
-    /// Optional coordinate and unit convention for the  configuration and scenes.
+    /// Coordinate and unit convention for configuration and scenes.
     pub coordinate_system: Option<String>,
-    /// Optional timestep-selection policy.
+    /// Timestep-selection police.
     pub timestep_policy: Option<String>,
-    /// Optional densitykernel identifier.
+    /// Density-kernel identifier.
     pub density_kernel: Option<String>,
-    /// Optional correction-direction kernel identifier.
+    /// Correction-direction kernel identifier.
     pub correction_kernel: Option<String>,
-    /// Optional solver-update ordering policy.
+    /// Solver-update ordering policy.
     pub solver_update_policy: Option<String>,
-    /// Optional external acceleration vector in ms^-2.
-    ///
-    /// <sub>come back when LaTeX is avaliable in inline rustdoc? I know there is a workarund...</sub>
+    /// External acceleration vector in metres per second squared.
+    /// 
+    /// <sub>come back when LaTeX is avaliable in inline rustdoc? I know there is a workarund...<sub> 
     pub external_acceleration_m_s2: Option<[f32; 3]>,
-    /// Optional fixed timestep in seconds.
+    /// Fixed timestep in seconds.
     pub fixed_timestep_s: Option<f32>,
-    /// Optional dimensionless CFL factor.
+    /// Dimensionless CFL factor.
     pub cfl_factor: Option<f32>,
-    /// Optional centre-to-centre particle spacing in metres.
+    /// Centre-to-centre particle spacing in metres.
     pub particle_spacing_m: Option<f32>,
-    /// Optional multiverse of madness ratio of support radius to particle spacing.
+    /// Ratio of support radius to particle spacing.
     pub support_radius_ratio: Option<f32>,
-    /// Optional physical rest density in kilograms per cubic metre.
+    /// Physical rest density in kilograms per cubic metre.
     pub physical_rest_density_kg_m3: Option<f32>,
-    /// Optional number of solver iterations performed for each timestep.
+    /// Number of solver iterations performed for each timestep.
     pub solver_iterations: Option<u32>,
-    /// Optional dimensionless scale used to derive relaxation.
+    /// Dimensionless scale used to derive relaxation.
     pub relaxation_scale: Option<f32>,
-    /// Optional switch for the artificial-pressure correction.
+    /// Switch for the artificial-pressure correction.
     pub artificial_pressure_enabled: Option<bool>,
-    /// Optional dimensionless scale used to derive artificial-pressure strength.
+    /// Dimensionless scale used to derive artificial-pressure strength.
     pub artificial_pressure_strength_scale: Option<f32>,
-    /// Optional ratio of artificial-pressure reference separation to support radius.
-    pub artificial_pressure_reference_separation_ratio: Option<f32>,
-    /// Optional exponent applied by the artificial-pressure correction.
+    /// Ratio of artificial-pressure reference separation to support radius.
+    pub artificial_pressure_reference_separation_ratio: Option<f32>, // long ahh name
+    /// Exponent applied by the artificial-pressure correction.
     pub artificial_pressure_exponent: Option<f32>,
-    /// Optional kernel-support comparison policy.
+    /// Kernel-support comparison policy.
     pub support_policy: Option<String>,
-    /// Optional boundary model.
+    /// Boundary model.
     pub boundary_model: Option<String>,
-    /// Optional hello neighbour-set rebuild policy.
+    /// Neighbour-set rebuild policy.
     pub neighbour_rebuild_policy: Option<String>,
-    /// Optional serial particle-ordering policy.
+    /// Serial particle-ordering policy.
     pub particle_order_policy: Option<String>,
-    /// Optional switch for XSPH viscosity, currently only `false` is supported.
+    /// Switch for XSPH viscosity
     pub xsph_viscosity_enabled: Option<bool>,
-    /// Optional switch for vorticity confinement, currently only `false` is supported.
+    /// Switch for vorticity confinement. 
     pub vorticity_confinement_enabled: Option<bool>,
 }
 
-/// Optional exact values used to verify derived configuration values.
+/// Exact checks on values calculated during configuration resolution.
+///
+/// Each supplied value must match the derived binary32 value exactly; an absent
+/// field is not checked.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DerivedAssertions {
-    /// Optional expected particle diameter in metres.
+    /// Expected particle diameter in metres.
     pub particle_diameter_m: Option<f32>,
-    /// Optional expected kernel support radius in metres.
+    /// Expected kernel support radius in metres.
     pub support_radius_m: Option<f32>,
-    /// Optional expected mass-divided rest density in inverse cubic metres.
+    /// Expected mass-divided rest density in inverse cubic metres.
     pub normalised_rest_density_per_m3: Option<f32>,
-    /// Optional expected particle mass in kilograms.
+    /// Expected particle mass in kilograms.
     pub particle_mass_kg: Option<f32>,
-    /// Optional expected relaxation value in inverse square metres.
+    /// Expected relaxation value in inverse square metres.
     pub relaxation_per_m2: Option<f32>,
-    /// Optional expected artificial-pressure strength in square metres.
+    /// Expected artificial-pressure strength in square metres.
     pub artificial_pressure_strength_m2: Option<f32>,
-    /// Optional expected artificial-pressure reference separation in metres.
+    /// Expected artificial-pressure reference separation in metres.
     pub artificial_pressure_reference_separation_m: Option<f32>,
 }
 
@@ -104,9 +108,9 @@ pub struct ConfigurationOverlay {
 pub struct ConfigurationDocument {
     /// Version of the configuration document schema.
     pub schema_version: u32,
-    /// Human-readable configuration name.
+    /// Display label retained when the document is inspected.
     pub name: String,
-    /// Human-readable description of the configuration.
+    /// Display context retained when the document is inspected.
     pub description: String,
     /// Numerical values and derived assertions contained in this document.
     #[serde(flatten)]
