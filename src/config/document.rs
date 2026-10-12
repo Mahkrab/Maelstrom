@@ -28,8 +28,8 @@ pub struct NumericalOverrides {
     /// Solver-update ordering policy.
     pub solver_update_policy: Option<String>,
     /// External acceleration vector in metres per second squared.
-    /// 
-    /// <sub>come back when LaTeX is avaliable in inline rustdoc? I know there is a workarund...<sub> 
+    ///
+    /// <sub>come back when LaTeX is avaliable in inline rustdoc? I know there is a workarund...</sub>
     pub external_acceleration_m_s2: Option<[f32; 3]>,
     /// Fixed timestep in seconds.
     pub fixed_timestep_s: Option<f32>,
@@ -63,7 +63,7 @@ pub struct NumericalOverrides {
     pub particle_order_policy: Option<String>,
     /// Switch for XSPH viscosity
     pub xsph_viscosity_enabled: Option<bool>,
-    /// Switch for vorticity confinement. 
+    /// Switch for vorticity confinement.
     pub vorticity_confinement_enabled: Option<bool>,
 }
 

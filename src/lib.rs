@@ -1,16 +1,8 @@
-//! # Maelstrom numerical library
+//! Headless Position-Based Fluids simulation with deterministic serial arithmetic.
 //!
-//! Reusable maths for Maelstrom's Position-Based Fluids (PBF) simulator.
-//! The library provides:
-//!
-//! - three-dimensional `f32` vectors and smoothing kernels
-//! - density constraints and position corrections
-//! - plane projection, motion integration and CFL diagnostics
-//! - the reference particle-lattice calculation
-//! - versioned configuration and deterministic scene inputs
-//!
-//! Neighbour discovery and simulation-state management are kept separate from
-//! these calculations so they can share the same numerical code.
+//! [`simulation::SerialSimulation`] owns accepted state and combines neighbour
+//! discovery with the shared numerical foundations. Configuration and scenes
+//! provide inputs; callers can inspect snapshots between transactional timesteps.
 
 pub mod boundary;
 pub mod config;
@@ -20,8 +12,10 @@ pub mod fluid;
 pub mod integration;
 pub mod kernel;
 pub mod math;
+pub mod neighbours;
 pub mod reference;
 pub mod scene;
+pub mod simulation;
 
 mod validation;
 

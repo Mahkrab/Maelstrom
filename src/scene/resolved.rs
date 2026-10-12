@@ -31,17 +31,17 @@ pub const MAX_EXPLICIT_PARTICLES: usize = 4_096;
 /// Maximum deterministic lattice particle count accepted by scene construction.
 pub const MAX_LATTICE_PARTICLES: usize = 1_000_000;
 
-/// Accepted initial state for one particle.
+/// Position and velocity associated with one stable particle identity.
 ///
 /// Resolved scenes keep particles in ascending identity order, so callers can
 /// compare or replay the same input without reconstructing that order.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Particle {
     /// Stable particle identity.
-    pub identity: u64, // Who are you?? Who am I??
-    /// Initial particle position in metres.
+    pub identity: u64,
+    /// Particle position in metres.
     pub position_m: Vec3,
-    /// Initial particle velocity in metres per second.
+    /// Particle velocity in metres per second.
     pub velocity_m_s: Vec3,
 }
 
@@ -259,7 +259,7 @@ impl From<NumericalError> for SceneError {
     }
 }
 
-/// Resolves a parsed scene into the immutableinput eaten by the simulator.
+/// Resolves a parsed scene into the immutable input used by the simulator.
 ///
 /// `configuration_file` must be supplied exactly when the scene selects a
 /// file. The optional command-line overlay is applied last; parsing command
@@ -267,7 +267,6 @@ impl From<NumericalError> for SceneError {
 ///
 /// ### Errors
 ///
-/// TODO: Convert this to a list, am too lazy for now, HA.
 /// Returns [`SceneError`] for an inconsistent selection, invalid numerical
 /// configuration, invalid geometry, unstable identities, overlap, bounds
 /// violations or impractical construction sizes.
@@ -335,7 +334,6 @@ pub fn resolve_scene(
 ///
 /// ### Errors
 ///
-/// TODO: convert to list.
 /// Returns [`SceneError`] for filesystem, parsing, resolution or validation
 /// failures.
 pub fn load_resolved_scene(

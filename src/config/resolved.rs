@@ -12,6 +12,8 @@ use super::{
     validation::{derive_values, validate_assertions, validate_model},
 };
 
+// i dont like strings
+
 /// Supported configuration schema version.
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 /// Scalar representation used by every numerical input and derived value.
@@ -55,7 +57,7 @@ pub enum FieldSource {
     CommandLine,
 }
 
-/// Deterministic field-by-field provenance for a resolved numerical model. <sub>*fancy*</sub>
+/// Deterministic field-by-field provenance for a resolved numerical model.
 pub type ValueSources = BTreeMap<&'static str, FieldSource>;
 
 /// Primary values and fixed policies used to derive simulator parameters.
@@ -74,8 +76,6 @@ pub struct NumericalModel {
     /// Ordering used to update the solver state.
     pub solver_update_policy: String,
     /// External acceleration in metres per second squared.
-    ///
-    /// TODO: Maybe implement LateX parsing in inline rustdoc.
     pub external_acceleration_m_s2: Vec3,
     /// Fixed timestep in seconds.
     pub fixed_timestep_s: f32,
@@ -134,14 +134,14 @@ pub struct ResolvedDerivedValues {
     pub lattice_offset_count: usize,
 }
 
-/// Fully resolved, validated and inspectable numerical confguration.
+/// Fully resolved, validated and inspectable numerical configuration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedConfiguration {
     /// Version of the resolved configuration schema.
     pub schema_version: u32,
-    /// Human-readable configuration name.
+    /// Display label retained for inspection but excluded from comparison identity.
     pub name: String,
-    /// Human-readable configuration description.
+    /// Display context retained for inspection but excluded from comparison identity.
     pub description: String,
     /// Validated primary numerical values and policies.
     pub numerical: NumericalModel,
@@ -152,6 +152,46 @@ pub struct ResolvedConfiguration {
 }
 
 impl ResolvedConfiguration {
+    // Public fields can be changed after resolution, so validate before the
+    // solver takes its owned copy.
+    pub(crate) fn validate(&self) -> Result<(), ConfigError> {
+        if self.schema_version != CONFIG_SCHEMA_VERSION {
+            return Err(ConfigError::UnsupportedSchema {
+                document: "resolved configuration",
+                supported: CONFIG_SCHEMA_VERSION,
+                found: self.schema_version,
+            });
+        }
+        validate_model(&self.numerical)?;
+        let expected = derive_values(&self.numerical)?;
+        let supplied = self.derived;
+        validate_assertions(
+            "resolved configuration",
+            &super::DerivedAssertions {
+                particle_diameter_m: Some(supplied.particle_diameter_m),
+                support_radius_m: Some(supplied.support_radius_m),
+                normalised_rest_density_per_m3: Some(supplied.normalised_rest_density_per_m3),
+                particle_mass_kg: Some(supplied.particle_mass_kg),
+                relaxation_per_m2: Some(supplied.relaxation_per_m2),
+                artificial_pressure_strength_m2: Some(supplied.artificial_pressure_strength_m2),
+                artificial_pressure_reference_separation_m: Some(
+                    supplied.artificial_pressure_reference_separation_m,
+                ),
+            },
+            expected,
+        )?;
+        if supplied.lattice_offset_count != expected.lattice_offset_count {
+            return Err(ConfigError::InvalidField {
+                field: "lattice_offset_count",
+                reason: "must equal the derived lattice offset count".to_owned(),
+            });
+        }
+        crate::validation::positive_scalar("particle mass", supplied.particle_mass_kg)
+            .map_err(ConfigError::Numerical)?;
+        self.pbf_parameters()?;
+        Ok(())
+    }
+
     /// Builds the fluid parameter object consumed by the numerical kernels.
     ///
     /// ### Errors
