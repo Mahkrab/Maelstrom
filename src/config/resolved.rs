@@ -45,7 +45,8 @@ const DEFAULT_NAME: &str = "maelstrom-defaults-v1";
 const DEFAULT_DESCRIPTION: &str = "Built-in binary32 Position-Based Fluids defaults";
 
 /// Origin of one effective numerical value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FieldSource {
     /// The built-in default supplied by the simulator.
     BuiltInDefault,
@@ -61,7 +62,8 @@ pub enum FieldSource {
 pub type ValueSources = BTreeMap<&'static str, FieldSource>;
 
 /// Primary values and fixed policies used to derive simulator parameters.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NumericalModel {
     /// Scalar representation used by every numerical value.
     pub scalar_precision: String,
@@ -114,7 +116,8 @@ pub struct NumericalModel {
 }
 
 /// Values calculated from the primary numerical model.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResolvedDerivedValues {
     /// Particle diameter, equal to particle spacing, in metres.
     pub particle_diameter_m: f32,

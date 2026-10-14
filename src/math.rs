@@ -8,7 +8,8 @@ use std::ops::{Add, AddAssign, Mul, Neg, Sub};
 use crate::{NumericalError, validation};
 
 /// ### Three-dimensional `f32` vector
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Vec3 {
     /// Horizontal `x` component.
     pub x: f32,

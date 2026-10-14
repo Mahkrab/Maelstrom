@@ -16,6 +16,7 @@ pub mod neighbours;
 pub mod reference;
 pub mod scene;
 pub mod simulation;
+pub mod workflow;
 
 mod validation;
 
