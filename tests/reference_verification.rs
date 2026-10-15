@@ -498,3 +498,156 @@ fn exact_comparison_detects_signed_zero_and_non_final_checkpoint_changes() {
     changed["checkpoints"][0]["x"] = Value::from(1.0001);
     assert!(std::panic::catch_unwind(|| assert_exact(&changed, &expected, "run")).is_err());
 }
+
+#[test]
+fn measured_reference_runs_preserve_every_numerical_bit() {
+    use maelstrom::workflow::{MeasurementMode, run_measured_with_cancellation};
+
+    for case in manifest().cases.iter().filter(|case| case.golden.is_some()) {
+        let input = scene(case);
+        let golden: Value =
+            serde_json::from_str(&fs::read_to_string(path(case.golden.as_ref().unwrap())).unwrap())
+                .unwrap();
+        for mode in [MeasurementMode::Total, MeasurementMode::Stages] {
+            let measured = run_measured_with_cancellation(&input, request(case), mode, || false);
+            let timings = measured.measurements().unwrap();
+            assert_eq!(timings.steps.len(), case.steps as usize);
+            assert!(timings.failed_attempt_s.is_none());
+            for step in &timings.steps {
+                assert!(step.total_s.is_finite() && step.total_s >= 0.0);
+                assert_eq!(step.stages.is_some(), mode == MeasurementMode::Stages);
+                if let Some(stages) = step.stages {
+                    let values = [
+                        stages.validation_and_acceleration_s,
+                        stages.prediction_s,
+                        stages.neighbour_search_s,
+                        stages.jacobi_s,
+                        stages.projection_s,
+                        stages.acceptance_s,
+                    ];
+                    assert!(values.iter().all(|s| s.is_finite() && *s >= 0.0));
+                    assert!(values.iter().sum::<f64>() <= step.total_s + 1e-12);
+                }
+            }
+            let mut actual = document(&measured);
+            actual.as_object_mut().unwrap().remove("measurements");
+            assert_exact(
+                &numerical_document(actual),
+                &numerical_document(golden.clone()),
+                "measured golden",
+            );
+        }
+    }
+}
+
+#[test]
+fn measured_cancellation_keeps_poll_order_and_successful_work_separate() {
+    use maelstrom::workflow::{
+        MeasurementMode, run_measured_with_cancellation, run_with_cancellation,
+    };
+    let input = scene(&manifest().cases[1]);
+    let request = RunRequest {
+        steps: 2,
+        checkpoints: vec![0, 1, 2],
+    };
+    let mut polls = 0;
+    let mut one_step = SerialSimulation::from_scene(&input).unwrap();
+    let _ = one_step
+        .step_with_cancellation(|| {
+            polls += 1;
+            false
+        })
+        .unwrap();
+    for cancel_at in [1, 3, polls, polls + 1, polls + 5, polls * 2] {
+        let mut count = 0;
+        let expected = run_with_cancellation(&input, request.clone(), || {
+            count += 1;
+            count == cancel_at
+        });
+        for mode in [MeasurementMode::Total, MeasurementMode::Stages] {
+            let mut actual_count = 0;
+            let actual = run_measured_with_cancellation(&input, request.clone(), mode, || {
+                actual_count += 1;
+                actual_count == cancel_at
+            });
+            assert_eq!(actual_count, count);
+            assert_eq!(actual.status(), CompletionStatus::Cancelled);
+            let timings = actual.measurements().unwrap();
+            assert_eq!(timings.steps.len(), actual.completed_steps() as usize);
+            assert!(timings.failed_attempt_s.unwrap() >= 0.0);
+            let mut value = document(&actual);
+            value.as_object_mut().unwrap().remove("measurements");
+            assert_exact(&value, &document(&expected), "cancelled measured run");
+        }
+    }
+    for mode in [MeasurementMode::Total, MeasurementMode::Stages] {
+        let zero = run_measured_with_cancellation(
+            &input,
+            RunRequest {
+                steps: 0,
+                checkpoints: vec![0],
+            },
+            mode,
+            || panic!("zero steps must not poll"),
+        );
+        assert!(zero.measurements().unwrap().steps.is_empty());
+        assert_eq!(zero.completed_steps(), 0);
+        assert!(zero.measurements().unwrap().failed_attempt_s.is_none());
+    }
+}
+
+#[test]
+fn measured_empty_invalid_and_numerically_failed_runs_are_explicit() {
+    use maelstrom::workflow::{MeasurementMode, run_measured_with_cancellation};
+    for mode in [MeasurementMode::Total, MeasurementMode::Stages] {
+        let mut input = scene(&manifest().cases[1]);
+        input.particles.clear();
+        let empty = run_measured_with_cancellation(
+            &input,
+            RunRequest {
+                steps: 2,
+                checkpoints: vec![0, 2],
+            },
+            mode,
+            || false,
+        );
+        assert_eq!(empty.status(), CompletionStatus::Completed);
+        assert_eq!(empty.measurements().unwrap().steps.len(), 2);
+        assert_eq!(empty.checkpoints()[1].density().unwrap().sample_count, 0);
+
+        let mut input = scene(&manifest().cases[1]);
+        input.particles[0].velocity_m_s.x = f32::MAX;
+        input.configuration.numerical.external_acceleration_m_s2.x = f32::MAX;
+        let failed = run_measured_with_cancellation(
+            &input,
+            RunRequest {
+                steps: 2,
+                checkpoints: vec![],
+            },
+            mode,
+            || false,
+        );
+        assert_eq!(failed.status(), CompletionStatus::SimulationFailure);
+        assert_eq!(failed.completed_steps(), 0);
+        assert!(failed.measurements().unwrap().steps.is_empty());
+        assert!(failed.measurements().unwrap().failed_attempt_s.unwrap() >= 0.0);
+        assert_eq!(
+            failed.final_snapshot().unwrap().particles()[0].particle(),
+            input.particles[0]
+        );
+
+        input.configuration.numerical.fixed_timestep_s = 0.0;
+        let invalid = run_measured_with_cancellation(
+            &input,
+            RunRequest {
+                steps: 1,
+                checkpoints: vec![],
+            },
+            mode,
+            || false,
+        );
+        assert_eq!(invalid.status(), CompletionStatus::InputValidationFailure);
+        assert!(invalid.measurements().unwrap().steps.is_empty());
+        assert!(invalid.measurements().unwrap().failed_attempt_s.is_none());
+    }
+}

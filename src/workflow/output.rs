@@ -155,6 +155,13 @@ impl RunResult {
                 text.push_str("density audit failed\n");
             }
         }
+        if let Some(measurements) = self.measurements() {
+            let total: f64 = measurements.steps.iter().map(|step| step.total_s).sum();
+            text.push_str(&format!(
+                "Solver measurements {:?}: {} accepted steps; total {total:.9} s; failed attempt {:?} s\n",
+                measurements.mode, measurements.steps.len(), measurements.failed_attempt_s,
+            ));
+        }
         for failure in &self.failures {
             // Debug string formatting escapes controls in externally sourced text.
             text.push_str(&format!(

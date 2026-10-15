@@ -89,6 +89,12 @@ pub(super) struct Run {
     /// Accepted step boundaries to snapshot and audit; comma-separated
     #[arg(long, value_delimiter = ',', value_name = "STEPS")]
     pub checkpoints: Vec<u64>,
+    /// Record monotonic elapsed seconds around each complete solver step
+    #[arg(long)]
+    pub measure: bool,
+    /// Also profile internal stages; adds clock overhead, so report separately
+    #[arg(long, requires = "measure")]
+    pub stage_profile: bool,
     #[command(flatten)]
     pub output: Output,
 }

@@ -1098,3 +1098,73 @@ fn ctrl_c_returns_a_cancelled_result_and_preserves_accepted_state() {
         serde_json::from_slice(&fs::read(dir.path("cancelled-state.json")).unwrap()).unwrap();
     assert_eq!(snapshot, result["final_snapshot"]);
 }
+
+#[test]
+fn measured_cli_retains_replay_identity_and_profiles_only_when_requested() {
+    let args = [
+        "run",
+        "falling-block-04",
+        "--steps",
+        "3",
+        "--refine-timestep",
+        "4",
+        "--checkpoints",
+        "0,1,3",
+        "--format",
+        "json",
+        "--quiet",
+    ];
+    let normal = cli(&args);
+    success(&normal);
+    let expected = document(&normal);
+    assert!(expected.get("measurements").is_none());
+    for stages in [false, true] {
+        let mut measured_args = args.to_vec();
+        measured_args.push("--measure");
+        if stages {
+            measured_args.push("--stage-profile");
+        }
+        let output = cli(&measured_args);
+        success(&output);
+        let mut actual = document(&output);
+        let timings = actual
+            .as_object_mut()
+            .unwrap()
+            .remove("measurements")
+            .unwrap();
+        assert_eq!(timings["schema_version"], 1);
+        assert_eq!(timings["mode"], if stages { "stages" } else { "total" });
+        assert_eq!(timings["steps"].as_array().unwrap().len(), 3);
+        assert_eq!(timings["steps"][0]["stages"].is_object(), stages);
+        assert_eq!(
+            serde_json::to_string(&actual).unwrap(),
+            serde_json::to_string(&expected).unwrap()
+        );
+        let directory = Directory::new();
+        let path = directory.write("measured.json", &String::from_utf8(output.stdout).unwrap());
+        let replay = command(&directory.0)
+            .args([
+                "replay",
+                path.to_str().unwrap(),
+                "--format",
+                "json",
+                "--quiet",
+            ])
+            .output()
+            .unwrap();
+        success(&replay);
+        assert_eq!(
+            serde_json::to_string(&document(&replay)).unwrap(),
+            serde_json::to_string(&expected).unwrap()
+        );
+    }
+    let invalid = cli(&["run", "falling-block-04", "--steps", "1", "--stage-profile"]);
+    assert_eq!(invalid.status.code(), Some(2));
+    let text = cli(&["run", "falling-block-04", "--steps", "0", "--measure"]);
+    success(&text);
+    assert!(
+        String::from_utf8(text.stdout)
+            .unwrap()
+            .contains("Solver measurements Total: 0 accepted steps")
+    );
+}

@@ -2,13 +2,15 @@
 //! observations. Only the solver's step call advances state. Audits, copies and
 //! output happen after it returns, outside the primary solver timing boundary.
 //!
-//! This workflow exposes no timing measurements. It retains every accepted CFL
+//! Optional measurements wrap solver calls only. The workflow retains every accepted CFL
 //! outcome and each requested checkpoint in memory; callers choose checkpoint
 //! frequency according to the size of their input.
 
+mod measurement;
 mod output;
 mod record;
 
+pub use measurement::{MeasurementMode, RunMeasurements};
 pub use output::{OutputError, OutputFormat};
 pub use record::{ParticleRecord, RecordError, RecordedInput, SCHEMA_VERSION, SnapshotRecord};
 
@@ -235,6 +237,8 @@ pub struct RunResult {
     steps: Vec<StepDiagnostic>,
     checkpoints: Vec<Checkpoint>,
     final_snapshot: Option<SnapshotRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    measurements: Option<RunMeasurements>,
     // Keep disposition last: a truncated stream is not a complete JSON document.
     failures: Vec<Failure>,
     status: CompletionStatus,
@@ -275,6 +279,12 @@ impl RunResult {
     #[must_use]
     pub fn final_snapshot(&self) -> Option<&SnapshotRecord> {
         self.final_snapshot.as_ref()
+    }
+    /// Optional solver measurements; entries follow the accepted-step diagnostics.
+    /// A failed attempt is timed separately and never enters successful totals.
+    #[must_use]
+    pub fn measurements(&self) -> Option<&RunMeasurements> {
+        self.measurements.as_ref()
     }
     /// Number of accepted steps, independent of the overall completion status.
     #[must_use]
@@ -354,6 +364,30 @@ pub fn run(scene: &ResolvedScene, request: RunRequest) -> RunResult {
 pub fn run_with_cancellation(
     scene: &ResolvedScene,
     request: RunRequest,
+    cancelled: impl FnMut() -> bool,
+) -> RunResult {
+    run_inner(scene, request, None, cancelled)
+}
+
+/// Runs with explicitly enabled elapsed wall-clock measurements. Total-only mode
+/// avoids internal clock reads; stage mode is a separate instrumented profile.
+/// Audits, snapshots, input setup, record allocation and output remain outside
+/// every primary timer. Numerical execution and cancellation polls are shared
+/// with the unmeasured workflow. Timing never participates in replay identity.
+#[must_use]
+pub fn run_measured_with_cancellation(
+    scene: &ResolvedScene,
+    request: RunRequest,
+    mode: MeasurementMode,
+    cancelled: impl FnMut() -> bool,
+) -> RunResult {
+    run_inner(scene, request, Some(mode), cancelled)
+}
+
+fn run_inner(
+    scene: &ResolvedScene,
+    request: RunRequest,
+    mode: Option<MeasurementMode>,
     mut cancelled: impl FnMut() -> bool,
 ) -> RunResult {
     let mut result = RunResult {
@@ -367,6 +401,7 @@ pub fn run_with_cancellation(
         steps: Vec::new(),
         checkpoints: Vec::new(),
         final_snapshot: None,
+        measurements: mode.map(RunMeasurements::new),
         failures: Vec::new(),
         status: CompletionStatus::Completed,
     };
@@ -396,7 +431,25 @@ pub fn run_with_cancellation(
         for _ in 0..result.request.steps {
             // This call is the primary solver boundary. No audit, snapshot copy,
             // record conversion, encoding or presentation occurs inside it.
-            match solver.step_with_cancellation(&mut cancelled) {
+            let attempt = if let Some(measurements) = &mut result.measurements {
+                let start = std::time::Instant::now();
+                match solver.step_measured_with_cancellation(
+                    measurements.mode == MeasurementMode::Stages,
+                    &mut cancelled,
+                ) {
+                    Ok((outcome, measurement)) => {
+                        measurements.steps.push(measurement);
+                        Ok(outcome)
+                    }
+                    Err(error) => {
+                        measurements.failed_attempt_s = Some(start.elapsed().as_secs_f64());
+                        Err(error)
+                    }
+                }
+            } else {
+                solver.step_with_cancellation(&mut cancelled)
+            };
+            match attempt {
                 Ok(outcome) => result
                     .steps
                     .push(StepDiagnostic::new(outcome.completed_steps, outcome.cfl)),

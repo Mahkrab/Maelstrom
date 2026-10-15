@@ -5,9 +5,14 @@
 
 mod error;
 mod state;
+mod timing;
 
 pub use error::{RunFailure, StepError};
 pub use state::Snapshot;
+pub use timing::{StageTimes, StepMeasurement};
+
+use std::time::Instant;
+use timing::{Stage, StageClock};
 
 use crate::{
     boundary::{Plane, project_in_order},
@@ -116,7 +121,43 @@ impl SerialSimulation {
         &mut self,
         mut cancelled: impl FnMut() -> bool,
     ) -> Result<StepOutcome, StepError> {
-        check_cancellation(&mut cancelled)?;
+        self.step_inner(&mut cancelled, &mut StageClock::<false>::new())
+    }
+
+    /// Times one successful step using a monotonic clock. With `stages` enabled,
+    /// internal stage clocks add profiling overhead; use total-only samples for
+    /// primary comparisons. Errors retain transactional state and return no
+    /// successful measurement. The caller may time failed attempts separately.
+    pub fn step_measured_with_cancellation(
+        &mut self,
+        stages: bool,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<(StepOutcome, StepMeasurement), StepError> {
+        let start = Instant::now();
+        let (outcome, stage_times) = if stages {
+            let mut clock = StageClock::<true>::new();
+            let outcome = self.step_inner(&mut cancelled, &mut clock)?;
+            (outcome, Some(clock.finish()))
+        } else {
+            let outcome = self.step_inner(&mut cancelled, &mut StageClock::<false>::new())?;
+            (outcome, None)
+        };
+        let total_s = start.elapsed().as_secs_f64();
+        Ok((
+            outcome,
+            StepMeasurement {
+                total_s,
+                stages: stage_times,
+            },
+        ))
+    }
+
+    fn step_inner<const PROFILE: bool>(
+        &mut self,
+        cancelled: &mut impl FnMut() -> bool,
+        clock: &mut StageClock<PROFILE>,
+    ) -> Result<StepOutcome, StepError> {
+        check_cancellation(cancelled)?;
         validate_particles(&self.accepted.particles)?;
         let completed_steps = self
             .accepted
@@ -139,8 +180,9 @@ impl SerialSimulation {
             derived.particle_diameter_m,
             model.cfl_factor,
         )?;
-        check_cancellation(&mut cancelled)?;
+        check_cancellation(cancelled)?;
 
+        clock.mark(Stage::ValidationAndAcceleration);
         let mut positions = Vec::with_capacity(velocities.len());
         for (particle, velocity) in self.accepted.particles.iter().zip(velocities) {
             positions.push(predict_position(
@@ -149,16 +191,19 @@ impl SerialSimulation {
                 model.fixed_timestep_s,
             )?);
         }
-        check_cancellation(&mut cancelled)?;
+        check_cancellation(cancelled)?;
+        clock.mark(Stage::Prediction);
         let fixed = neighbours::brute_force(&positions, self.parameters.support_radius())?;
-        check_cancellation(&mut cancelled)?;
+        check_cancellation(cancelled)?;
 
+        clock.mark(Stage::NeighbourSearch);
         for _ in 0..model.solver_iterations {
             let stage = compute_jacobi_stage(&positions, &fixed, self.parameters)?;
             for density in stage.normalised_densities {
                 validation::finite_result("physical density", density * derived.particle_mass_kg)?;
             }
-            check_cancellation(&mut cancelled)?;
+            check_cancellation(cancelled)?;
+            clock.mark(Stage::Jacobi);
             let mut candidates = Vec::with_capacity(positions.len());
             for (position, correction) in positions.iter().zip(stage.corrections) {
                 candidates.push(validation::finite_vector_result(
@@ -170,7 +215,8 @@ impl SerialSimulation {
                 *candidate = project_in_order(*candidate, &self.planes)?;
             }
             positions = candidates;
-            check_cancellation(&mut cancelled)?;
+            check_cancellation(cancelled)?;
+            clock.mark(Stage::Projection);
         }
 
         let mut particles = Vec::with_capacity(positions.len());
@@ -198,11 +244,12 @@ impl SerialSimulation {
                 }
             }
         }
-        check_cancellation(&mut cancelled)?;
+        check_cancellation(cancelled)?;
         self.accepted = Snapshot {
             completed_steps,
             particles,
         };
+        clock.mark(Stage::Acceptance);
         Ok(StepOutcome {
             completed_steps,
             cfl,
