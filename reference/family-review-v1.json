@@ -1,0 +1,441 @@
+{
+  "schema_version": 1,
+  "family": "falling-block-refined-v1",
+  "source_revision": "54c5176fe0475b39e53759f11aab355c4c815583",
+  "environment": {
+    "rustc": "1.98.1 (48a229cea 2026-09-01)",
+    "cargo": "1.98.1 (797e8a9bc 2026-08-05)",
+    "target": "x86_64-unknown-linux-gnu",
+    "operating_environment": "WSL2 Ubuntu 24.04.5",
+    "profile": "release",
+    "debug_assertions": false
+  },
+  "scope": "One public CLI execution per case; completion and recorded checkpoint diagnostics. Production source was unchanged from source_revision. Concurrent verification rebuilds left the optional embedded build revision absent in some results; each case records its actual value. Independent every-step health guards apply to the 64-particle golden in the integration suite, not to every size. No performance measurements.",
+  "cases": [
+    {
+      "scene": "reference/small-lattice.toml",
+      "particles": 27,
+      "request": {
+        "steps": "12",
+        "checkpoints": [
+          "0",
+          "1",
+          "4",
+          "12"
+        ]
+      },
+      "input_id": "sha256:3d9bcf4a023d39803cbaadef97a94ce454493c575f1d56c356241e55bb026a34",
+      "configuration_id": "sha256:6a917a477430c0557b0371a08362389d31ba29470a740a2d623cd74d90134621",
+      "recorded_build_revision": "54c5176fe0475b39e53759f11aab355c4c815583",
+      "result_sha256": "7f695eb73024eae0b745a483809760b815dba9757b72977581a9ee044d19ee7a",
+      "status": "completed",
+      "completed_steps": "12",
+      "warning_count": 0,
+      "failure_count": 0,
+      "checkpoint_density": [
+        {
+          "completed_steps": "0",
+          "sample_count": 27,
+          "mean_error": 0.3423119,
+          "maximum_error": 0.48484862
+        },
+        {
+          "completed_steps": "1",
+          "sample_count": 27,
+          "mean_error": 0.15731679,
+          "maximum_error": 0.36948955
+        },
+        {
+          "completed_steps": "4",
+          "sample_count": 27,
+          "mean_error": 0.14620155,
+          "maximum_error": 0.37557805
+        },
+        {
+          "completed_steps": "12",
+          "sample_count": 27,
+          "mean_error": 0.14573856,
+          "maximum_error": 0.37903535
+        }
+      ]
+    },
+    {
+      "scene": "scenes/falling-block-04.toml",
+      "particles": 64,
+      "request": {
+        "steps": "480",
+        "checkpoints": [
+          "0",
+          "1",
+          "120",
+          "240",
+          "480"
+        ]
+      },
+      "input_id": "sha256:f5e544b6df5b1e3f44811af3d0a36506683ed0eeb6379249889a0d099b7b1f54",
+      "configuration_id": "sha256:4a73d76fd2ac85476796c3f615cd3da7d340a15fee2a844b288a7d471e1e770e",
+      "recorded_build_revision": "54c5176fe0475b39e53759f11aab355c4c815583",
+      "result_sha256": "acc3b5e91097f0870482de2deba1f2556599415b16d72c5e49ed0d15dbf7d389",
+      "status": "completed",
+      "completed_steps": "480",
+      "warning_count": 0,
+      "failure_count": 0,
+      "checkpoint_density": [
+        {
+          "completed_steps": "0",
+          "sample_count": 64,
+          "mean_error": 0.26401517,
+          "maximum_error": 0.48484862
+        },
+        {
+          "completed_steps": "1",
+          "sample_count": 64,
+          "mean_error": 0.24676108,
+          "maximum_error": 0.4580449
+        },
+        {
+          "completed_steps": "120",
+          "sample_count": 64,
+          "mean_error": 0.107244276,
+          "maximum_error": 0.1749335
+        },
+        {
+          "completed_steps": "240",
+          "sample_count": 64,
+          "mean_error": 0.09295937,
+          "maximum_error": 0.23792523
+        },
+        {
+          "completed_steps": "480",
+          "sample_count": 64,
+          "mean_error": 0.09173302,
+          "maximum_error": 0.20032573
+        }
+      ]
+    },
+    {
+      "scene": "scenes/falling-block-06.toml",
+      "particles": 216,
+      "request": {
+        "steps": "480",
+        "checkpoints": [
+          "0",
+          "1",
+          "120",
+          "240",
+          "480"
+        ]
+      },
+      "input_id": "sha256:6d3afa547f675d545d1754858d0ca23abc34fc148f8ef55490ce183cf40005fc",
+      "configuration_id": "sha256:4a73d76fd2ac85476796c3f615cd3da7d340a15fee2a844b288a7d471e1e770e",
+      "recorded_build_revision": "54c5176fe0475b39e53759f11aab355c4c815583",
+      "result_sha256": "1fcfa92d7fcd3b844f2e79b2838d0fc6d5bc29cb2fb1dcf856b0ba57288dd1c0",
+      "status": "completed",
+      "completed_steps": "480",
+      "warning_count": 0,
+      "failure_count": 0,
+      "checkpoint_density": [
+        {
+          "completed_steps": "0",
+          "sample_count": 216,
+          "mean_error": 0.18092003,
+          "maximum_error": 0.48484844
+        },
+        {
+          "completed_steps": "1",
+          "sample_count": 216,
+          "mean_error": 0.17254086,
+          "maximum_error": 0.45821983
+        },
+        {
+          "completed_steps": "120",
+          "sample_count": 216,
+          "mean_error": 0.079780824,
+          "maximum_error": 0.21567506
+        },
+        {
+          "completed_steps": "240",
+          "sample_count": 216,
+          "mean_error": 0.1030519,
+          "maximum_error": 0.29264116
+        },
+        {
+          "completed_steps": "480",
+          "sample_count": 216,
+          "mean_error": 0.06679401,
+          "maximum_error": 0.2053836
+        }
+      ]
+    },
+    {
+      "scene": "scenes/falling-block-08.toml",
+      "particles": 512,
+      "request": {
+        "steps": "480",
+        "checkpoints": [
+          "0",
+          "1",
+          "120",
+          "240",
+          "480"
+        ]
+      },
+      "input_id": "sha256:3774e5d6198f79ba14ea0eb6c7b2e0ec85b1a764837866f192802f7333db3dd7",
+      "configuration_id": "sha256:4a73d76fd2ac85476796c3f615cd3da7d340a15fee2a844b288a7d471e1e770e",
+      "recorded_build_revision": "54c5176fe0475b39e53759f11aab355c4c815583",
+      "result_sha256": "ff332a6358c3d85c857382cea92bbbd616767a2d351eddaf358bed4bc0de1ebc",
+      "status": "completed",
+      "completed_steps": "480",
+      "warning_count": 0,
+      "failure_count": 0,
+      "checkpoint_density": [
+        {
+          "completed_steps": "0",
+          "sample_count": 512,
+          "mean_error": 0.13754748,
+          "maximum_error": 0.48484862
+        },
+        {
+          "completed_steps": "1",
+          "sample_count": 512,
+          "mean_error": 0.13235663,
+          "maximum_error": 0.45822036
+        },
+        {
+          "completed_steps": "120",
+          "sample_count": 512,
+          "mean_error": 0.070903994,
+          "maximum_error": 0.16979164
+        },
+        {
+          "completed_steps": "240",
+          "sample_count": 512,
+          "mean_error": 0.112666875,
+          "maximum_error": 0.4237995
+        },
+        {
+          "completed_steps": "480",
+          "sample_count": 512,
+          "mean_error": 0.06016306,
+          "maximum_error": 0.23025823
+        }
+      ]
+    },
+    {
+      "scene": "scenes/falling-block-10.toml",
+      "particles": 1000,
+      "request": {
+        "steps": "480",
+        "checkpoints": [
+          "0",
+          "1",
+          "120",
+          "240",
+          "480"
+        ]
+      },
+      "input_id": "sha256:ae7fdd16081f7dd906031f5bdd7ee883ad2e25db1b5c24f46581dcc9ad5f47ed",
+      "configuration_id": "sha256:4a73d76fd2ac85476796c3f615cd3da7d340a15fee2a844b288a7d471e1e770e",
+      "recorded_build_revision": null,
+      "result_sha256": "bf1e32b94acb3b55884791d63aa4429b88f92bf0105db7fca9c8b7bfe54af999",
+      "status": "completed",
+      "completed_steps": "480",
+      "warning_count": 0,
+      "failure_count": 0,
+      "checkpoint_density": [
+        {
+          "completed_steps": "0",
+          "sample_count": 1000,
+          "mean_error": 0.11093373,
+          "maximum_error": 0.48484862
+        },
+        {
+          "completed_steps": "1",
+          "sample_count": 1000,
+          "mean_error": 0.10742572,
+          "maximum_error": 0.45822078
+        },
+        {
+          "completed_steps": "120",
+          "sample_count": 1000,
+          "mean_error": 0.064238474,
+          "maximum_error": 0.15239465
+        },
+        {
+          "completed_steps": "240",
+          "sample_count": 1000,
+          "mean_error": 0.087933585,
+          "maximum_error": 0.36746842
+        },
+        {
+          "completed_steps": "480",
+          "sample_count": 1000,
+          "mean_error": 0.061563417,
+          "maximum_error": 0.22517508
+        }
+      ]
+    },
+    {
+      "scene": "scenes/falling-block-12.toml",
+      "particles": 1728,
+      "request": {
+        "steps": "480",
+        "checkpoints": [
+          "0",
+          "1",
+          "120",
+          "240",
+          "480"
+        ]
+      },
+      "input_id": "sha256:676997348046d8b2702d4bc4a0b83526bccfe5f0f70006fda0cc2c050471bd04",
+      "configuration_id": "sha256:4a73d76fd2ac85476796c3f615cd3da7d340a15fee2a844b288a7d471e1e770e",
+      "recorded_build_revision": null,
+      "result_sha256": "11a06ed8a8693f8fbdc9500405fdce107b864d0fc43c0b251b0b9dfcda272bc3",
+      "status": "completed",
+      "completed_steps": "480",
+      "warning_count": 0,
+      "failure_count": 0,
+      "checkpoint_density": [
+        {
+          "completed_steps": "0",
+          "sample_count": 1728,
+          "mean_error": 0.09294329,
+          "maximum_error": 0.48484898
+        },
+        {
+          "completed_steps": "1",
+          "sample_count": 1728,
+          "mean_error": 0.09042212,
+          "maximum_error": 0.45822114
+        },
+        {
+          "completed_steps": "120",
+          "sample_count": 1728,
+          "mean_error": 0.057076726,
+          "maximum_error": 0.21100575
+        },
+        {
+          "completed_steps": "240",
+          "sample_count": 1728,
+          "mean_error": 0.08728171,
+          "maximum_error": 0.3126316
+        },
+        {
+          "completed_steps": "480",
+          "sample_count": 1728,
+          "mean_error": 0.05333802,
+          "maximum_error": 0.27090317
+        }
+      ]
+    },
+    {
+      "scene": "scenes/falling-block-16.toml",
+      "particles": 4096,
+      "request": {
+        "steps": "480",
+        "checkpoints": [
+          "0",
+          "1",
+          "120",
+          "240",
+          "480"
+        ]
+      },
+      "input_id": "sha256:d078b230fcc8993da4f3c2244b00cdb64246f6f9bf9b022627f5a06954ef592f",
+      "configuration_id": "sha256:4a73d76fd2ac85476796c3f615cd3da7d340a15fee2a844b288a7d471e1e770e",
+      "recorded_build_revision": null,
+      "result_sha256": "7164b17dece2f50fa49d4b6f7d02ada9373f77c6fb86c912c821a6fc4ceb013e",
+      "status": "completed",
+      "completed_steps": "480",
+      "warning_count": 0,
+      "failure_count": 0,
+      "checkpoint_density": [
+        {
+          "completed_steps": "0",
+          "sample_count": 4096,
+          "mean_error": 0.07017577,
+          "maximum_error": 0.48484862
+        },
+        {
+          "completed_steps": "1",
+          "sample_count": 4096,
+          "mean_error": 0.06869946,
+          "maximum_error": 0.45822018
+        },
+        {
+          "completed_steps": "120",
+          "sample_count": 4096,
+          "mean_error": 0.045294452,
+          "maximum_error": 0.20191216
+        },
+        {
+          "completed_steps": "240",
+          "sample_count": 4096,
+          "mean_error": 0.06669633,
+          "maximum_error": 0.35390794
+        },
+        {
+          "completed_steps": "480",
+          "sample_count": 4096,
+          "mean_error": 0.047842044,
+          "maximum_error": 0.30809242
+        }
+      ]
+    },
+    {
+      "scene": "scenes/falling-block-20.toml",
+      "particles": 8000,
+      "request": {
+        "steps": "480",
+        "checkpoints": [
+          "0",
+          "1",
+          "120",
+          "240",
+          "480"
+        ]
+      },
+      "input_id": "sha256:e3c6cb4ea001c586143de372db7b2a2de5ef62908234f47af5b7f7a218f7ee49",
+      "configuration_id": "sha256:4a73d76fd2ac85476796c3f615cd3da7d340a15fee2a844b288a7d471e1e770e",
+      "recorded_build_revision": null,
+      "result_sha256": "1e6c2b7b6fae23e174ccd1e2c9c6241930bbabda891fe5ad2a9997d161f25b40",
+      "status": "completed",
+      "completed_steps": "480",
+      "warning_count": 0,
+      "failure_count": 0,
+      "checkpoint_density": [
+        {
+          "completed_steps": "0",
+          "sample_count": 8000,
+          "mean_error": 0.05636698,
+          "maximum_error": 0.48484844
+        },
+        {
+          "completed_steps": "1",
+          "sample_count": 8000,
+          "mean_error": 0.055399735,
+          "maximum_error": 0.45822018
+        },
+        {
+          "completed_steps": "120",
+          "sample_count": 8000,
+          "mean_error": 0.04999642,
+          "maximum_error": 0.18116295
+        },
+        {
+          "completed_steps": "240",
+          "sample_count": 8000,
+          "mean_error": 0.10551236,
+          "maximum_error": 0.41348058
+        },
+        {
+          "completed_steps": "480",
+          "sample_count": 8000,
+          "mean_error": 0.048495226,
+          "maximum_error": 0.29841912
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "family": "falling-block-refined-v1",
+  "configuration": "config/defaults-v4.toml",
+  "configuration_sha256": "3635b375c9b4b3c673d3ca5ff5d100176c60ef17698ed04e96f68ef3fe689d16",
+  "implementation_revision": "54c5176fe0475b39e53759f11aab355c4c815583",
+  "cases": [
+    {
+      "scene": "reference/small-lattice.toml",
+      "sha256": "acab9dc1bd432c5d973b5fad9dd3dd6be63aa9209197522d35ecd8c40ba98621",
+      "particles": 27,
+      "refine_timestep": 1,
+      "steps": 12,
+      "checkpoints": [
+        0,
+        1,
+        4,
+        12
+      ],
+      "golden": "reference/small-lattice-v1.json",
+      "golden_sha256": "7f695eb73024eae0b745a483809760b815dba9757b72977581a9ee044d19ee7a"
+    },
+    {
+      "scene": "scenes/falling-block-04.toml",
+      "sha256": "4cd7ddc3c7ee50c576cbde7871e4e8ae93dda86badc75e5d2964c88a7cd80c1e",
+      "particles": 64,
+      "refine_timestep": 4,
+      "steps": 480,
+      "checkpoints": [
+        0,
+        1,
+        120,
+        240,
+        480
+      ],
+      "golden": "reference/falling-block-v1.json",
+      "golden_sha256": "acc3b5e91097f0870482de2deba1f2556599415b16d72c5e49ed0d15dbf7d389"
+    },
+    {
+      "scene": "scenes/falling-block-06.toml",
+      "sha256": "9aa4995a35fece9b82e5c6a01cedad5406c973cc7054bfbc9f2a4f713706db93",
+      "particles": 216,
+      "refine_timestep": 4,
+      "steps": 480,
+      "checkpoints": [
+        0,
+        1,
+        120,
+        240,
+        480
+      ],
+      "golden": null,
+      "golden_sha256": null
+    },
+    {
+      "scene": "scenes/falling-block-08.toml",
+      "sha256": "4bb005471c246a998bf20296833820e70a16744f4a7df211cdb72b26c068ac35",
+      "particles": 512,
+      "refine_timestep": 4,
+      "steps": 480,
+      "checkpoints": [
+        0,
+        1,
+        120,
+        240,
+        480
+      ],
+      "golden": null,
+      "golden_sha256": null
+    },
+    {
+      "scene": "scenes/falling-block-10.toml",
+      "sha256": "f986950681cd5b9e009c6f9e350cc3a21d4eb864f47d41231b7858c1ea73ee68",
+      "particles": 1000,
+      "refine_timestep": 4,
+      "steps": 480,
+      "checkpoints": [
+        0,
+        1,
+        120,
+        240,
+        480
+      ],
+      "golden": null,
+      "golden_sha256": null
+    },
+    {
+      "scene": "scenes/falling-block-12.toml",
+      "sha256": "b9389d8cbeba895650aef1e140f6622f7301c8c60a376b2fdcd4f0be0de281b7",
+      "particles": 1728,
+      "refine_timestep": 4,
+      "steps": 480,
+      "checkpoints": [
+        0,
+        1,
+        120,
+        240,
+        480
+      ],
+      "golden": null,
+      "golden_sha256": null
+    },
+    {
+      "scene": "scenes/falling-block-16.toml",
+      "sha256": "91a47f55ea90ac27da48aee3ab63327aebe838d3c021a9ebe14ed131dc874094",
+      "particles": 4096,
+      "refine_timestep": 4,
+      "steps": 480,
+      "checkpoints": [
+        0,
+        1,
+        120,
+        240,
+        480
+      ],
+      "golden": null,
+      "golden_sha256": null
+    },
+    {
+      "scene": "scenes/falling-block-20.toml",
+      "sha256": "2d8420db4a85f03908343e383324363b350e476173f4c4379571603d50bd4dec",
+      "particles": 8000,
+      "refine_timestep": 4,
+      "steps": 480,
+      "checkpoints": [
+        0,
+        1,
+        120,
+        240,
+        480
+      ],
+      "golden": null,
+      "golden_sha256": null
+    }
+  ]
+}

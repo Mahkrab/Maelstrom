@@ -1,0 +1,22 @@
+schema_version = 1
+name = "small-lattice-reference-v1"
+description = "Unforced three-by-three-by-three lattice for independent multi-step verification"
+randomness = "none"
+allow_coincident_particles = false
+
+[configuration]
+source = "file"
+path = "../config/defaults-v4.toml"
+
+[configuration.overrides.numerical]
+external_acceleration_m_s2 = [0.0, 0.0, 0.0]
+
+[particles]
+construction = "lattice"
+first_identity = 0
+origin_m = [0.2, 0.4, 0.2]
+counts = [3, 3, 3]
+spacing_m = 0.05
+endpoint_rule = "counted_half_open"
+order = "x_then_y_then_z"
+initial_velocity_m_s = [0.0, 0.0, 0.0]
