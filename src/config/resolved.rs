@@ -41,8 +41,16 @@ pub const MAX_SUPPORT_RADIUS_RATIO: f32 = 8.0;
 /// Largest supported fixed solver iteration count.
 pub const MAX_SOLVER_ITERATIONS: u32 = 64;
 
-const DEFAULT_NAME: &str = "maelstrom-defaults-v1";
+const DEFAULT_NAME: &str = "maelstrom-defaults-v4";
 const DEFAULT_DESCRIPTION: &str = "Built-in binary32 Position-Based Fluids defaults";
+
+const fn unit_correction_scale() -> f32 {
+    1.0
+}
+
+fn is_unit_correction_scale(value: &f32) -> bool {
+    *value == 1.0
+}
 
 /// Origin of one effective numerical value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -93,6 +101,13 @@ pub struct NumericalModel {
     pub solver_iterations: u32,
     /// Dimensionless scale used to derive relaxation.
     pub relaxation_scale: f32,
+    /// Dimensionless multiplier on each complete Jacobi correction; legacy
+    /// records omit the unit scale without changing their comparison identity.
+    #[serde(
+        default = "unit_correction_scale",
+        skip_serializing_if = "is_unit_correction_scale"
+    )]
+    pub correction_scale: f32,
     /// Whether to apply the artificial-pressure correction.
     pub artificial_pressure_enabled: bool,
     /// Dimensionless scale used to derive artificial-pressure strength.
@@ -210,6 +225,7 @@ impl ResolvedConfiguration {
             self.derived.artificial_pressure_reference_separation_m,
             self.numerical.artificial_pressure_exponent,
         )
+        .and_then(|parameters| parameters.with_correction_scale(self.numerical.correction_scale))
         .map_err(ConfigError::Numerical)
     }
 }
@@ -373,6 +389,25 @@ fn apply_layer(
     sources: &mut ValueSources,
 ) -> Result<(), ConfigError> {
     apply_overrides(&overlay.numerical, source, numerical, sources);
+    if let Some(factor) = overlay.numerical.refine_timestep {
+        if !(1..=16).contains(&factor) {
+            return Err(ConfigError::InvalidField {
+                field: "refine_timestep",
+                reason: "must be in 1..=16".to_owned(),
+            });
+        }
+        if factor != 1 {
+            let factor = factor as f32;
+            let squared = factor * factor;
+            // Keep the empirical positional response comparable as step length
+            // changes. Every resulting value is validated and recorded normally.
+            numerical.fixed_timestep_s /= factor;
+            numerical.correction_scale /= squared;
+            for field in ["fixed_timestep_s", "correction_scale"] {
+                sources.insert(field, source);
+            }
+        }
+    }
     validate_model(numerical)?;
     let derived = derive_values(numerical)?;
     validate_assertions(layer, &overlay.derived, derived)
@@ -409,6 +444,7 @@ fn apply_overrides(
     apply!(physical_rest_density_kg_m3);
     apply!(solver_iterations);
     apply!(relaxation_scale);
+    apply!(correction_scale);
     apply!(artificial_pressure_enabled);
     apply!(artificial_pressure_strength_scale);
     apply!(artificial_pressure_reference_separation_ratio);
@@ -435,8 +471,10 @@ fn default_model() -> NumericalModel {
         particle_spacing_m: 0.05,
         support_radius_ratio: 2.0,
         physical_rest_density_kg_m3: 1000.0,
-        solver_iterations: 4,
-        relaxation_scale: 1.0e-6,
+        solver_iterations: 8,
+        // Bound overlapping Jacobi corrections as well as sparse interactions.
+        relaxation_scale: 20.0,
+        correction_scale: 1.0,
         artificial_pressure_enabled: true,
         artificial_pressure_strength_scale: 0.1,
         artificial_pressure_reference_separation_ratio: 0.2,

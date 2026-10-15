@@ -197,6 +197,9 @@ pub struct RecordedInput {
 }
 
 impl RecordedInput {
+    pub(super) fn solver_iterations(&self) -> u32 {
+        self.configuration.numerical.solver_iterations
+    }
     pub(super) fn display_names(&self) -> (&str, &str) {
         (&self.name, &self.configuration.name)
     }
@@ -257,9 +260,18 @@ impl RecordedInput {
         validate_particles(&self.particles)?;
         // The registry supplies only static field names; every value and its
         // original source come from the record, not today's default settings.
-        let registry = resolve_effective_configuration(None, None, None)
+        let mut registry = resolve_effective_configuration(None, None, None)
             .map_err(StepError::from)?
             .sources;
+        registry.remove("correction_scale");
+        if self.configuration.numerical.correction_scale != 1.0
+            || self
+                .configuration
+                .provenance
+                .contains_key("correction_scale")
+        {
+            registry.insert("correction_scale", FieldSource::BuiltInDefault);
+        }
         if registry.len() != self.configuration.provenance.len() {
             return Err(RecordError::Invalid(
                 "incomplete configuration provenance".into(),

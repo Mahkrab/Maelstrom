@@ -50,6 +50,33 @@ impl std::error::Error for OutputError {
 }
 
 impl RunResult {
+    /// Publishes the last accepted state as a standalone JSON snapshot using the
+    /// same non-replacing publication as results. A failure is retained in this
+    /// result so subsequent result output reports the whole request accurately.
+    ///
+    /// # Errors
+    /// Returns [`OutputError`] if no accepted state exists, encoding fails or the
+    /// destination cannot be published. Existing files are never replaced.
+    pub fn publish_snapshot(&mut self, destination: &Path) -> Result<(), OutputError> {
+        let publication = (|| {
+            let snapshot = self.final_snapshot().ok_or_else(|| {
+                OutputError::Io(io::Error::other("no accepted snapshot is available"))
+            })?;
+            let encoded = snapshot
+                .to_json()
+                .map_err(|error| OutputError::Io(io::Error::other(error)))?;
+            publish_bytes(destination, encoded.as_bytes()).map_err(OutputError::Io)
+        })();
+        if let Err(error) = &publication {
+            self.fail(
+                CompletionStatus::OutputFailure,
+                error.to_string(),
+                self.completed_steps(),
+            );
+        }
+        publication
+    }
+
     /// Summarises completion, comparison identities, all-step CFL warnings and
     /// each declared checkpoint. It uses the same observations as [`Self::to_json`].
     #[must_use]

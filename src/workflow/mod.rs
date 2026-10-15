@@ -22,7 +22,15 @@ use crate::{
 };
 
 /// Numerical backend and arithmetic contract, independent of display labels.
-pub const BACKEND_ID: &str = "serial-brute-force-pbf-binary32-four-jacobi-v1";
+pub const BACKEND_ID: &str = "serial-brute-force-pbf-binary32-four-jacobi-v2";
+
+fn backend_id(iterations: u32) -> String {
+    if iterations == 4 {
+        BACKEND_ID.to_owned()
+    } else {
+        format!("serial-brute-force-pbf-binary32-{iterations}-jacobi-v2")
+    }
+}
 
 /// Work requested from the initial state. Checkpoint zero observes that initial
 /// state; all other checkpoints follow acceptance of the named step. Checkpoints
@@ -185,14 +193,15 @@ impl RunMetadata {
         let input_id = digest(input.comparison_key());
         let configuration_id = digest(input.configuration_key());
         let application_version = env!("CARGO_PKG_VERSION").to_owned();
+        let backend = backend_id(input.solver_iterations());
         let run_id = digest(&format!(
-            "maelstrom-run-v1|{BACKEND_ID}|{application_version}|{input_id}|{steps}"
+            "maelstrom-run-v1|{backend}|{application_version}|{input_id}|{steps}"
         ));
         Self {
             run_id,
             input_id,
             configuration_id,
-            backend: BACKEND_ID.to_owned(),
+            backend,
             application_version,
             build_revision: option_env!("MAELSTROM_BUILD_REVISION").map(str::to_owned),
             target_os: std::env::consts::OS.to_owned(),
@@ -350,7 +359,7 @@ pub fn run_with_cancellation(
     let mut result = RunResult {
         schema_version: SCHEMA_VERSION,
         application_version: env!("CARGO_PKG_VERSION").to_owned(),
-        backend: BACKEND_ID.to_owned(),
+        backend: backend_id(scene.configuration.numerical.solver_iterations),
         request,
         completed_steps: 0,
         metadata: None,
@@ -432,10 +441,17 @@ pub fn replay_inputs(json: &str) -> Result<(ResolvedScene, RunRequest), RecordEr
     }
     let replay: Replay = serde_json::from_str(json)?;
     record::version(replay.schema_version)?;
-    if replay.backend != BACKEND_ID {
-        return Err(RecordError::Invalid(
-            "record requires a different backend contract".into(),
-        ));
+    let expected_backend = backend_id(
+        replay
+            .input
+            .as_ref()
+            .map_or(4, RecordedInput::solver_iterations),
+    );
+    if replay.backend != expected_backend {
+        return Err(RecordError::Invalid(format!(
+            "record backend {:?} is incompatible with {expected_backend:?}; use the original binary or rerun the scene with the current backend",
+            replay.backend,
+        )));
     }
     replay.request.validate()?;
     let input = replay

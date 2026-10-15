@@ -600,6 +600,37 @@ impl Drop for TempDirectory {
 }
 
 #[test]
+fn snapshot_publication_preserves_state_and_retains_publication_failures() {
+    let directory = TempDirectory::new();
+    let input = scene("", vec![particle(0, 0.0)], vec![]);
+    let mut result = run(&input, request(1, &[]));
+    let accepted = snapshot_bits(result.final_snapshot().unwrap());
+    let output = directory.0.join("snapshot.json");
+    let expected = result.final_snapshot().unwrap().to_json().unwrap();
+    result.publish_snapshot(&output).unwrap();
+    assert_eq!(fs::read_to_string(&output).unwrap(), expected);
+    assert!(result.publish_snapshot(&output).is_err());
+    assert_eq!(fs::read_to_string(&output).unwrap(), expected);
+    assert_eq!(snapshot_bits(result.final_snapshot().unwrap()), accepted);
+    assert_eq!(result.status(), CompletionStatus::OutputFailure);
+    assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 1);
+
+    let mut invalid = run(&input, request(0, &[1]));
+    let missing_snapshot = directory.0.join("invalid.json");
+    assert!(invalid.publish_snapshot(&missing_snapshot).is_err());
+    assert!(!missing_snapshot.exists());
+    assert_eq!(invalid.failures().len(), 2);
+    assert_eq!(
+        invalid.failures()[0].status,
+        CompletionStatus::InputValidationFailure
+    );
+    assert_eq!(
+        invalid.failures()[1].status,
+        CompletionStatus::OutputFailure
+    );
+}
+
+#[test]
 fn publication_is_complete_no_clobber_and_failure_preserves_state_and_history() {
     let directory = TempDirectory::new();
     let input = scene("", vec![particle(0, 0.0)], vec![]);

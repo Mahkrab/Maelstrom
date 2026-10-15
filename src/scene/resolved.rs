@@ -69,6 +69,13 @@ pub struct ResolvedScene {
 pub enum SceneError {
     /// Resolving the selected numerical configuration failed.
     Configuration(ConfigError),
+    /// Loading a scene-selected configuration failed at the named path.
+    ConfigurationFile {
+        /// Resolved path of the selected configuration file.
+        path: PathBuf,
+        /// Underlying read or parsing failure.
+        error: ConfigError,
+    },
     /// A numerical operation required while resolving the scene failed.
     Numerical(NumericalError),
     /// A scene or configuration document could not be read.
@@ -162,6 +169,9 @@ impl fmt::Display for SceneError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Configuration(error) => write!(formatter, "invalid scene configuration: {error}"),
+            Self::ConfigurationFile { path, error } => {
+                write!(formatter, "configuration file {path:?}: {error}")
+            }
             Self::Numerical(error) => write!(formatter, "invalid scene number: {error}"),
             Self::Io {
                 document,
@@ -241,6 +251,7 @@ impl std::error::Error for SceneError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Configuration(error) => Some(error),
+            Self::ConfigurationFile { error, .. } => Some(error),
             Self::Numerical(error) => Some(error),
             _ => None,
         }
@@ -306,6 +317,33 @@ pub fn resolve_scene(
         document.configuration.overrides.as_ref(),
         command_line,
     )?;
+    build_scene(document, configuration)
+}
+
+/// Resolves a scene against an explicitly selected base configuration, replacing
+/// its file/default selection. Scene overlays still precede command-line values.
+/// This lets an application select a configuration without editing scene data or
+/// reading a reference that has deliberately been superseded.
+///
+/// # Errors
+/// Returns [`SceneError`] for invalid configuration, geometry or particle input.
+pub fn resolve_scene_with_configuration(
+    document: &SceneDocument,
+    configuration: &ConfigurationDocument,
+    command_line: Option<&ConfigurationOverlay>,
+) -> Result<ResolvedScene, SceneError> {
+    let configuration = resolve_effective_configuration(
+        Some(configuration),
+        document.configuration.overrides.as_ref(),
+        command_line,
+    )?;
+    build_scene(document, configuration)
+}
+
+fn build_scene(
+    document: &SceneDocument,
+    configuration: ResolvedConfiguration,
+) -> Result<ResolvedScene, SceneError> {
     let planes = resolve_planes(&document.planes)?;
     validate_plane_compatibility(&planes)?;
     let particles = resolve_particles(
@@ -360,7 +398,12 @@ pub fn load_resolved_scene(
                     reason: "scene document has no containing directory".to_owned(),
                 })?;
         let configuration_path = parent.join(reference);
-        Some(load_configuration(&configuration_path)?)
+        Some(load_configuration(&configuration_path).map_err(|error| {
+            SceneError::ConfigurationFile {
+                path: configuration_path,
+                error,
+            }
+        })?)
     } else {
         None
     };

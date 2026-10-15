@@ -84,6 +84,10 @@ impl Plane {
     /// ### Projects a point into the permitted halfspace
     ///
     /// Points already inside or exactly on the plane are returned unchanged.
+    /// For exact coordinate-axis normals, contact is represented directly by the
+    /// signed offset. This avoids subtraction cancellation leaving a projected
+    /// point outside the wall. Other normals use the ordered vector formula.
+    /// All correction and projection arithmetic remains checked for finiteness.
     ///
     /// ### Errors
     ///
@@ -99,7 +103,45 @@ impl Plane {
             "plane projection correction",
             self.normal * constraint,
         )?;
-        validation::finite_vector_result("plane-projected position", point - correction)
+        let projected =
+            validation::finite_vector_result("plane-projected position", point - correction)?;
+        // Axis-aligned contact has an exactly representable coordinate. Preserve
+        // the checked arithmetic and transverse coordinates without relying on
+        // cancellation to recover the wall offset from a distant candidate.
+        let contact = match self.normal {
+            Vec3 {
+                x: 1.0,
+                y: 0.0,
+                z: 0.0,
+            } => Vec3::new(self.offset, projected.y, projected.z),
+            Vec3 {
+                x: -1.0,
+                y: 0.0,
+                z: 0.0,
+            } => Vec3::new(-self.offset, projected.y, projected.z),
+            Vec3 {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            } => Vec3::new(projected.x, self.offset, projected.z),
+            Vec3 {
+                x: 0.0,
+                y: -1.0,
+                z: 0.0,
+            } => Vec3::new(projected.x, -self.offset, projected.z),
+            Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: 1.0,
+            } => Vec3::new(projected.x, projected.y, self.offset),
+            Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -1.0,
+            } => Vec3::new(projected.x, projected.y, -self.offset),
+            _ => projected,
+        };
+        Ok(contact)
     }
 
     /// Returns whether `point` is inside or exactly on the plane.

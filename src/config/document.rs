@@ -33,6 +33,12 @@ pub struct NumericalOverrides {
     pub external_acceleration_m_s2: Option<[f32; 3]>,
     /// Fixed timestep in seconds.
     pub fixed_timestep_s: Option<f32>,
+    /// Refines this layer's timestep and complete correction response by a factor
+    /// in `1..=16`, after its primary overrides and before derived assertions.
+    /// The resolved configuration stores the resulting primary values.
+    pub refine_timestep: Option<u32>,
+    /// Dimensionless multiplier on the complete Jacobi position correction.
+    pub correction_scale: Option<f32>,
     /// Dimensionless CFL factor.
     pub cfl_factor: Option<f32>,
     /// Centre-to-centre particle spacing in metres.

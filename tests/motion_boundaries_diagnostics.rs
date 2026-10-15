@@ -94,6 +94,83 @@ fn plane_projection_handles_permitted_penetrated_and_contact_points() {
 }
 
 #[test]
+fn axis_aligned_projection_recovers_exact_contact_across_signs_and_scales() {
+    for axis in 0..3 {
+        for direction in [-1.0_f32, 1.0] {
+            let mut normal = [0.0; 3];
+            normal[axis] = direction;
+            for offset in [
+                -1024.25_f32,
+                -1.4,
+                -0.1,
+                -1.0e-38,
+                -0.0,
+                0.0,
+                1.0e-38,
+                0.1,
+                1.4,
+                1024.25,
+            ] {
+                let wall =
+                    Plane::new(Vec3::new(normal[0], normal[1], normal[2]), offset, 0.0).unwrap();
+                for separation in [0.125_f32, 4.0276384, 1.0e20, f32::MAX / 4.0] {
+                    let mut candidate = [0.25, 0.5, 0.75];
+                    candidate[axis] = direction * (offset - separation);
+                    let point = Vec3::new(candidate[0], candidate[1], candidate[2]);
+                    let projected = wall.project(point).unwrap();
+                    let actual = [projected.x, projected.y, projected.z];
+                    // An axis-aligned orthogonal projection fixes one coordinate
+                    // to the signed offset, independently of candidate magnitude.
+                    assert_eq!(actual[axis].to_bits(), (direction * offset).to_bits());
+                    assert_eq!(wall.constraint(projected).unwrap(), 0.0);
+                    assert!(wall.contains(projected).unwrap());
+                    for transverse in 0..3 {
+                        if transverse != axis {
+                            assert_eq!(
+                                actual[transverse].to_bits(),
+                                candidate[transverse].to_bits()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn axis_aligned_projection_repairs_the_observed_one_ulp_penetration() {
+    let wall = Plane::new(Vec3::new(-1.0, 0.0, 0.0), -1.4, 0.0).unwrap();
+    let point = Vec3::new(4.0276384, 0.46484208, 1.4125106);
+    let projected = wall.project(point).unwrap();
+    assert_eq!(projected.x.to_bits(), 1.4_f32.to_bits());
+    assert_eq!(projected.y.to_bits(), point.y.to_bits());
+    assert_eq!(projected.z.to_bits(), point.z.to_bits());
+    let outside = Vec3::new(f32::from_bits(1.4_f32.to_bits() + 1), point.y, point.z);
+    assert!(!wall.contains(outside).unwrap());
+    assert_eq!(wall.project(projected).unwrap(), projected);
+}
+
+#[test]
+fn nearly_axis_aligned_normals_keep_the_original_vector_projection() {
+    let normal = Vec3::new(-1.0, 0.0001, 0.0);
+    let wall = Plane::new(normal, -1.4, 1.0e-6).unwrap();
+    let point = Vec3::new(4.0276384, 0.46484208, 1.4125106);
+    let constraint = normal.x * point.x + normal.y * point.y + normal.z * point.z - wall.offset();
+    let expected = [
+        point.x - normal.x * constraint,
+        point.y - normal.y * constraint,
+        point.z - normal.z * constraint,
+    ];
+    let projected = wall.project(point).unwrap();
+    assert_eq!(
+        [projected.x, projected.y, projected.z].map(f32::to_bits),
+        expected.map(f32::to_bits)
+    );
+    assert_ne!(projected.x.to_bits(), 1.4_f32.to_bits());
+}
+
+#[test]
 fn plane_validation_uses_explicit_tolerance_without_normalising() {
     let diagonal_component = std::f32::consts::FRAC_1_SQRT_2;
     let diagonal = Vec3::new(diagonal_component, diagonal_component, 0.0);

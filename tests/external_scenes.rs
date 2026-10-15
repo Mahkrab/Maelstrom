@@ -99,7 +99,7 @@ fn every_external_scene_uses_the_ordinary_versioned_loader() {
         assert_eq!(document.configuration.source, ConfigurationSource::File);
         assert_eq!(
             document.configuration.path.as_deref(),
-            Some("../config/defaults-v1.toml")
+            Some("../config/defaults-v4.toml")
         );
         assert!(document.configuration.overrides.is_none());
         match document.particles {

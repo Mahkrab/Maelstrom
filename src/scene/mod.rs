@@ -18,4 +18,5 @@ pub use resolved::{
     MAX_EXPLICIT_PARTICLES, MAX_LATTICE_PARTICLES, MAX_PLANES,
     PARTICLE_SEPARATION_RELATIVE_TOLERANCE, PLANE_UNIT_LENGTH_SQUARED_TOLERANCE, Particle,
     ResolvedScene, SceneError, load_resolved_scene, resolve_scene,
+    resolve_scene_with_configuration,
 };

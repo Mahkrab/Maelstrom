@@ -17,7 +17,7 @@ use maelstrom::{
     },
 };
 
-const DEFAULTS_TOML: &str = include_str!("../config/defaults-v1.toml");
+const DEFAULTS_TOML: &str = include_str!("../config/defaults-v4.toml");
 const EXTERNAL_SCENE_TOML: &str = include_str!("../scenes/falling-block-06.toml");
 static CURRENT_DIRECTORY_LOCK: Mutex<()> = Mutex::new(());
 
@@ -477,11 +477,11 @@ fn configuration_paths_resolve_relative_to_the_scene_file_not_current_directory(
     fs::create_dir_all(&scenes).expect("scene directory");
     fs::create_dir_all(&configuration).expect("configuration directory");
     fs::create_dir_all(&unrelated).expect("unrelated directory");
-    fs::write(configuration.join("defaults-v1.toml"), DEFAULTS_TOML)
+    fs::write(configuration.join("defaults-v4.toml"), DEFAULTS_TOML)
         .expect("configuration fixture");
     let scene_input = EXTERNAL_SCENE_TOML.replacen(
-        "path = \"../config/defaults-v1.toml\"",
-        "path = \"../configuration/defaults-v1.toml\"",
+        "path = \"../config/defaults-v4.toml\"",
+        "path = \"../configuration/defaults-v4.toml\"",
         1,
     );
     let scene_path = scenes.join("scene.toml");

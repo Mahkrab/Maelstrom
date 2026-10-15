@@ -216,6 +216,7 @@ pub struct PbfParameters {
     normalised_rest_density: f32,
     relaxation: f32,
     artificial_pressure: ArtificialPressure,
+    correction_scale: f32,
 }
 
 impl PbfParameters {
@@ -249,6 +250,7 @@ impl PbfParameters {
             normalised_rest_density,
             relaxation,
             artificial_pressure,
+            correction_scale: 1.0,
         })
     }
 
@@ -256,6 +258,16 @@ impl PbfParameters {
     #[must_use]
     pub const fn support_radius(self) -> f32 {
         self.support_radius
+    }
+
+    /// Scales the complete correction after the immutable Jacobi stage.
+    ///
+    /// Returns an error for a non-positive or non-finite scale. The unit scale
+    /// preserves the original arithmetic without an additional multiplication.
+    pub fn with_correction_scale(mut self, scale: f32) -> Result<Self, NumericalError> {
+        validation::positive_scalar("correction scale", scale)?;
+        self.correction_scale = scale;
+        Ok(self)
     }
 
     /// Returns the mass-divided rest density in inverse cubic metres
@@ -528,10 +540,18 @@ pub fn compute_jacobi_stage(
             "reciprocal normalised rest density",
             1.0 / parameters.normalised_rest_density,
         )?;
-        corrections.push(validation::finite_vector_result(
+        let correction = validation::finite_vector_result(
             "particle position correction",
             correction_sum * reciprocal_rest_density,
-        )?);
+        )?;
+        corrections.push(if parameters.correction_scale == 1.0 {
+            correction
+        } else {
+            validation::finite_vector_result(
+                "scaled position correction",
+                correction * parameters.correction_scale,
+            )?
+        });
     }
 
     Ok(JacobiStage {

@@ -20,7 +20,10 @@ use oracle::{Variant, maximum_difference};
 use support::{assert_absolute, assert_vec_absolute, poly6_f64};
 
 fn config(overlay: &str) -> ResolvedConfiguration {
-    let overlay = parse_configuration_overlay(overlay).unwrap();
+    let mut overlay = parse_configuration_overlay(overlay).unwrap();
+    // Historical arithmetic fixtures retain their explicit four-pass inputs.
+    overlay.numerical.solver_iterations.get_or_insert(4);
+    overlay.numerical.correction_scale.get_or_insert(1.0);
     resolve_effective_configuration(None, None, Some(&overlay)).unwrap()
 }
 
@@ -287,6 +290,30 @@ fn four_jacobi_iterations_match_independent_asymmetric_system() {
 }
 
 #[test]
+fn configured_iteration_counts_match_independent_asymmetric_systems() {
+    for iterations in [1, 2, 4, 8] {
+        let configuration = config(&format!(
+            "[numerical]\nexternal_acceleration_m_s2=[0.0,0.0,0.0]\nrelaxation_scale=10.0\nsolver_iterations={iterations}"
+        ));
+        let initial = vec![
+            stationary(3, 0.0, 0.0, 0.0),
+            stationary(19, 0.04, 0.015, 0.0),
+            stationary(800, 0.07, -0.01, 0.02),
+        ];
+        let expected = oracle::step(
+            &initial,
+            &configuration,
+            &[],
+            iterations,
+            Variant::default(),
+        );
+        let mut solver = SerialSimulation::new(&configuration, initial, vec![]).unwrap();
+        let _ = solver.step().unwrap();
+        assert_oracle(&solver, &expected);
+    }
+}
+
+#[test]
 fn solver_keeps_newly_close_particles_out_until_next_step() {
     let configuration = config("[numerical]\nexternal_acceleration_m_s2 = [0.0, 0.0, 0.0]");
     let initial = vec![stationary(0, -0.2, 0.0, 0.0), stationary(1, 0.04, 0.0, 0.0)];
@@ -320,7 +347,11 @@ fn solver_keeps_newly_close_particles_out_until_next_step() {
 
 #[test]
 fn original_neighbours_stop_contributing_after_leaving_support() {
-    let configuration = config("[numerical]\nexternal_acceleration_m_s2 = [0.0, 0.0, 0.0]");
+    // Weak regularisation deliberately drives this pair out of support. Pin the
+    // input so the membership regression does not depend on the current defaults.
+    let configuration = config(
+        "[numerical]\nexternal_acceleration_m_s2 = [0.0, 0.0, 0.0]\nrelaxation_scale = 0.000001",
+    );
     let initial = vec![stationary(0, 0.0, 0.0, 0.0), stationary(1, 0.05, 0.0, 0.0)];
     let expected = oracle::step(&initial, &configuration, &[], 4, Variant::default());
     let departed = expected
@@ -454,7 +485,7 @@ fn invalid_particles_configuration_and_permissively_constructed_planes_are_rejec
     let mutations: &[fn(&mut ResolvedConfiguration)] = &[
         |c| c.numerical.fixed_timestep_s = 0.0,
         |c| c.numerical.external_acceleration_m_s2.x = f32::NAN,
-        |c| c.numerical.solver_iterations = 3,
+        |c| c.numerical.solver_iterations = 0,
         |c| c.numerical.support_policy = "inclusive".into(),
         |c| c.numerical.xsph_viscosity_enabled = true,
         |c| c.derived.particle_mass_kg = f32::INFINITY,

@@ -6,7 +6,7 @@ allow_coincident_particles = false
 
 [configuration]
 source = "file"
-path = "../config/defaults-v1.toml"
+path = "../config/defaults-v4.toml"
 
 [particles]
 construction = "lattice"

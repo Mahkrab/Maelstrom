@@ -284,6 +284,29 @@ fn coincident_distinct_particles_have_density_but_zero_correction() {
 }
 
 #[test]
+fn correction_scale_changes_only_the_complete_correction_and_rejects_invalid_values() {
+    let positions = [Vec3::ZERO, Vec3::new(0.5, 0.0, 0.0)];
+    let sets = InteractionSets::new(vec![vec![1], vec![0]]).unwrap();
+    let parameters = PbfParameters::new(1.0, 3.0, 0.01, 0.1, 0.2, 4.0).unwrap();
+    let original = compute_jacobi_stage(&positions, &sets, parameters).unwrap();
+    let scaled = compute_jacobi_stage(
+        &positions,
+        &sets,
+        parameters.with_correction_scale(0.25).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(original.normalised_densities, scaled.normalised_densities);
+    assert_eq!(original.constraints, scaled.constraints);
+    assert_eq!(original.multipliers, scaled.multipliers);
+    for (original, scaled) in original.corrections.iter().zip(scaled.corrections) {
+        assert_eq!(*original * 0.25, scaled);
+    }
+    for invalid in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+        assert!(parameters.with_correction_scale(invalid).is_err());
+    }
+}
+
+#[test]
 fn fluid_boundaries_reject_invalid_lengths_state_and_parameters() {
     let positions = [Vec3::ZERO];
     let empty_sets = InteractionSets::new(vec![]).unwrap();

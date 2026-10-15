@@ -8,13 +8,13 @@ use maelstrom::config::{
     load_configuration, parse_configuration, resolve_effective_configuration,
 };
 
-const DEFAULTS_TOML: &str = include_str!("../config/defaults-v1.toml");
+const DEFAULTS_TOML: &str = include_str!("../config/defaults-v4.toml");
 
 fn defaults_document() -> ConfigurationDocument {
     load_configuration(
         &Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("config")
-            .join("defaults-v1.toml"),
+            .join("defaults-v4.toml"),
     )
     .expect("checked-in default configuration must load")
 }
@@ -37,7 +37,7 @@ fn checked_in_configuration_resolves_to_the_selected_numerical_values() {
         .expect("selected values should resolve");
 
     assert_eq!(document.schema_version, CONFIG_SCHEMA_VERSION);
-    assert_eq!(resolved.name, "maelstrom-defaults-v1");
+    assert_eq!(resolved.name, "maelstrom-defaults-v4");
     assert_eq!(resolved.numerical.scalar_precision, SCALAR_PRECISION);
     assert_eq!(resolved.numerical.coordinate_system, COORDINATE_SYSTEM);
     assert_eq!(resolved.numerical.timestep_policy, TIMESTEP_POLICY);
@@ -51,7 +51,7 @@ fn checked_in_configuration_resolves_to_the_selected_numerical_values() {
         resolved.numerical.fixed_timestep_s.to_bits(),
         (1.0_f32 / 120.0).to_bits()
     );
-    assert_eq!(resolved.numerical.solver_iterations, 4);
+    assert_eq!(resolved.numerical.solver_iterations, 8);
     assert_eq!(resolved.numerical.support_policy, SUPPORT_POLICY);
     assert_eq!(resolved.numerical.boundary_model, BOUNDARY_MODEL);
     assert_eq!(
@@ -142,7 +142,7 @@ fn schema_unknown_fields_and_missing_required_fields_are_rejected() {
         Err(ConfigError::Parse { .. })
     ));
     let empty_name =
-        DEFAULTS_TOML.replacen("name = \"maelstrom-defaults-v1\"", "name = \"   \"", 1);
+        DEFAULTS_TOML.replacen("name = \"maelstrom-defaults-v4\"", "name = \"   \"", 1);
     assert!(matches!(
         parse_configuration(&empty_name),
         Err(ConfigError::InvalidField { field: "name", .. })
@@ -272,6 +272,10 @@ fn every_floating_primary_field_rejects_a_non_finite_value() {
         },
         NumericalOverrides {
             relaxation_scale: Some(f32::NAN),
+            ..Default::default()
+        },
+        NumericalOverrides {
+            correction_scale: Some(f32::NAN),
             ..Default::default()
         },
         NumericalOverrides {
@@ -560,6 +564,130 @@ fn comparison_identity_uses_resolved_values_not_text_or_provenance() {
 }
 
 #[test]
+fn historical_defaults_remain_explicit_and_have_distinct_comparison_identities() {
+    let current = resolve_effective_configuration(None, None, None).unwrap();
+    assert_eq!(current.name, "maelstrom-defaults-v4");
+    assert_eq!(
+        current.numerical.relaxation_scale.to_bits(),
+        20.0_f32.to_bits()
+    );
+    let mut keys = vec![current.comparison_key()];
+    for (source, name, scale) in [
+        (
+            include_str!("../config/defaults-v1.toml"),
+            "maelstrom-defaults-v1",
+            1.0e-6_f32,
+        ),
+        (
+            include_str!("../config/defaults-v2.toml"),
+            "maelstrom-defaults-v2",
+            1.0_f32,
+        ),
+        (
+            include_str!("../config/defaults-v3.toml"),
+            "maelstrom-defaults-v3",
+            10.0_f32,
+        ),
+    ] {
+        let document = parse_configuration(source).expect("historical configuration");
+        let historical = resolve_effective_configuration(Some(&document), None, None).unwrap();
+        assert_eq!(historical.name, name);
+        assert_eq!(
+            historical.numerical.relaxation_scale.to_bits(),
+            scale.to_bits()
+        );
+        let key = historical.comparison_key();
+        assert!(!keys.contains(&key));
+        keys.push(key);
+        assert_eq!(
+            historical.derived.particle_mass_kg,
+            current.derived.particle_mass_kg
+        );
+        assert_eq!(
+            historical.derived.normalised_rest_density_per_m3,
+            current.derived.normalised_rest_density_per_m3
+        );
+    }
+}
+
+#[test]
+fn timestep_refinement_records_scaled_values_and_preserves_other_inputs() {
+    let original = resolve_effective_configuration(None, None, None).unwrap();
+    for factor in [1, 2, 4, 16] {
+        let layer = maelstrom::config::parse_configuration_overlay(&format!(
+            "[numerical]\nrefine_timestep = {factor}"
+        ))
+        .unwrap();
+        let refined = resolve_effective_configuration(None, None, Some(&layer)).unwrap();
+        let ratio = factor as f32;
+        assert_eq!(
+            refined.numerical.fixed_timestep_s,
+            original.numerical.fixed_timestep_s / ratio
+        );
+        assert_eq!(
+            refined.numerical.relaxation_scale,
+            original.numerical.relaxation_scale
+        );
+        assert_eq!(
+            refined.numerical.artificial_pressure_strength_scale,
+            original.numerical.artificial_pressure_strength_scale
+        );
+        assert_eq!(
+            refined.derived.support_radius_m,
+            original.derived.support_radius_m
+        );
+        assert_eq!(
+            refined.derived.particle_mass_kg,
+            original.derived.particle_mass_kg
+        );
+        assert_eq!(refined.numerical.solver_iterations, 8);
+        assert_eq!(
+            refined.numerical.correction_scale,
+            original.numerical.correction_scale / (ratio * ratio)
+        );
+        // Resolved records contain values, so reading them cannot apply the
+        // refinement recipe a second time. Inspection TOML also omits the recipe.
+        let values = serde_json::to_value(&refined.numerical).unwrap();
+        assert!(values.get("refine_timestep").is_none());
+        assert!(!refined.canonical_toml().contains("refine_timestep"));
+        if factor == 1 {
+            assert_eq!(original, refined);
+        } else {
+            assert_ne!(original.comparison_key(), refined.comparison_key());
+        }
+    }
+}
+
+#[test]
+fn timestep_refinement_follows_overrides_and_rejects_invalid_or_overflowing_inputs() {
+    use maelstrom::config::parse_configuration_overlay;
+    let layer = parse_configuration_overlay("[numerical]\nrefine_timestep=2\nfixed_timestep_s=0.125\nrelaxation_scale=2.0\nartificial_pressure_strength_scale=0.25").unwrap();
+    let resolved = resolve_effective_configuration(None, None, Some(&layer)).unwrap();
+    assert_eq!(resolved.numerical.fixed_timestep_s, 0.0625);
+    assert_eq!(resolved.numerical.relaxation_scale, 2.0);
+    assert_eq!(resolved.numerical.correction_scale, 0.25);
+    assert_eq!(resolved.numerical.artificial_pressure_strength_scale, 0.25);
+    for input in [
+        "refine_timestep=0",
+        "refine_timestep=17",
+        "correction_scale=1.1",
+        "correction_scale=0.0",
+        "refine_timestep=16\nfixed_timestep_s=1e-45",
+    ] {
+        let layer = parse_configuration_overlay(&format!("[numerical]\n{input}")).unwrap();
+        assert!(
+            resolve_effective_configuration(None, None, Some(&layer)).is_err(),
+            "{input}"
+        );
+    }
+    // A later layer composes with the earlier layer's actual resolved values.
+    let once = parse_configuration_overlay("[numerical]\nrefine_timestep=2").unwrap();
+    let twice = resolve_effective_configuration(None, Some(&once), Some(&once)).unwrap();
+    assert_eq!(twice.numerical.relaxation_scale, 20.0);
+    assert_eq!(twice.numerical.correction_scale, 0.0625);
+}
+
+#[test]
 fn every_supported_simulation_value_change_changes_comparison_identity() {
     let baseline = resolve_effective_configuration(None, None, None)
         .expect("built-in defaults")
@@ -595,6 +723,10 @@ fn every_supported_simulation_value_change_changes_comparison_identity() {
         },
         NumericalOverrides {
             relaxation_scale: Some(2.0e-6),
+            ..Default::default()
+        },
+        NumericalOverrides {
+            correction_scale: Some(0.25),
             ..Default::default()
         },
         NumericalOverrides {

@@ -65,6 +65,9 @@ impl ResolvedConfiguration {
             &numerical.solver_iterations.to_string(),
         );
         push_float(&mut output, "relaxation_scale", numerical.relaxation_scale);
+        if numerical.correction_scale != 1.0 {
+            push_float(&mut output, "correction_scale", numerical.correction_scale);
+        }
         push_line(
             &mut output,
             "artificial_pressure_enabled",
@@ -151,7 +154,7 @@ impl ResolvedConfiguration {
     pub fn comparison_key(&self) -> String {
         let n = &self.numerical;
         let d = self.derived;
-        format!(
+        let mut key = format!(
             // Wow this is ugly, thanks fmt...
             "configuration-comparison-v1|{}|{}|{}|{}|{}|{}|{:08x},{:08x},{:08x}|{:08x}|{:08x}|{:08x}|{:08x}|{:08x}|{}|{:08x}|{}|{:08x}|{:08x}|{:08x}|{}|{}|{}|{}|{}|{}|{:08x}|{:08x}|{:08x}|{:08x}|{:08x}|{:08x}|{:08x}|{}",
             n.scalar_precision,
@@ -188,7 +191,14 @@ impl ResolvedConfiguration {
             d.artificial_pressure_strength_m2.to_bits(),
             d.artificial_pressure_reference_separation_m.to_bits(),
             d.lattice_offset_count,
-        )
+        );
+        if n.correction_scale != 1.0 {
+            key.push_str(&format!(
+                "|correction-scale:{:08x}",
+                n.correction_scale.to_bits()
+            ));
+        }
+        key
     }
 }
 

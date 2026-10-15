@@ -73,6 +73,13 @@ pub(super) fn validate_model(model: &NumericalModel) -> Result<(), ConfigError> 
         });
     }
     positive("relaxation_scale", model.relaxation_scale)?;
+    positive("correction_scale", model.correction_scale)?;
+    if model.correction_scale > 1.0 {
+        return Err(ConfigError::InvalidField {
+            field: "correction_scale",
+            reason: "must not exceed 1".to_owned(),
+        });
+    }
     non_negative(
         "artificial_pressure_strength_scale",
         model.artificial_pressure_strength_scale,

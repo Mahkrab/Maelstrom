@@ -203,10 +203,16 @@ pub fn step(
         } else {
             &positions
         };
-        let delta = corrections(input, &rows, &coefficients);
+        let delta: Vec<_> = corrections(input, &rows, &coefficients)
+            .into_iter()
+            .map(|correction| scale(correction, f64::from(model.correction_scale)))
+            .collect();
         for i in 0..positions.len() {
             let correction = if variant.in_place {
-                corrections(&positions, &rows, &coefficients)[i]
+                scale(
+                    corrections(&positions, &rows, &coefficients)[i],
+                    f64::from(model.correction_scale),
+                )
             } else {
                 delta[i]
             };

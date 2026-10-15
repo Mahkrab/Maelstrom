@@ -11,7 +11,7 @@ pub use state::Snapshot;
 
 use crate::{
     boundary::{Plane, project_in_order},
-    config::{ConfigError, ResolvedConfiguration},
+    config::ResolvedConfiguration,
     diagnostics::{CflDiagnostic, cfl_diagnostic},
     fluid::{PbfParameters, compute_jacobi_stage},
     integration::{post_acceleration_velocity, predict_position, reconstruct_velocity},
@@ -31,7 +31,7 @@ pub struct StepOutcome {
     pub cfl: CflDiagnostic,
 }
 
-/// Serial PBF solver with brute-force discovery and four Jacobi iterations.
+/// Serial PBF solver with brute-force discovery and a fixed configured iteration count.
 #[derive(Debug)]
 pub struct SerialSimulation {
     configuration: ResolvedConfiguration,
@@ -60,7 +60,7 @@ impl SerialSimulation {
     /// projection; scene construction may impose stricter input rules.
     ///
     /// Returns an error for invalid configuration, inconsistent derived values,
-    /// a solver iteration count other than four, invalid plane normals, duplicate
+    /// an unsupported solver iteration count, invalid plane normals, duplicate
     /// identities, or non-finite particle positions or velocities.
     pub fn new(
         configuration: &ResolvedConfiguration,
@@ -68,13 +68,6 @@ impl SerialSimulation {
         planes: Vec<Plane>,
     ) -> Result<Self, StepError> {
         configuration.validate()?;
-        if configuration.numerical.solver_iterations != 4 {
-            return Err(ConfigError::InvalidField {
-                field: "solver_iterations",
-                reason: "the serial solver requires exactly four Jacobi iterations".to_owned(),
-            }
-            .into());
-        }
         for plane in &planes {
             Plane::new(
                 plane.normal(),
@@ -160,7 +153,7 @@ impl SerialSimulation {
         let fixed = neighbours::brute_force(&positions, self.parameters.support_radius())?;
         check_cancellation(&mut cancelled)?;
 
-        for _ in 0..4 {
+        for _ in 0..model.solver_iterations {
             let stage = compute_jacobi_stage(&positions, &fixed, self.parameters)?;
             for density in stage.normalised_densities {
                 validation::finite_result("physical density", density * derived.particle_mass_kg)?;
