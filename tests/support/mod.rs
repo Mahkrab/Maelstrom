@@ -7,6 +7,26 @@
 
 use std::f64::consts::PI;
 
+/// Keeps the complete physical run document, including signed-zero spellings.
+/// Only declared execution/build context and elapsed timings are removed.
+pub fn serial_document(mut value: serde_json::Value) -> String {
+    value.as_object_mut().unwrap().remove("backend");
+    value.as_object_mut().unwrap().remove("measurements");
+    if let Some(metadata) = value["metadata"].as_object_mut() {
+        for key in [
+            "backend",
+            "run_id",
+            "build_revision",
+            "target_os",
+            "target_arch",
+            "debug_assertions",
+        ] {
+            metadata.remove(key);
+        }
+    }
+    serde_json::to_string(&value).unwrap()
+}
+
 pub fn poly6_f64(distance: f64, support_radius: f64) -> f64 {
     // Keep this equation independent of the production `f32` implementation.
     if distance >= support_radius {

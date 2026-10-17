@@ -54,6 +54,22 @@ unique, ascending and within the resolved step count; none are selected by defau
 observes the initial state. Other checkpoints copy accepted state and rebuild a fresh density audit
 over every particle; they do not reuse solver neighbour lists.
 
+Select neighbour discovery with `run --backend brute-force` (the default) or
+`run --backend uniform-grid`. Both use the same serial solver, fixed prediction membership,
+binary32 distance checks and ascending particle reductions. For example:
+
+```sh
+maelstrom run falling-block-04 --backend uniform-grid --refine-timestep 4 \
+  --steps 480 --checkpoints 0,1,120,240,480 --format json --output grid-run.json
+maelstrom replay grid-run.json --format json --output grid-repeated.json
+```
+
+Backend selection changes the execution/run identity, while physical input and configuration hashes
+remain the same. The grid stores occupied cells only and sorts neighbour rows back into particle
+order. Dense cells can still require quadratic work and interaction storage; this is not a memory
+limit or a guarantee of faster execution for every input. Checked search allocation failures and
+distance overflow fail the step without changing accepted state.
+
 Output paths must name new files in existing directories. Existing files and symlinks are refused,
 including destinations that appear after preflight. Publication writes and syncs a temporary file
 beside the destination, then uses a non-replacing hard link for atomic visibility. The filesystem
@@ -67,6 +83,11 @@ The CLI attempts to publish a cancelled result and final accepted snapshot to th
 
 `replay` validates the recorded schema, inputs, comparison identities and backend, then executes the
 original request from its initial state. It requires neither original TOML files nor their paths.
+It restores brute-force or grid discovery from the recorded backend; there is no replay override.
+Historical brute-force identities retain their original meaning, including explicit work counts;
+unknown backend or arithmetic versions are rejected. Current eight-iteration identities are
+`serial-brute-force-pbf-binary32-8-jacobi-v2` and
+`serial-uniform-grid-pbf-binary32-8-jacobi-v2`.
 It reruns the requested step limit even if the original was interrupted; it does not resume a final
 snapshot or certify the saved outcome. Replay is unmeasured. Compare outputs using the declared
 numerical policy rather than elapsed time or variable build metadata.
@@ -153,6 +174,8 @@ intervals. Profiling adds clocks and must be reported separately from primary to
 Iteration intervals accumulate across the configured work. Zero-step runs have no timing samples.
 
 Total timing includes mandatory validation, CFL diagnostics, allocation and cancellation polls.
+For the grid, neighbour-search timing includes bounds validation, cell construction, candidate
+enumeration, row sorting and search-storage destruction; setup is not moved outside the step.
 Loading, solver construction, fresh audits, snapshots, workflow bookkeeping, formatting and output
 remain outside it. A single invocation is a raw sample. The EPQ `serial-baseline-v1` protocol owns
 controlled warm-up, three samples, a separate profile, timeouts and aggregation. Important comparisons

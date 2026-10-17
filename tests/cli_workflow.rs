@@ -10,6 +10,8 @@ use std::{
 
 use serde_json::Value;
 
+mod support;
+
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
 struct Directory(PathBuf);
@@ -1006,8 +1008,7 @@ fn dangling_symlinks_are_not_replaced() {
 }
 
 #[cfg(unix)]
-#[test]
-fn ctrl_c_returns_a_cancelled_result_and_preserves_accepted_state() {
+fn cancelled_cli_for(backend: &str) {
     use std::{
         io::{BufRead, BufReader},
         sync::mpsc,
@@ -1018,6 +1019,8 @@ fn ctrl_c_returns_a_cancelled_result_and_preserves_accepted_state() {
         .args([
             "run",
             "falling-block-04",
+            "--backend",
+            backend,
             "--steps",
             "1000000",
             "--verbose",
@@ -1084,6 +1087,8 @@ fn ctrl_c_returns_a_cancelled_result_and_preserves_accepted_state() {
     let expected = cli(&[
         "run",
         "falling-block-04",
+        "--backend",
+        backend,
         "--steps",
         &steps.to_string(),
         "--format",
@@ -1167,4 +1172,181 @@ fn measured_cli_retains_replay_identity_and_profiles_only_when_requested() {
             .unwrap()
             .contains("Solver measurements Total: 0 accepted steps")
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn ctrl_c_returns_a_cancelled_result_and_preserves_accepted_state() {
+    cancelled_cli_for("brute-force");
+}
+
+#[cfg(unix)]
+#[test]
+fn grid_ctrl_c_publishes_its_last_accepted_state() {
+    cancelled_cli_for("uniform-grid");
+}
+
+#[test]
+fn explicit_discovery_selection_preserves_inputs_and_replays_every_work_count() {
+    for iterations in [1, 4, 8, 64] {
+        let dir = Directory::new();
+        let work = format!("solver_iterations={iterations}");
+        let base = [
+            "run",
+            "falling-block-04",
+            "--steps",
+            "2",
+            "--checkpoints",
+            "0,1,2",
+            "--set",
+            &work,
+            "--format",
+            "json",
+            "--quiet",
+        ];
+        let reference = cli(&base);
+        success(&reference);
+        let explicit = command(&dir.0)
+            .args(base)
+            .args(["--backend", "brute-force"])
+            .output()
+            .unwrap();
+        success(&explicit);
+        assert_eq!(reference.stdout, explicit.stdout);
+        let reference = document(&reference);
+        for flags in [
+            vec![],
+            vec!["--measure"],
+            vec!["--measure", "--stage-profile"],
+        ] {
+            let output = command(&dir.0)
+                .args(base)
+                .args(["--backend", "uniform-grid"])
+                .args(&flags)
+                .output()
+                .unwrap();
+            success(&output);
+            let result = document(&output);
+            let count = if iterations == 4 {
+                "four".into()
+            } else {
+                iterations.to_string()
+            };
+            assert_eq!(
+                result["backend"],
+                format!("serial-uniform-grid-pbf-binary32-{count}-jacobi-v2")
+            );
+            assert_eq!(result["metadata"]["backend"], result["backend"]);
+            assert_ne!(
+                result["metadata"]["run_id"],
+                reference["metadata"]["run_id"]
+            );
+            assert_eq!(
+                support::serial_document(result.clone()),
+                support::serial_document(reference.clone())
+            );
+            let file = dir.write("record.json", std::str::from_utf8(&output.stdout).unwrap());
+            let replay = command(&dir.0)
+                .args([
+                    "replay",
+                    file.to_str().unwrap(),
+                    "--format",
+                    "json",
+                    "--quiet",
+                ])
+                .output()
+                .unwrap();
+            success(&replay);
+            let mut expected = result;
+            expected.as_object_mut().unwrap().remove("measurements");
+            assert_eq!(
+                serde_json::to_string(&document(&replay)).unwrap(),
+                serde_json::to_string(&expected).unwrap()
+            );
+            fs::remove_file(file).unwrap();
+        }
+    }
+}
+
+#[test]
+fn unsupported_discovery_and_replay_contracts_cannot_silently_substitute() {
+    let output = cli(&[
+        "run",
+        "falling-block-04",
+        "--steps",
+        "1",
+        "--backend",
+        "cuda",
+    ]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    let dir = Directory::new();
+    let output = cli(&[
+        "run",
+        "falling-block-04",
+        "--steps",
+        "0",
+        "--backend",
+        "uniform-grid",
+        "--format",
+        "json",
+    ]);
+    success(&output);
+    let result = document(&output);
+    for backend in [
+        "serial-uniform-grid-pbf-binary32-8-jacobi-v1",
+        "serial-uniform-grid-pbf-binary32-four-jacobi-v2",
+        "unknown",
+    ] {
+        let mut invalid = result.clone();
+        invalid["backend"] = backend.into();
+        dir.write("invalid.json", &invalid.to_string());
+        let output = command(&dir.0)
+            .args(["replay", "invalid.json", "--format", "json"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(3));
+        assert!(output.stdout.is_empty());
+    }
+    let output = command(&dir.0)
+        .args(["replay", "invalid.json", "--backend", "brute-force"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn grid_publication_keeps_no_clobber_guarantees_and_snapshot_bits() {
+    let dir = Directory::new();
+    let args = [
+        "run",
+        "falling-block-04",
+        "--backend",
+        "uniform-grid",
+        "--steps",
+        "2",
+        "--format",
+        "json",
+        "--output",
+        "grid.json",
+        "--snapshot",
+        "state.json",
+    ];
+    let output = command(&dir.0).args(args).output().unwrap();
+    success(&output);
+    assert!(output.stdout.is_empty());
+    let original = fs::read(dir.path("grid.json")).unwrap();
+    let result: Value = serde_json::from_slice(&original).unwrap();
+    let snapshot: Value =
+        serde_json::from_slice(&fs::read(dir.path("state.json")).unwrap()).unwrap();
+    assert_eq!(state_bits(&snapshot), state_bits(&result["final_snapshot"]));
+    let repeated = command(&dir.0).args(args).output().unwrap();
+    assert_eq!(repeated.status.code(), Some(5));
+    assert_eq!(fs::read(dir.path("grid.json")).unwrap(), original);
+    let help = cli(&["run", "--help"]);
+    success(&help);
+    let help = String::from_utf8(help.stdout).unwrap();
+    for expected in ["--backend", "brute-force", "uniform-grid"] {
+        assert!(help.contains(expected));
+    }
 }

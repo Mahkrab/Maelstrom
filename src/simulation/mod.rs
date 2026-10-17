@@ -20,7 +20,7 @@ use crate::{
     diagnostics::{CflDiagnostic, cfl_diagnostic},
     fluid::{PbfParameters, compute_jacobi_stage},
     integration::{post_acceleration_velocity, predict_position, reconstruct_velocity},
-    neighbours,
+    neighbours::SearchBackend,
     scene::{PLANE_UNIT_LENGTH_SQUARED_TOLERANCE, Particle, ResolvedScene},
     validation,
 };
@@ -36,9 +36,10 @@ pub struct StepOutcome {
     pub cfl: CflDiagnostic,
 }
 
-/// Serial PBF solver with brute-force discovery and a fixed configured iteration count.
+/// Serial PBF solver with selectable discovery and a fixed configured iteration count.
 #[derive(Debug)]
 pub struct SerialSimulation {
+    backend: SearchBackend,
     configuration: ResolvedConfiguration,
     parameters: PbfParameters,
     planes: Vec<Plane>,
@@ -51,10 +52,20 @@ impl SerialSimulation {
     /// Scene metadata does not affect execution. All numerical inputs are checked
     /// again by [`Self::new`], since resolved scene records are caller-mutable.
     pub fn from_scene(scene: &ResolvedScene) -> Result<Self, StepError> {
-        Self::new(
+        Self::from_scene_with_backend(scene, SearchBackend::BruteForce)
+    }
+
+    /// Copies a scene into an independent solver using the selected discovery.
+    /// Validation and accepted-state semantics are shared by both backends.
+    pub fn from_scene_with_backend(
+        scene: &ResolvedScene,
+        backend: SearchBackend,
+    ) -> Result<Self, StepError> {
+        Self::new_with_backend(
             &scene.configuration,
             scene.particles.clone(),
             scene.planes.clone(),
+            backend,
         )
     }
 
@@ -69,8 +80,19 @@ impl SerialSimulation {
     /// identities, or non-finite particle positions or velocities.
     pub fn new(
         configuration: &ResolvedConfiguration,
+        particles: Vec<Particle>,
+        planes: Vec<Plane>,
+    ) -> Result<Self, StepError> {
+        Self::new_with_backend(configuration, particles, planes, SearchBackend::BruteForce)
+    }
+
+    /// Creates a solver with explicit discovery. Inputs are validated and sorted
+    /// as in [`Self::new`]; selection does not change the physical configuration.
+    pub fn new_with_backend(
+        configuration: &ResolvedConfiguration,
         mut particles: Vec<Particle>,
         planes: Vec<Plane>,
+        backend: SearchBackend,
     ) -> Result<Self, StepError> {
         configuration.validate()?;
         for plane in &planes {
@@ -83,6 +105,7 @@ impl SerialSimulation {
         particles.sort_unstable_by_key(|particle| particle.identity);
         validate_particles(&particles)?;
         Ok(Self {
+            backend,
             configuration: configuration.clone(),
             parameters: configuration.pbf_parameters()?,
             planes,
@@ -104,6 +127,12 @@ impl SerialSimulation {
     #[must_use]
     pub fn configuration(&self) -> &ResolvedConfiguration {
         &self.configuration
+    }
+
+    /// Discovery selected at construction, fixed for this solver's lifetime.
+    #[must_use]
+    pub fn backend(&self) -> SearchBackend {
+        self.backend
     }
 
     /// Attempts one complete step. Every error leaves accepted state unchanged.
@@ -193,7 +222,9 @@ impl SerialSimulation {
         }
         check_cancellation(cancelled)?;
         clock.mark(Stage::Prediction);
-        let fixed = neighbours::brute_force(&positions, self.parameters.support_radius())?;
+        let fixed = self
+            .backend
+            .discover(&positions, self.parameters.support_radius())?;
         check_cancellation(cancelled)?;
 
         clock.mark(Stage::NeighbourSearch);

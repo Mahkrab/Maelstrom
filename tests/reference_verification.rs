@@ -651,3 +651,125 @@ fn measured_empty_invalid_and_numerically_failed_runs_are_explicit() {
         assert!(invalid.measurements().unwrap().failed_attempt_s.is_none());
     }
 }
+
+#[test]
+fn grid_ordinary_and_measured_runs_match_complete_frozen_outputs() {
+    use maelstrom::{
+        neighbours::SearchBackend,
+        workflow::{ExecutionOptions, MeasurementMode, replay_execution, run_with_options},
+    };
+    for case in manifest().cases.iter().filter(|case| case.golden.is_some()) {
+        let input = scene(case);
+        let before = input.clone();
+        let golden: Value =
+            serde_json::from_str(&fs::read_to_string(path(case.golden.as_ref().unwrap())).unwrap())
+                .unwrap();
+        for measurement in [
+            None,
+            Some(MeasurementMode::Total),
+            Some(MeasurementMode::Stages),
+        ] {
+            let result = run_with_options(
+                &input,
+                request(case),
+                ExecutionOptions {
+                    backend: SearchBackend::UniformGrid,
+                    measurement,
+                },
+                || false,
+            );
+            assert_eq!(result.status(), CompletionStatus::Completed);
+            assert_eq!(result.completed_steps(), case.steps);
+            let actual = document(&result);
+            assert_eq!(
+                support::serial_document(actual.clone()),
+                support::serial_document(golden.clone())
+            );
+            assert_eq!(
+                actual["metadata"]["input_id"],
+                golden["metadata"]["input_id"]
+            );
+            assert_eq!(
+                actual["metadata"]["configuration_id"],
+                golden["metadata"]["configuration_id"]
+            );
+            assert_ne!(actual["metadata"]["run_id"], golden["metadata"]["run_id"]);
+            assert_eq!(
+                actual["backend"],
+                "serial-uniform-grid-pbf-binary32-8-jacobi-v2"
+            );
+            assert_eq!(actual["metadata"]["backend"], actual["backend"]);
+            if measurement.is_some() {
+                assert_eq!(
+                    result.measurements().unwrap().steps.len(),
+                    case.steps as usize
+                );
+                assert!(
+                    result
+                        .measurements()
+                        .unwrap()
+                        .steps
+                        .iter()
+                        .all(|s| s.stages.is_some()
+                            == (measurement == Some(MeasurementMode::Stages)))
+                );
+            }
+            let (restored, restored_request, backend) =
+                replay_execution(&result.to_json().unwrap()).unwrap();
+            assert_eq!(backend, SearchBackend::UniformGrid);
+            assert_eq!(restored.comparison_key(), input.comparison_key());
+            assert_eq!(restored_request, request(case));
+            assert!(
+                replay_inputs(&result.to_json().unwrap()).is_err(),
+                "legacy helper cannot discard grid selection"
+            );
+        }
+        assert_eq!(input, before);
+    }
+}
+
+#[test]
+fn grid_and_reference_agree_on_every_family_size_before_measurement() {
+    use maelstrom::{
+        neighbours::SearchBackend,
+        workflow::{ExecutionOptions, run_with_options},
+    };
+    for case in &manifest().cases {
+        let input = scene(case);
+        let request = RunRequest {
+            steps: 1,
+            checkpoints: vec![0, 1],
+        };
+        let reference = run(&input, request.clone());
+        let grid = run_with_options(
+            &input,
+            request,
+            ExecutionOptions {
+                backend: SearchBackend::UniformGrid,
+                measurement: None,
+            },
+            || false,
+        );
+        assert!(grid.status().is_complete());
+        assert_eq!(
+            support::serial_document(document(&grid)),
+            support::serial_document(document(&reference)),
+            "{}",
+            case.scene
+        );
+    }
+}
+
+#[test]
+fn serial_comparison_keeps_signed_zero_and_checkpoint_disagreements_visible() {
+    let a = serde_json::json!({"backend":"reference","metadata":null,"checkpoints":[-0.0],"final_snapshot":1.0});
+    let mut b = a.clone();
+    b["checkpoints"][0] = 0.0.into();
+    assert_ne!(
+        support::serial_document(a.clone()),
+        support::serial_document(b)
+    );
+    let mut b = a.clone();
+    b["final_snapshot"] = 2.0.into();
+    assert_ne!(support::serial_document(a), support::serial_document(b));
+}

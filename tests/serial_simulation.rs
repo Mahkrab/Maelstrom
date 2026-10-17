@@ -666,6 +666,189 @@ fn predicate_panic_cannot_commit_working_state() {
 }
 
 #[test]
+fn grid_retains_prediction_membership_and_rebuilds_after_acceptance() {
+    use maelstrom::neighbours::SearchBackend;
+    let configuration = config("[numerical]\nexternal_acceleration_m_s2 = [0.0,0.0,0.0]");
+    // Projection brings a previously distant particle inside support during the
+    // first step. Rebuilding inside Jacobi would move particle 1 immediately.
+    let initial = vec![stationary(0, -0.2, 0.0, 0.0), stationary(1, 0.04, 0.0, 0.0)];
+    let planes = vec![plane(Vec3::new(1.0, 0.0, 0.0), 0.0)];
+    let mut grid = SerialSimulation::new_with_backend(
+        &configuration,
+        initial.clone(),
+        planes.clone(),
+        SearchBackend::UniformGrid,
+    )
+    .unwrap();
+    let mut reference = SerialSimulation::new(&configuration, initial, planes).unwrap();
+    for step in 1..=3 {
+        assert_eq!(grid.step().unwrap(), reference.step().unwrap());
+        assert_eq!(bits(grid.snapshot()), bits(reference.snapshot()));
+        if step == 1 {
+            assert_eq!(
+                grid.snapshot().particles()[1].position_m.x.to_bits(),
+                0.04_f32.to_bits()
+            );
+        }
+    }
+    // Projection above reconstructs a velocity that separates the pair next
+    // step. Use an approaching pair instead to distinguish a fresh prediction
+    // build from stale membership, crossing the x=0.25 cell face on step two.
+    let configuration =
+        config("[numerical]\nfixed_timestep_s = 1.0\nexternal_acceleration_m_s2 = [0.0,0.0,0.0]");
+    let initial = vec![
+        particle(0, Vec3::new(0.1, 0.0, 0.0), Vec3::new(0.1, 0.0, 0.0)),
+        stationary(1, 0.34, 0.0, 0.0),
+    ];
+    let mut reference = SerialSimulation::new(&configuration, initial.clone(), vec![]).unwrap();
+    let mut grid = SerialSimulation::new_with_backend(
+        &configuration,
+        initial,
+        vec![],
+        SearchBackend::UniformGrid,
+    )
+    .unwrap();
+    for step in 1..=2 {
+        assert_eq!(grid.step().unwrap(), reference.step().unwrap());
+        assert_eq!(bits(grid.snapshot()), bits(reference.snapshot()));
+        if step == 1 {
+            assert_eq!(
+                grid.snapshot().particles()[1].position_m.x.to_bits(),
+                0.34_f32.to_bits()
+            );
+        } else {
+            assert_ne!(
+                grid.snapshot().particles()[1].position_m.x.to_bits(),
+                0.34_f32.to_bits()
+            );
+        }
+    }
+    // A pair that leaves support must stop contributing despite fixed rows.
+    let configuration = config(
+        "[numerical]\nexternal_acceleration_m_s2 = [0.0,0.0,0.0]\nrelaxation_scale = 0.000001",
+    );
+    let initial = vec![stationary(0, 0.0, 0.0, 0.0), stationary(1, 0.05, 0.0, 0.0)];
+    let expected = oracle::step(&initial, &configuration, &[], 4, Variant::default());
+    assert!((expected.positions[0][0] - expected.positions[1][0]).abs() > 0.1);
+    let mut grid = SerialSimulation::new_with_backend(
+        &configuration,
+        initial,
+        vec![],
+        SearchBackend::UniformGrid,
+    )
+    .unwrap();
+    let _ = grid.step().unwrap();
+    assert_oracle(&grid, &expected);
+}
+
+#[test]
+fn grid_cancellation_at_every_stage_discards_work_and_retries_exactly() {
+    use maelstrom::neighbours::SearchBackend;
+    let configuration = config("[numerical]\nsolver_iterations = 8");
+    let initial = vec![
+        stationary(u64::MAX, 0.0, 0.5, 0.0),
+        stationary(42, 0.05, 0.5, 0.0),
+        stationary(0, 0.0, 0.55, 0.0),
+    ];
+    let mut reference = SerialSimulation::new(&configuration, initial.clone(), vec![]).unwrap();
+    let mut polls = 0;
+    let expected = reference
+        .step_with_cancellation(|| {
+            polls += 1;
+            false
+        })
+        .unwrap();
+    for stages in [None, Some(false), Some(true)] {
+        for cancel_at in 1..=polls {
+            let mut grid = SerialSimulation::new_with_backend(
+                &configuration,
+                initial.clone(),
+                vec![],
+                SearchBackend::UniformGrid,
+            )
+            .unwrap();
+            assert_eq!(grid.backend(), SearchBackend::UniformGrid);
+            let before = bits(grid.snapshot());
+            let mut seen = 0;
+            let mut cancelled = || {
+                seen += 1;
+                seen == cancel_at
+            };
+            let error = match stages {
+                None => grid.step_with_cancellation(&mut cancelled).unwrap_err(),
+                Some(stages) => grid
+                    .step_measured_with_cancellation(stages, &mut cancelled)
+                    .unwrap_err(),
+            };
+            assert!(matches!(error, StepError::Cancelled));
+            assert_eq!(seen, cancel_at);
+            assert_eq!(bits(grid.snapshot()), before);
+            assert_eq!(grid.step().unwrap(), expected);
+            assert_eq!(bits(grid.snapshot()), bits(reference.snapshot()));
+        }
+    }
+}
+
+#[test]
+fn grid_numerical_and_plane_failures_preserve_every_accepted_bit() {
+    use maelstrom::neighbours::SearchBackend;
+    let still = "[numerical]\nexternal_acceleration_m_s2 = [0.0,0.0,0.0]";
+    let cases = [
+        (
+            config(still),
+            vec![
+                stationary(0, 0.0, 0.0, 0.0),
+                stationary(1, 1.0e20, 0.0, 0.0),
+            ],
+            vec![],
+        ),
+        (
+            config(still),
+            vec![stationary(2, 0.0, 3.0, 0.0), stationary(9, -1.0, -1.0, 0.0)],
+            vec![
+                plane(Vec3::new(1.0, 0.0, 0.0), 0.0),
+                plane(Vec3::new(-0.6, 0.8, 0.0), 0.0),
+            ],
+        ),
+        (
+            config("[numerical]\nphysical_rest_density_kg_m3 = 3.0e38"),
+            (0..10).map(|id| stationary(id, 0.0, 0.0, 0.0)).collect(),
+            vec![],
+        ),
+        (
+            config("[numerical]\nfixed_timestep_s = 1.0e-40"),
+            vec![stationary(0, 0.0, 0.0, 0.0)],
+            vec![],
+        ),
+    ];
+    for (configuration, initial, planes) in cases {
+        let mut reference =
+            SerialSimulation::new(&configuration, initial.clone(), planes.clone()).unwrap();
+        let expected = reference.step().unwrap_err().to_string();
+        for profile in [None, Some(false), Some(true)] {
+            let mut grid = SerialSimulation::new_with_backend(
+                &configuration,
+                initial.clone(),
+                planes.clone(),
+                SearchBackend::UniformGrid,
+            )
+            .unwrap();
+            let before = bits(grid.snapshot());
+            for _ in 0..2 {
+                let error = match profile {
+                    None => grid.step().unwrap_err(),
+                    Some(stages) => grid
+                        .step_measured_with_cancellation(stages, || false)
+                        .unwrap_err(),
+                };
+                assert_eq!(error.to_string(), expected);
+                assert_eq!(bits(grid.snapshot()), before);
+            }
+        }
+    }
+}
+
+#[test]
 fn repeated_scene_runs_and_input_permutations_are_bitwise_identical() {
     let scene = load_resolved_scene(
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scenes/falling-block-04.toml"),

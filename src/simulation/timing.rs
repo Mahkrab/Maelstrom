@@ -14,7 +14,7 @@ pub struct StageTimes {
     pub validation_and_acceleration_s: f64,
     /// Position prediction and its cancellation poll.
     pub prediction_s: f64,
-    /// Complete brute-force discovery, validation and its cancellation poll.
+    /// Complete selected discovery, storage, ordering, validation and cancellation poll.
     pub neighbour_search_s: f64,
     /// Densities, multipliers, corrections, physical-density validation and poll.
     pub jacobi_s: f64,

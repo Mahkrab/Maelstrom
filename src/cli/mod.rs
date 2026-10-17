@@ -18,8 +18,8 @@ use std::{
 
 use clap::Parser;
 use maelstrom::workflow::{
-    CompletionStatus, MeasurementMode, OutputFormat, RunRequest, replay_inputs,
-    run_measured_with_cancellation, run_with_cancellation,
+    CompletionStatus, ExecutionOptions, MeasurementMode, OutputFormat, RunRequest,
+    replay_execution, run_with_options,
 };
 use serde_json::{Value, json};
 
@@ -142,17 +142,20 @@ fn execute(cli: &Cli) -> Result<u8, CliError> {
                     checkpoints: run.checkpoints.clone(),
                 },
                 &run.output,
-                run.measure.then_some(if run.stage_profile {
-                    MeasurementMode::Stages
-                } else {
-                    MeasurementMode::Total
-                }),
+                ExecutionOptions {
+                    backend: run.backend.into(),
+                    measurement: run.measure.then_some(if run.stage_profile {
+                        MeasurementMode::Stages
+                    } else {
+                        MeasurementMode::Total
+                    }),
+                },
             )
         }
         Command::Replay(replay) => {
             let source = fs::read_to_string(&replay.file)
                 .map_err(|error| CliError::input(format!("result {:?}: {error}", replay.file)))?;
-            let (scene, request) = replay_inputs(&source)
+            let (scene, request, backend) = replay_execution(&source)
                 .map_err(|error| CliError::input(format!("result {:?}: {error}", replay.file)))?;
             diagnostic(
                 cli,
@@ -161,7 +164,16 @@ fn execute(cli: &Cli) -> Result<u8, CliError> {
                     scene: Some(scene.clone()),
                 },
             )?;
-            execute_run(cli, &scene, request, &replay.output, None)
+            execute_run(
+                cli,
+                &scene,
+                request,
+                &replay.output,
+                ExecutionOptions {
+                    backend,
+                    measurement: None,
+                },
+            )
         }
     }
 }
@@ -218,7 +230,7 @@ fn execute_run(
     scene: &maelstrom::scene::ResolvedScene,
     request: RunRequest,
     output: &Output,
-    measurement: Option<MeasurementMode>,
+    options: ExecutionOptions,
 ) -> Result<u8, CliError> {
     check_destinations(output)?;
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -234,11 +246,7 @@ fn execute_run(
             .map_err(|error| CliError::output(format!("stderr: {error}")))?;
     }
     let is_cancelled = || cancelled.load(Ordering::Relaxed);
-    let mut result = if let Some(mode) = measurement {
-        run_measured_with_cancellation(scene, request, mode, is_cancelled)
-    } else {
-        run_with_cancellation(scene, request, is_cancelled)
-    };
+    let mut result = run_with_options(scene, request, options, is_cancelled);
     if let Some(path) = &output.snapshot
         && let Err(error) = result.publish_snapshot(path)
     {

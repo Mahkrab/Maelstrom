@@ -665,3 +665,171 @@ fn publication_is_complete_no_clobber_and_failure_preserves_state_and_history() 
     );
     assert_eq!(cancelled.completed_steps(), 0);
 }
+
+#[test]
+fn grid_workflow_matches_empty_warning_audit_input_and_late_failure_outcomes() {
+    use maelstrom::{
+        neighbours::SearchBackend,
+        workflow::{ExecutionOptions, MeasurementMode, run_with_options},
+    };
+    let mut fast = particle(7, 0.0);
+    fast.velocity_m_s.y = -10.0;
+    let mut invalid = scene("", vec![particle(0, 0.0)], vec![]);
+    invalid.configuration.numerical.fixed_timestep_s = 0.0;
+    let cases = [
+        (
+            scene("", vec![], vec![]),
+            request(2, &[0, 1, 2]),
+            CompletionStatus::Completed,
+        ),
+        (
+            scene("", vec![particle(1, 0.0), particle(u64::MAX, 0.0)], vec![]),
+            request(3, &[0, 1, 3]),
+            CompletionStatus::Completed,
+        ),
+        (
+            scene(
+                "[numerical]\nfixed_timestep_s = 0.125\nexternal_acceleration_m_s2 = [0.0,0.0,0.0]",
+                vec![fast],
+                vec![Plane::new(Vec3::new(0.0, 1.0, 0.0), 0.0, 0.0).unwrap()],
+            ),
+            request(3, &[0, 1, 3]),
+            CompletionStatus::CompletedWithWarnings,
+        ),
+        (
+            scene(
+                "[numerical]\nfixed_timestep_s = 1.0\nexternal_acceleration_m_s2 = [1.0e19,0.0,0.0]",
+                vec![particle(0, 0.0)],
+                vec![],
+            ),
+            request(3, &[0, 1, 2, 3]),
+            CompletionStatus::SimulationFailure,
+        ),
+        (
+            scene("", vec![particle(0, 0.0), particle(1, 1.0e20)], vec![]),
+            request(0, &[0]),
+            CompletionStatus::AuditFailure,
+        ),
+        (
+            scene("", vec![], vec![]),
+            request(0, &[1]),
+            CompletionStatus::InputValidationFailure,
+        ),
+        (
+            invalid,
+            request(1, &[]),
+            CompletionStatus::InputValidationFailure,
+        ),
+    ];
+    for (input, request, status) in cases {
+        let reference = run(&input, request.clone());
+        assert_eq!(reference.status(), status);
+        for measurement in [
+            None,
+            Some(MeasurementMode::Total),
+            Some(MeasurementMode::Stages),
+        ] {
+            let grid = run_with_options(
+                &input,
+                request.clone(),
+                ExecutionOptions {
+                    backend: SearchBackend::UniformGrid,
+                    measurement,
+                },
+                || false,
+            );
+            assert_eq!(grid.status(), status);
+            assert_eq!(
+                support::serial_document(document(&grid)),
+                support::serial_document(document(&reference))
+            );
+            if let Some(timings) = grid.measurements() {
+                assert_eq!(timings.steps.len(), grid.completed_steps() as usize);
+                assert_eq!(
+                    timings.failed_attempt_s.is_some(),
+                    status == CompletionStatus::SimulationFailure
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn grid_workflow_cancellation_retains_its_own_prior_work_in_all_modes() {
+    use maelstrom::{
+        neighbours::SearchBackend,
+        workflow::{ExecutionOptions, MeasurementMode, run_with_options},
+    };
+    let input = load_resolved_scene(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("scenes/falling-block-04.toml"),
+        None,
+    )
+    .unwrap();
+    let before = input.clone();
+    let mut solver = SerialSimulation::from_scene(&input).unwrap();
+    let mut polls_per_step = 0;
+    let _ = solver
+        .step_with_cancellation(|| {
+            polls_per_step += 1;
+            false
+        })
+        .unwrap();
+    for cancel_at in [
+        1,
+        3,
+        polls_per_step,
+        polls_per_step + 1,
+        polls_per_step + 5,
+        2 * polls_per_step,
+    ] {
+        let mut polls = 0;
+        let expected = run_with_cancellation(&input, request(3, &[0, 1, 3]), || {
+            polls += 1;
+            polls == cancel_at
+        });
+        for measurement in [
+            None,
+            Some(MeasurementMode::Total),
+            Some(MeasurementMode::Stages),
+        ] {
+            let mut seen = 0;
+            let actual = run_with_options(
+                &input,
+                request(3, &[0, 1, 3]),
+                ExecutionOptions {
+                    backend: SearchBackend::UniformGrid,
+                    measurement,
+                },
+                || {
+                    seen += 1;
+                    seen == cancel_at
+                },
+            );
+            assert_eq!(actual.status(), CompletionStatus::Cancelled);
+            assert_eq!(seen, polls);
+            assert_eq!(
+                support::serial_document(document(&actual)),
+                support::serial_document(document(&expected))
+            );
+            if let Some(timings) = actual.measurements() {
+                assert!(timings.failed_attempt_s.is_some());
+                assert_eq!(timings.steps.len(), actual.completed_steps() as usize);
+            }
+        }
+    }
+    assert_eq!(input, before);
+    // A cancelled grid invocation must not contaminate another independent run.
+    let clean = run_with_options(
+        &input,
+        request(1, &[1]),
+        ExecutionOptions {
+            backend: SearchBackend::UniformGrid,
+            measurement: None,
+        },
+        || false,
+    );
+    assert_eq!(
+        support::serial_document(document(&clean)),
+        support::serial_document(document(&run(&input, request(1, &[1]))))
+    );
+}

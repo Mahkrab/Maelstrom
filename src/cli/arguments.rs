@@ -76,6 +76,9 @@ pub(super) struct Inputs {
 pub(super) struct Run {
     #[command(flatten)]
     pub inputs: Inputs,
+    /// Neighbour discovery; physical inputs and serial reduction order are shared
+    #[arg(long, value_enum, default_value = "brute-force")]
+    pub backend: Backend,
     /// Number of fixed timesteps; zero observes the initial state
     #[arg(
         long,
@@ -97,6 +100,21 @@ pub(super) struct Run {
     pub stage_profile: bool,
     #[command(flatten)]
     pub output: Output,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+pub(super) enum Backend {
+    BruteForce,
+    UniformGrid,
+}
+
+impl From<Backend> for maelstrom::neighbours::SearchBackend {
+    fn from(value: Backend) -> Self {
+        match value {
+            Backend::BruteForce => Self::BruteForce,
+            Backend::UniformGrid => Self::UniformGrid,
+        }
+    }
 }
 
 #[derive(Args)]

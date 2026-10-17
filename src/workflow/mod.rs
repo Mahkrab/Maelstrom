@@ -19,19 +19,34 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     diagnostics::{CflDiagnostic, CflLimit, DensityAudit, audit_density},
+    neighbours::SearchBackend,
     scene::ResolvedScene,
     simulation::{SerialSimulation, StepError},
 };
 
-/// Numerical backend and arithmetic contract, independent of display labels.
+/// Historical four-iteration brute-force identity, retained for API compatibility.
 pub const BACKEND_ID: &str = "serial-brute-force-pbf-binary32-four-jacobi-v2";
 
-fn backend_id(iterations: u32) -> String {
-    if iterations == 4 {
-        BACKEND_ID.to_owned()
+fn backend_id(backend: SearchBackend, iterations: u32) -> String {
+    let search = match backend {
+        SearchBackend::BruteForce => "brute-force",
+        SearchBackend::UniformGrid => "uniform-grid",
+    };
+    let count = if iterations == 4 {
+        "four".to_owned()
     } else {
-        format!("serial-brute-force-pbf-binary32-{iterations}-jacobi-v2")
-    }
+        iterations.to_string()
+    };
+    format!("serial-{search}-pbf-binary32-{count}-jacobi-v2")
+}
+
+/// Execution choices that do not change resolved physical input identity.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExecutionOptions {
+    /// Discovery implementation; defaults to the historical brute-force path.
+    pub backend: SearchBackend,
+    /// Optional elapsed-time instrumentation, excluded from replay identity.
+    pub measurement: Option<MeasurementMode>,
 }
 
 /// Work requested from the initial state. Checkpoint zero observes that initial
@@ -191,11 +206,11 @@ pub struct RunMetadata {
 }
 
 impl RunMetadata {
-    fn new(input: &RecordedInput, steps: u64) -> Self {
+    fn new(input: &RecordedInput, steps: u64, search: SearchBackend) -> Self {
         let input_id = digest(input.comparison_key());
         let configuration_id = digest(input.configuration_key());
         let application_version = env!("CARGO_PKG_VERSION").to_owned();
-        let backend = backend_id(input.solver_iterations());
+        let backend = backend_id(search, input.solver_iterations());
         let run_id = digest(&format!(
             "maelstrom-run-v1|{backend}|{application_version}|{input_id}|{steps}"
         ));
@@ -366,7 +381,7 @@ pub fn run_with_cancellation(
     request: RunRequest,
     cancelled: impl FnMut() -> bool,
 ) -> RunResult {
-    run_inner(scene, request, None, cancelled)
+    run_with_options(scene, request, ExecutionOptions::default(), cancelled)
 }
 
 /// Runs with explicitly enabled elapsed wall-clock measurements. Total-only mode
@@ -381,19 +396,35 @@ pub fn run_measured_with_cancellation(
     mode: MeasurementMode,
     cancelled: impl FnMut() -> bool,
 ) -> RunResult {
-    run_inner(scene, request, Some(mode), cancelled)
+    run_with_options(
+        scene,
+        request,
+        ExecutionOptions {
+            measurement: Some(mode),
+            ..Default::default()
+        },
+        cancelled,
+    )
 }
 
-fn run_inner(
+/// Runs either discovery method through the same observation and timestep path.
+/// Grid construction, enumeration and row sorting stay inside solver timing.
+/// Each invocation owns its solver; cancellation and failure retain only its own
+/// last accepted state. Invalid inputs are explicit results with no accepted work.
+#[must_use]
+pub fn run_with_options(
     scene: &ResolvedScene,
     request: RunRequest,
-    mode: Option<MeasurementMode>,
+    options: ExecutionOptions,
     mut cancelled: impl FnMut() -> bool,
 ) -> RunResult {
     let mut result = RunResult {
         schema_version: SCHEMA_VERSION,
         application_version: env!("CARGO_PKG_VERSION").to_owned(),
-        backend: backend_id(scene.configuration.numerical.solver_iterations),
+        backend: backend_id(
+            options.backend,
+            scene.configuration.numerical.solver_iterations,
+        ),
         request,
         completed_steps: 0,
         metadata: None,
@@ -401,14 +432,14 @@ fn run_inner(
         steps: Vec::new(),
         checkpoints: Vec::new(),
         final_snapshot: None,
-        measurements: mode.map(RunMeasurements::new),
+        measurements: options.measurement.map(RunMeasurements::new),
         failures: Vec::new(),
         status: CompletionStatus::Completed,
     };
     let setup = (|| {
         result.request.validate()?;
         record::scene_version(scene.schema_version)?;
-        let solver = SerialSimulation::from_scene(scene)?;
+        let solver = SerialSimulation::from_scene_with_backend(scene, options.backend)?;
         let input = RecordedInput::capture(scene, &solver);
         // Also validate the portable record, so every admitted input can replay.
         input.resolve()?;
@@ -425,7 +456,11 @@ fn run_inner(
             return result;
         }
     };
-    result.metadata = Some(RunMetadata::new(&input, result.request.steps));
+    result.metadata = Some(RunMetadata::new(
+        &input,
+        result.request.steps,
+        options.backend,
+    ));
     result.input = Some(input);
     if result.observe(&solver) {
         for _ in 0..result.request.steps {
@@ -483,8 +518,25 @@ fn run_inner(
 /// Extracts and validates reproducible inputs and the original request from a
 /// result document. This does not certify the document's reported outcomes or
 /// promise that cancellation or an external output failure will recur on replay.
-/// A different backend contract is rejected rather than silently substituted.
+/// This compatibility helper accepts brute-force records only. Use
+/// [`replay_execution`] to retain the discovery selection of either backend.
 pub fn replay_inputs(json: &str) -> Result<(ResolvedScene, RunRequest), RecordError> {
+    let (scene, request, backend) = replay_execution(json)?;
+    if backend != SearchBackend::BruteForce {
+        return Err(RecordError::Invalid(
+            "grid replay requires replay_execution to retain its backend".into(),
+        ));
+    }
+    Ok((scene, request))
+}
+
+/// Restores physical inputs, request and recorded discovery selection.
+/// Historical brute-force IDs retain their exact meaning. Unknown arithmetic or
+/// discovery contracts fail rather than silently selecting another implementation.
+/// Measurements are deliberately not restored, and outcomes are not certified.
+pub fn replay_execution(
+    json: &str,
+) -> Result<(ResolvedScene, RunRequest, SearchBackend), RecordError> {
     #[derive(Deserialize)]
     struct Replay {
         schema_version: u32,
@@ -494,23 +546,21 @@ pub fn replay_inputs(json: &str) -> Result<(ResolvedScene, RunRequest), RecordEr
     }
     let replay: Replay = serde_json::from_str(json)?;
     record::version(replay.schema_version)?;
-    let expected_backend = backend_id(
-        replay
-            .input
-            .as_ref()
-            .map_or(4, RecordedInput::solver_iterations),
-    );
-    if replay.backend != expected_backend {
-        return Err(RecordError::Invalid(format!(
-            "record backend {:?} is incompatible with {expected_backend:?}; use the original binary or rerun the scene with the current backend",
-            replay.backend,
-        )));
-    }
+    let iterations = replay
+        .input
+        .as_ref()
+        .map_or(4, RecordedInput::solver_iterations);
+    let backend = [SearchBackend::BruteForce, SearchBackend::UniformGrid].into_iter()
+        .find(|&candidate| replay.backend == backend_id(candidate, iterations))
+        .ok_or_else(|| RecordError::Invalid(format!(
+            "record backend {:?} is incompatible with {:?} or {:?}; use the original binary or rerun the scene with a current backend",
+            replay.backend, backend_id(SearchBackend::BruteForce, iterations), backend_id(SearchBackend::UniformGrid, iterations)
+        )))?;
     replay.request.validate()?;
     let input = replay
         .input
         .ok_or_else(|| RecordError::Invalid("result has no validated input to replay".into()))?;
-    Ok((input.resolve()?, replay.request))
+    Ok((input.resolve()?, replay.request, backend))
 }
 
 #[cfg(test)]

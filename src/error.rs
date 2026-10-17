@@ -11,6 +11,10 @@ use std::fmt;
 /// the calculation that overflowed or otherwise became non-finite.
 #[derive(Clone, Debug, PartialEq)]
 pub enum NumericalError {
+    /// Neighbour-search storage could not be reserved, including capacity overflow.
+    SearchAllocation,
+    /// A grid coordinate or adjacent-cell offset cannot be represented safely.
+    GridIndexOutOfRange,
     /// A scalar input is NaN or infinite.
     NonFiniteScalar { quantity: &'static str, value: f32 },
     /// At least one component of a vector input is NaN or infinite.
@@ -66,6 +70,12 @@ pub enum NumericalError {
 impl fmt::Display for NumericalError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::SearchAllocation => {
+                write!(formatter, "could not reserve neighbour-search storage")
+            }
+            Self::GridIndexOutOfRange => {
+                write!(formatter, "uniform-grid cell index is out of range")
+            }
             Self::NonFiniteScalar { quantity, value } => {
                 write!(formatter, "{quantity} must be finite, got {value}")
             }
