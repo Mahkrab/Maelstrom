@@ -3,6 +3,11 @@
 A deterministic, headless Position-Based Fluids simulator. Run `cargo run --release -- --help`
 for scene discovery, validation, inspection, execution and replay.
 
+Neighbour discovery is selectable: `run --backend brute-force` is the default reference;
+`run --backend uniform-grid` uses sparse occupied cells with the same serial numerical work
+and particle reduction order. Saved results identify the selection, and `replay` restores it.
+Both remain available for comparison; dense support can still require quadratic work and storage.
+
 The [usage guide](docs/usage.md) covers building, CLI journeys, replay, JSON records, output
 publication and failure codes. The [input specification](docs/inputs.md) documents every supported
 configuration field, scene construction, validation and precedence rule. Frozen correctness inputs

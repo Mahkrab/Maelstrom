@@ -70,6 +70,12 @@ order. Dense cells can still require quadratic work and interaction storage; thi
 limit or a guarantee of faster execution for every input. Checked search allocation failures and
 distance overflow fail the step without changing accepted state.
 
+The grid rebuilds its occupied-cell entries and interaction rows from each complete prediction;
+it has no cache carried between timesteps. Sparse storage avoids allocating empty spatial volume,
+but distant coordinates can enlarge cells and increase candidate work. Neither backend provides
+a process memory budget. Checkpoint density audits independently use brute-force discovery, so
+frequent checkpoints can limit end-to-end throughput even when grid solver time improves.
+
 Output paths must name new files in existing directories. Existing files and symlinks are refused,
 including destinations that appear after preflight. Publication writes and syncs a temporary file
 beside the destination, then uses a non-replacing hard link for atomic visibility. The filesystem
@@ -91,6 +97,11 @@ unknown backend or arithmetic versions are rejected. Current eight-iteration ide
 It reruns the requested step limit even if the original was interrupted; it does not resume a final
 snapshot or certify the saved outcome. Replay is unmeasured. Compare outputs using the declared
 numerical policy rather than elapsed time or variable build metadata.
+
+Library callers replaying either search should use `workflow::replay_execution`, then pass its
+backend to `workflow::run_with_options`. The older `workflow::replay_inputs` accepts brute-force
+records only and rejects grid records. Default solver constructors and workflow
+calls continue to select brute force; choose `SearchBackend::UniformGrid` explicitly for the grid.
 
 ## Output contract
 
@@ -175,7 +186,8 @@ Iteration intervals accumulate across the configured work. Zero-step runs have n
 
 Total timing includes mandatory validation, CFL diagnostics, allocation and cancellation polls.
 For the grid, neighbour-search timing includes bounds validation, cell construction, candidate
-enumeration, row sorting and search-storage destruction; setup is not moved outside the step.
+enumeration, row sorting and destruction of temporary occupied-cell storage. Interaction rows
+remain through Jacobi and are released before total-step timing ends; setup is not moved outside the step.
 Loading, solver construction, fresh audits, snapshots, workflow bookkeeping, formatting and output
 remain outside it. A single invocation is a raw sample. The EPQ `serial-baseline-v1` protocol owns
 controlled warm-up, three samples, a separate profile, timeouts and aggregation. Important comparisons

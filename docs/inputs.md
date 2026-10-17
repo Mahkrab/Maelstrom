@@ -171,6 +171,10 @@ values. Scene keys add ordered particle identities/state, planes and randomness.
 descriptions, file paths and field provenance do not decide numerical equivalence. They remain
 available for inspection. CLI result records contain the complete effective inputs for replay.
 
+Neighbour discovery is an execution choice (`run --backend brute-force` or `uniform-grid`),
+not a TOML numerical setting. It leaves configuration and physical input identities unchanged;
+backend and run identities distinguish execution. Full-result replay restores the recorded search.
+
 Historical `defaults-v1.toml`, `defaults-v2.toml` and `defaults-v3.toml` remain explicit configurations.
 Legacy recorded inputs omit a unit `correction_scale`; the reader supplies one and preserves their
 historical comparison identity. Unsupported schema versions and backend arithmetic identities are
