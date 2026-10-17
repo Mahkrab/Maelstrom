@@ -3,6 +3,11 @@
 A deterministic, headless Position-Based Fluids simulator. Run `cargo run --release -- --help`
 for scene discovery, validation, inspection, execution and replay.
 
+The [usage guide](docs/usage.md) covers building, CLI journeys, replay, JSON records, output
+publication and failure codes. The [input specification](docs/inputs.md) documents every supported
+configuration field, scene construction, validation and precedence rule. Frozen correctness inputs
+and golden results are indexed by [the reference manifest](reference/manifest.json).
+
 Elapsed solver measurements are opt-in:
 
 ```sh
