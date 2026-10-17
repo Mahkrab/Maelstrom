@@ -667,7 +667,7 @@ fn publication_is_complete_no_clobber_and_failure_preserves_state_and_history() 
 }
 
 #[test]
-fn grid_workflow_matches_empty_warning_audit_input_and_late_failure_outcomes() {
+fn cpu_workflow_matches_empty_warning_audit_input_and_late_failure_outcomes() {
     use maelstrom::{
         neighbours::SearchBackend,
         workflow::{ExecutionOptions, MeasurementMode, run_with_options},
@@ -724,38 +724,46 @@ fn grid_workflow_matches_empty_warning_audit_input_and_late_failure_outcomes() {
     for (input, request, status) in cases {
         let reference = run(&input, request.clone());
         assert_eq!(reference.status(), status);
-        for measurement in [
-            None,
-            Some(MeasurementMode::Total),
-            Some(MeasurementMode::Stages),
+        for execution in [
+            maelstrom::execution::ExecutionMode::Serial,
+            maelstrom::execution::ExecutionMode::Threaded { workers: 1 },
+            maelstrom::execution::ExecutionMode::Threaded { workers: 3 },
+            maelstrom::execution::ExecutionMode::Threaded { workers: 7 },
         ] {
-            let grid = run_with_options(
-                &input,
-                request.clone(),
-                ExecutionOptions {
-                    backend: SearchBackend::UniformGrid,
-                    measurement,
-                },
-                || false,
-            );
-            assert_eq!(grid.status(), status);
-            assert_eq!(
-                support::serial_document(document(&grid)),
-                support::serial_document(document(&reference))
-            );
-            if let Some(timings) = grid.measurements() {
-                assert_eq!(timings.steps.len(), grid.completed_steps() as usize);
-                assert_eq!(
-                    timings.failed_attempt_s.is_some(),
-                    status == CompletionStatus::SimulationFailure
+            for measurement in [
+                None,
+                Some(MeasurementMode::Total),
+                Some(MeasurementMode::Stages),
+            ] {
+                let grid = run_with_options(
+                    &input,
+                    request.clone(),
+                    ExecutionOptions {
+                        execution,
+                        backend: SearchBackend::UniformGrid,
+                        measurement,
+                    },
+                    || false,
                 );
+                assert_eq!(grid.status(), status);
+                assert_eq!(
+                    support::serial_document(document(&grid)),
+                    support::serial_document(document(&reference))
+                );
+                if let Some(timings) = grid.measurements() {
+                    assert_eq!(timings.steps.len(), grid.completed_steps() as usize);
+                    assert_eq!(
+                        timings.failed_attempt_s.is_some(),
+                        status == CompletionStatus::SimulationFailure
+                    );
+                }
             }
         }
     }
 }
 
 #[test]
-fn grid_workflow_cancellation_retains_its_own_prior_work_in_all_modes() {
+fn cpu_workflow_cancellation_retains_its_own_prior_work_in_all_modes() {
     use maelstrom::{
         neighbours::SearchBackend,
         workflow::{ExecutionOptions, MeasurementMode, run_with_options},
@@ -787,33 +795,41 @@ fn grid_workflow_cancellation_retains_its_own_prior_work_in_all_modes() {
             polls += 1;
             polls == cancel_at
         });
-        for measurement in [
-            None,
-            Some(MeasurementMode::Total),
-            Some(MeasurementMode::Stages),
+        for execution in [
+            maelstrom::execution::ExecutionMode::Serial,
+            maelstrom::execution::ExecutionMode::Threaded { workers: 1 },
+            maelstrom::execution::ExecutionMode::Threaded { workers: 3 },
+            maelstrom::execution::ExecutionMode::Threaded { workers: 7 },
         ] {
-            let mut seen = 0;
-            let actual = run_with_options(
-                &input,
-                request(3, &[0, 1, 3]),
-                ExecutionOptions {
-                    backend: SearchBackend::UniformGrid,
-                    measurement,
-                },
-                || {
-                    seen += 1;
-                    seen == cancel_at
-                },
-            );
-            assert_eq!(actual.status(), CompletionStatus::Cancelled);
-            assert_eq!(seen, polls);
-            assert_eq!(
-                support::serial_document(document(&actual)),
-                support::serial_document(document(&expected))
-            );
-            if let Some(timings) = actual.measurements() {
-                assert!(timings.failed_attempt_s.is_some());
-                assert_eq!(timings.steps.len(), actual.completed_steps() as usize);
+            for measurement in [
+                None,
+                Some(MeasurementMode::Total),
+                Some(MeasurementMode::Stages),
+            ] {
+                let mut seen = 0;
+                let actual = run_with_options(
+                    &input,
+                    request(3, &[0, 1, 3]),
+                    ExecutionOptions {
+                        execution,
+                        backend: SearchBackend::UniformGrid,
+                        measurement,
+                    },
+                    || {
+                        seen += 1;
+                        seen == cancel_at
+                    },
+                );
+                assert_eq!(actual.status(), CompletionStatus::Cancelled);
+                assert_eq!(seen, polls);
+                assert_eq!(
+                    support::serial_document(document(&actual)),
+                    support::serial_document(document(&expected))
+                );
+                if let Some(timings) = actual.measurements() {
+                    assert!(timings.failed_attempt_s.is_some());
+                    assert_eq!(timings.steps.len(), actual.completed_steps() as usize);
+                }
             }
         }
     }
@@ -823,6 +839,7 @@ fn grid_workflow_cancellation_retains_its_own_prior_work_in_all_modes() {
         &input,
         request(1, &[1]),
         ExecutionOptions {
+            execution: Default::default(),
             backend: SearchBackend::UniformGrid,
             measurement: None,
         },

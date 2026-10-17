@@ -673,6 +673,7 @@ fn grid_ordinary_and_measured_runs_match_complete_frozen_outputs() {
                 &input,
                 request(case),
                 ExecutionOptions {
+                    execution: Default::default(),
                     backend: SearchBackend::UniformGrid,
                     measurement,
                 },
@@ -745,6 +746,7 @@ fn grid_and_reference_agree_on_every_family_size_before_measurement() {
             &input,
             request,
             ExecutionOptions {
+                execution: Default::default(),
                 backend: SearchBackend::UniformGrid,
                 measurement: None,
             },
@@ -772,4 +774,135 @@ fn serial_comparison_keeps_signed_zero_and_checkpoint_disagreements_visible() {
     let mut b = a.clone();
     b["final_snapshot"] = 2.0.into();
     assert_ne!(support::serial_document(a), support::serial_document(b));
+}
+
+#[test]
+fn threaded_complete_goldens_repeat_across_workers_instrumentation_and_replay() {
+    use maelstrom::{
+        execution::ExecutionMode,
+        neighbours::SearchBackend,
+        workflow::{ExecutionOptions, MeasurementMode, replay_options, run_with_options},
+    };
+    for case in manifest().cases.iter().filter(|case| case.golden.is_some()) {
+        let input = scene(case);
+        let golden: Value =
+            serde_json::from_str(&fs::read_to_string(path(case.golden.as_ref().unwrap())).unwrap())
+                .unwrap();
+        let expected = support::serial_document(golden.clone());
+        let mut identities = std::collections::BTreeSet::new();
+        for workers in [1, 2, 3, 7] {
+            let mut identity = None;
+            for measurement in [
+                None,
+                Some(MeasurementMode::Total),
+                Some(MeasurementMode::Stages),
+            ] {
+                let options = ExecutionOptions {
+                    backend: SearchBackend::UniformGrid,
+                    execution: ExecutionMode::Threaded { workers },
+                    measurement,
+                };
+                let result = run_with_options(&input, request(case), options, || false);
+                assert_eq!(result.status(), CompletionStatus::Completed);
+                let mut actual = document(&result);
+                assert_eq!(
+                    actual["execution"],
+                    serde_json::json!({"mode":"threaded","workers":workers})
+                );
+                actual.as_object_mut().unwrap().remove("execution");
+                assert_eq!(support::serial_document(actual), expected);
+                let metadata = result.metadata().unwrap();
+                assert_eq!(
+                    metadata.backend,
+                    "threaded-uniform-grid-pbf-binary32-8-jacobi-v2"
+                );
+                if let Some(identity) = &identity {
+                    assert_eq!(&metadata.run_id, identity);
+                } else {
+                    identity = Some(metadata.run_id.clone());
+                }
+                if let Some(measurements) = result.measurements() {
+                    assert_eq!(measurements.steps.len(), case.steps as usize);
+                    for step in &measurements.steps {
+                        assert!(step.total_s.is_finite() && step.total_s >= 0.0);
+                        assert_eq!(
+                            step.stages.is_some(),
+                            measurement == Some(MeasurementMode::Stages)
+                        );
+                        if let Some(stage) = step.stages {
+                            let sum = stage.validation_and_acceleration_s
+                                + stage.prediction_s
+                                + stage.neighbour_search_s
+                                + stage.jacobi_s
+                                + stage.projection_s
+                                + stage.acceptance_s;
+                            assert!(sum <= step.total_s);
+                        }
+                    }
+                }
+                let json = result.to_json().unwrap();
+                let (restored, request, restored_options) = replay_options(&json).unwrap();
+                assert_eq!(
+                    restored_options,
+                    ExecutionOptions {
+                        measurement: None,
+                        ..options
+                    }
+                );
+                assert!(workflow_replay_legacy_rejects(&json));
+                if measurement.is_none() {
+                    let repeated = run_with_options(&restored, request, restored_options, || false);
+                    assert_eq!(document(&repeated), document(&result));
+                }
+            }
+            assert!(identities.insert(identity.unwrap()));
+        }
+    }
+}
+
+fn workflow_replay_legacy_rejects(json: &str) -> bool {
+    maelstrom::workflow::replay_execution(json).is_err() && replay_inputs(json).is_err()
+}
+
+#[test]
+fn threaded_family_one_step_matches_both_serial_controls_at_every_size() {
+    use maelstrom::{
+        execution::ExecutionMode,
+        neighbours::SearchBackend,
+        workflow::{ExecutionOptions, run_with_options},
+    };
+    for case in &manifest().cases {
+        let input = scene(case);
+        let request = RunRequest {
+            steps: 1,
+            checkpoints: vec![0, 1],
+        };
+        let expected = support::serial_document(document(&run(&input, request.clone())));
+        for execution in [
+            ExecutionMode::Serial,
+            ExecutionMode::Threaded { workers: 1 },
+            ExecutionMode::Threaded { workers: 3 },
+            ExecutionMode::Threaded { workers: 7 },
+        ] {
+            let result = run_with_options(
+                &input,
+                request.clone(),
+                ExecutionOptions {
+                    backend: SearchBackend::UniformGrid,
+                    execution,
+                    measurement: None,
+                },
+                || false,
+            );
+            assert_eq!(result.status(), CompletionStatus::Completed);
+            let mut actual = document(&result);
+            actual.as_object_mut().unwrap().remove("execution");
+            assert_eq!(
+                support::serial_document(actual),
+                expected,
+                "{} {execution:?}",
+                case.scene
+            );
+        }
+    }
 }

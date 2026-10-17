@@ -1350,3 +1350,209 @@ fn grid_publication_keeps_no_clobber_guarantees_and_snapshot_bits() {
         assert!(help.contains(expected));
     }
 }
+
+#[test]
+fn threaded_selection_replay_and_environment_independence_are_public() {
+    let directory = Directory::new();
+    let args = [
+        "run",
+        "falling-block-04",
+        "--backend",
+        "uniform-grid",
+        "--execution",
+        "threaded",
+        "--threads",
+        "3",
+        "--steps",
+        "3",
+        "--checkpoints",
+        "0,1,3",
+        "--format",
+        "json",
+    ];
+    let output = command(&directory.0)
+        .env("RAYON_NUM_THREADS", "17")
+        .args(args)
+        .output()
+        .unwrap();
+    success(&output);
+    let result = document(&output);
+    assert_eq!(
+        result["execution"],
+        serde_json::json!({"mode":"threaded","workers":3})
+    );
+    assert_eq!(
+        result["backend"],
+        "threaded-uniform-grid-pbf-binary32-8-jacobi-v2"
+    );
+    let path = directory.write(
+        "threaded.json",
+        std::str::from_utf8(&output.stdout).unwrap(),
+    );
+    let replay = command(&directory.0)
+        .env("RAYON_NUM_THREADS", "1")
+        .args(["replay", path.to_str().unwrap(), "--format", "json"])
+        .output()
+        .unwrap();
+    success(&replay);
+    assert_eq!(
+        support::serial_document(result.clone()),
+        support::serial_document(document(&replay))
+    );
+    let serial = cli(&[
+        "run",
+        "falling-block-04",
+        "--steps",
+        "3",
+        "--checkpoints",
+        "0,1,3",
+        "--format",
+        "json",
+    ]);
+    success(&serial);
+    let mut actual = result;
+    actual.as_object_mut().unwrap().remove("execution");
+    assert_eq!(
+        support::serial_document(actual),
+        support::serial_document(document(&serial))
+    );
+    let text = cli(&[
+        "run",
+        "falling-block-04",
+        "--backend",
+        "uniform-grid",
+        "--execution",
+        "threaded",
+        "--threads",
+        "2",
+        "--steps",
+        "0",
+    ]);
+    success(&text);
+    assert!(
+        String::from_utf8(text.stdout)
+            .unwrap()
+            .contains("requested workers: 2; effective workers: 2")
+    );
+}
+
+#[test]
+fn threaded_default_uses_available_capacity_and_invalid_combinations_fail() {
+    let default = cli(&[
+        "run",
+        "falling-block-04",
+        "--backend",
+        "uniform-grid",
+        "--execution",
+        "threaded",
+        "--steps",
+        "0",
+        "--format",
+        "json",
+    ]);
+    success(&default);
+    assert_eq!(
+        document(&default)["execution"],
+        serde_json::to_value(maelstrom::execution::ExecutionMode::threaded_default().unwrap())
+            .unwrap()
+    );
+    let cases: &[&[&str]] = &[
+        &["--threads", "2"],
+        &["--execution", "threaded"],
+        &["--backend", "uniform-grid", "--threads", "2"],
+        &[
+            "--backend",
+            "uniform-grid",
+            "--execution",
+            "threaded",
+            "--threads",
+            "0",
+        ],
+        &[
+            "--backend",
+            "uniform-grid",
+            "--execution",
+            "threaded",
+            "--threads",
+            "257",
+        ],
+        &[
+            "--backend",
+            "uniform-grid",
+            "--execution",
+            "threaded",
+            "--threads",
+            "-1",
+        ],
+        &[
+            "--backend",
+            "uniform-grid",
+            "--execution",
+            "threaded",
+            "--threads",
+            "many",
+        ],
+    ];
+    for extra in cases {
+        let mut args = vec![
+            "run",
+            "falling-block-04",
+            "--steps",
+            "0",
+            "--format",
+            "json",
+        ];
+        args.extend_from_slice(extra);
+        let output = cli(&args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let help = cli(&["run", "--help"]);
+    success(&help);
+    let text = String::from_utf8(help.stdout).unwrap();
+    assert!(text.contains("--execution") && text.contains("--threads"));
+}
+
+#[test]
+fn replay_cannot_silently_discard_or_invent_worker_settings() {
+    let output = cli(&[
+        "run",
+        "falling-block-04",
+        "--backend",
+        "uniform-grid",
+        "--execution",
+        "threaded",
+        "--threads",
+        "2",
+        "--steps",
+        "0",
+        "--format",
+        "json",
+    ]);
+    success(&output);
+    let original = document(&output);
+    let directory = Directory::new();
+    for execution in [
+        serde_json::Value::Null,
+        serde_json::json!({"mode":"threaded","workers":0}),
+        serde_json::json!({"mode":"serial"}),
+        serde_json::json!({"mode":"threaded"}),
+        serde_json::json!({"mode":"threaded","workers":2,"unknown":true}),
+    ] {
+        let mut value = original.clone();
+        value["execution"] = execution;
+        assert!(maelstrom::workflow::replay_options(&value.to_string()).is_err());
+    }
+    let mut missing = original.clone();
+    missing.as_object_mut().unwrap().remove("execution");
+    let path = directory.write("missing.json", &missing.to_string());
+    let output = cli(&["replay", path.to_str().unwrap(), "--format", "json"]);
+    assert_eq!(output.status.code(), Some(3));
+    let mut serial = original;
+    serial["backend"] = "serial-uniform-grid-pbf-binary32-8-jacobi-v2".into();
+    assert!(maelstrom::workflow::replay_options(&serial.to_string()).is_err());
+}

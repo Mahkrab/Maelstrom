@@ -7,7 +7,7 @@
 //! before calculating any correction. This keeps all particles on the same
 //! Jacobi snapshot.
 
-use crate::{NumericalError, kernel, math::Vec3, validation};
+use crate::{NumericalError, execution::Execution, kernel, math::Vec3, validation};
 
 /// ### Fixed interaction lists for a particle snapshot
 ///
@@ -495,63 +495,23 @@ pub fn compute_jacobi_stage(
     let mut multipliers = Vec::with_capacity(particle_count);
 
     for (particle, active) in active_sets.iter().enumerate() {
-        let density =
-            normalised_density_from_active(particle, positions, active, parameters.support_radius)?;
-        let constraint = density_constraint(density, parameters.normalised_rest_density)?;
-        let directions = directions_from_active(
-            particle,
-            positions,
-            active,
-            parameters.support_radius,
-            parameters.normalised_rest_density,
-        )?;
-        let multiplier = relaxed_multiplier(constraint, &directions, parameters.relaxation)?;
-
+        let (density, constraint, multiplier) =
+            particle_multiplier(particle, positions, active, parameters)?;
         normalised_densities.push(density);
         constraints.push(constraint);
         multipliers.push(multiplier);
     }
 
-    // Corrections need both particless multipliers, so finish the full list first.
+    // Corrections need both particles' multipliers, so finish the full list first.
     let mut corrections = Vec::with_capacity(particle_count);
     for (particle, active) in active_sets.iter().enumerate() {
-        let mut correction_sum = Vec3::ZERO;
-        for &neighbour in active {
-            let (displacement, distance) =
-                displacement_and_distance(particle, neighbour, positions)?;
-            let spiky = kernel::spiky_direction(displacement, parameters.support_radius)?;
-            let pressure = parameters.artificial_pressure.evaluate(distance)?;
-            let multiplier_pair = validation::finite_result(
-                "pair multiplier sum",
-                multipliers[particle] + multipliers[neighbour],
-            )?;
-            let coefficient =
-                validation::finite_result("correction coefficient", multiplier_pair + pressure)?;
-            let pair_correction = validation::finite_vector_result(
-                "pair correction contribution",
-                spiky * coefficient,
-            )?;
-            correction_sum = validation::finite_vector_result(
-                "ordered correction sum",
-                correction_sum + pair_correction,
-            )?;
-        }
-        let reciprocal_rest_density = validation::finite_result(
-            "reciprocal normalised rest density",
-            1.0 / parameters.normalised_rest_density,
-        )?;
-        let correction = validation::finite_vector_result(
-            "particle position correction",
-            correction_sum * reciprocal_rest_density,
-        )?;
-        corrections.push(if parameters.correction_scale == 1.0 {
-            correction
-        } else {
-            validation::finite_vector_result(
-                "scaled position correction",
-                correction * parameters.correction_scale,
-            )?
-        });
+        corrections.push(particle_correction(
+            particle,
+            positions,
+            active,
+            &multipliers,
+            parameters,
+        )?);
     }
 
     Ok(JacobiStage {
@@ -559,6 +519,124 @@ pub fn compute_jacobi_stage(
         constraints,
         multipliers,
         corrections,
+    })
+}
+
+/// Calculates a complete stage using a reusable CPU resource.
+///
+/// Independent particles may run in any order, but each particle keeps its
+/// ordered binary32 reductions. Active rows, multipliers and corrections finish
+/// in separate passes. Errors retain the serial pass and particle precedence.
+/// The input snapshot and interaction rows remain immutable, including on failure.
+/// Validation and numerical errors are the same as [`compute_jacobi_stage`].
+pub fn compute_jacobi_stage_with_execution(
+    positions: &[Vec3],
+    fixed_interactions: &InteractionSets,
+    parameters: PbfParameters,
+    execution: &Execution,
+) -> Result<JacobiStage, NumericalError> {
+    if execution.mode().is_serial() {
+        return compute_jacobi_stage(positions, fixed_interactions, parameters);
+    }
+    validate_snapshot(positions, fixed_interactions)?;
+    let count = positions.len();
+    let active_sets = execution.map(count, |particle| {
+        active_from_validated_snapshot(
+            particle,
+            positions,
+            interaction_row(particle, fixed_interactions)?,
+            parameters.support_radius,
+        )
+    })?;
+    let values = execution.map(count, |particle| {
+        particle_multiplier(particle, positions, &active_sets[particle], parameters)
+    })?;
+    let mut normalised_densities = Vec::with_capacity(count);
+    let mut constraints = Vec::with_capacity(count);
+    let mut multipliers = Vec::with_capacity(count);
+    for (density, constraint, multiplier) in values {
+        normalised_densities.push(density);
+        constraints.push(constraint);
+        multipliers.push(multiplier);
+    }
+    let corrections = execution.map(count, |particle| {
+        particle_correction(
+            particle,
+            positions,
+            &active_sets[particle],
+            &multipliers,
+            parameters,
+        )
+    })?;
+    Ok(JacobiStage {
+        normalised_densities,
+        constraints,
+        multipliers,
+        corrections,
+    })
+}
+
+fn particle_multiplier(
+    particle: usize,
+    positions: &[Vec3],
+    active: &[usize],
+    parameters: PbfParameters,
+) -> Result<(f32, f32, f32), NumericalError> {
+    let density =
+        normalised_density_from_active(particle, positions, active, parameters.support_radius)?;
+    let constraint = density_constraint(density, parameters.normalised_rest_density)?;
+    let directions = directions_from_active(
+        particle,
+        positions,
+        active,
+        parameters.support_radius,
+        parameters.normalised_rest_density,
+    )?;
+    let multiplier = relaxed_multiplier(constraint, &directions, parameters.relaxation)?;
+
+    Ok((density, constraint, multiplier))
+}
+
+fn particle_correction(
+    particle: usize,
+    positions: &[Vec3],
+    active: &[usize],
+    multipliers: &[f32],
+    parameters: PbfParameters,
+) -> Result<Vec3, NumericalError> {
+    let mut correction_sum = Vec3::ZERO;
+    for &neighbour in active {
+        let (displacement, distance) = displacement_and_distance(particle, neighbour, positions)?;
+        let spiky = kernel::spiky_direction(displacement, parameters.support_radius)?;
+        let pressure = parameters.artificial_pressure.evaluate(distance)?;
+        let multiplier_pair = validation::finite_result(
+            "pair multiplier sum",
+            multipliers[particle] + multipliers[neighbour],
+        )?;
+        let coefficient =
+            validation::finite_result("correction coefficient", multiplier_pair + pressure)?;
+        let pair_correction =
+            validation::finite_vector_result("pair correction contribution", spiky * coefficient)?;
+        correction_sum = validation::finite_vector_result(
+            "ordered correction sum",
+            correction_sum + pair_correction,
+        )?;
+    }
+    let reciprocal_rest_density = validation::finite_result(
+        "reciprocal normalised rest density",
+        1.0 / parameters.normalised_rest_density,
+    )?;
+    let correction = validation::finite_vector_result(
+        "particle position correction",
+        correction_sum * reciprocal_rest_density,
+    )?;
+    Ok(if parameters.correction_scale == 1.0 {
+        correction
+    } else {
+        validation::finite_vector_result(
+            "scaled position correction",
+            correction * parameters.correction_scale,
+        )?
     })
 }
 

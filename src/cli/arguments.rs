@@ -79,6 +79,12 @@ pub(super) struct Run {
     /// Neighbour discovery; physical inputs and serial reduction order are shared
     #[arg(long, value_enum, default_value = "brute-force")]
     pub backend: Backend,
+    /// CPU execution; threaded mode requires --backend uniform-grid
+    #[arg(long, value_enum, default_value = "serial")]
+    pub execution: CpuMode,
+    /// Exact pool size (1..=256); defaults to available parallelism, capped at 256
+    #[arg(long, value_name = "N")]
+    pub threads: Option<usize>,
     /// Number of fixed timesteps; zero observes the initial state
     #[arg(
         long,
@@ -102,7 +108,13 @@ pub(super) struct Run {
     pub output: Output,
 }
 
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(super) enum CpuMode {
+    Serial,
+    Threaded,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(super) enum Backend {
     BruteForce,
     UniformGrid,

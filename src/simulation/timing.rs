@@ -1,4 +1,4 @@
-//! Optional monotonic stage clocks observe the existing serial execution path.
+//! Optional monotonic stage clocks observe the coordinated execution path.
 //! Disabled clocks compile to no operations; successful step totals also include
 //! local destruction and clock overhead outside the contiguous stage intervals.
 
@@ -7,7 +7,8 @@ use std::time::Instant;
 use serde::Serialize;
 
 /// Contiguous internal intervals, summed across all configured Jacobi iterations.
-/// Values are elapsed wall-clock seconds, including descheduling and validation.
+/// Values are coordinator wall-clock seconds, including dispatch, barriers,
+/// descheduling and validation; overlapping worker intervals are never added.
 #[derive(Clone, Copy, Debug, Default, Serialize)]
 pub struct StageTimes {
     /// Initial cancellation/state checks, acceleration and mandatory CFL diagnostic.

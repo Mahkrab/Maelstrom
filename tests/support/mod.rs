@@ -11,6 +11,7 @@ use std::f64::consts::PI;
 /// Only declared execution/build context and elapsed timings are removed.
 pub fn serial_document(mut value: serde_json::Value) -> String {
     value.as_object_mut().unwrap().remove("backend");
+    value.as_object_mut().unwrap().remove("execution");
     value.as_object_mut().unwrap().remove("measurements");
     if let Some(metadata) = value["metadata"].as_object_mut() {
         for key in [

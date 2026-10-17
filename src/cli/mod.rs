@@ -18,8 +18,8 @@ use std::{
 
 use clap::Parser;
 use maelstrom::workflow::{
-    CompletionStatus, ExecutionOptions, MeasurementMode, OutputFormat, RunRequest,
-    replay_execution, run_with_options,
+    CompletionStatus, ExecutionOptions, MeasurementMode, OutputFormat, RunRequest, replay_options,
+    run_with_options,
 };
 use serde_json::{Value, json};
 
@@ -114,6 +114,31 @@ fn execute(cli: &Cli) -> Result<u8, CliError> {
             Ok(0)
         }
         Command::Run(run) => {
+            let execution = match run.execution {
+                arguments::CpuMode::Serial => {
+                    if run.threads.is_some() {
+                        return Err(CliError::usage(
+                            "--threads requires --execution threaded".into(),
+                        ));
+                    }
+                    maelstrom::execution::ExecutionMode::Serial
+                }
+                arguments::CpuMode::Threaded => {
+                    if run.backend != arguments::Backend::UniformGrid {
+                        return Err(CliError::usage(
+                            "--execution threaded requires --backend uniform-grid".into(),
+                        ));
+                    }
+                    let mode = match run.threads {
+                        Some(workers) => maelstrom::execution::ExecutionMode::Threaded { workers },
+                        None => maelstrom::execution::ExecutionMode::threaded_default()
+                            .map_err(|e| CliError::input(e.to_string()))?,
+                    };
+                    mode.validate()
+                        .map_err(|e| CliError::usage(e.to_string()))?;
+                    mode
+                }
+            };
             if run.inputs.scene.is_none() {
                 return Err(CliError::usage(
                     "run requires SCENE; use 'maelstrom scenes' or 'maelstrom run --help'".into(),
@@ -144,6 +169,7 @@ fn execute(cli: &Cli) -> Result<u8, CliError> {
                 &run.output,
                 ExecutionOptions {
                     backend: run.backend.into(),
+                    execution,
                     measurement: run.measure.then_some(if run.stage_profile {
                         MeasurementMode::Stages
                     } else {
@@ -155,7 +181,7 @@ fn execute(cli: &Cli) -> Result<u8, CliError> {
         Command::Replay(replay) => {
             let source = fs::read_to_string(&replay.file)
                 .map_err(|error| CliError::input(format!("result {:?}: {error}", replay.file)))?;
-            let (scene, request, backend) = replay_execution(&source)
+            let (scene, request, options) = replay_options(&source)
                 .map_err(|error| CliError::input(format!("result {:?}: {error}", replay.file)))?;
             diagnostic(
                 cli,
@@ -164,16 +190,7 @@ fn execute(cli: &Cli) -> Result<u8, CliError> {
                     scene: Some(scene.clone()),
                 },
             )?;
-            execute_run(
-                cli,
-                &scene,
-                request,
-                &replay.output,
-                ExecutionOptions {
-                    backend,
-                    measurement: None,
-                },
-            )
+            execute_run(cli, &scene, request, &replay.output, options)
         }
     }
 }

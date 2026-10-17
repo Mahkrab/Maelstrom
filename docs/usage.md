@@ -1,8 +1,8 @@
 # Running and reproducing a headless simulation
 
-Maelstrom runs a serial binary32 Position-Based Fluids solver without a display. Configuration and
-scene resolution precede stepping; observations and output read accepted state. No graphical,
-threaded or CUDA backend is selected by these commands.
+Maelstrom runs a binary32 Position-Based Fluids solver without a display. Configuration and
+scene resolution precede stepping; observations and output read accepted state. CPU execution is
+serial by default, with explicit threaded execution available for the uniform grid.
 
 ## Build and discovery
 
@@ -55,7 +55,7 @@ observes the initial state. Other checkpoints copy accepted state and rebuild a 
 over every particle; they do not reuse solver neighbour lists.
 
 Select neighbour discovery with `run --backend brute-force` (the default) or
-`run --backend uniform-grid`. Both use the same serial solver, fixed prediction membership,
+`run --backend uniform-grid`. Both use the same timestep, fixed prediction membership,
 binary32 distance checks and ascending particle reductions. For example:
 
 ```sh
@@ -76,6 +76,46 @@ but distant coordinates can enlarge cells and increase candidate work. Neither b
 a process memory budget. Checkpoint density audits independently use brute-force discovery, so
 frequent checkpoints can limit end-to-end throughput even when grid solver time improves.
 
+### Threaded CPU execution
+
+Select CPU execution independently from neighbour discovery:
+
+```sh
+maelstrom run falling-block-04 --backend uniform-grid --execution threaded --threads 3 \
+  --refine-timestep 4 --steps 480 --checkpoints 0,1,120,240,480 \
+  --format json --output threaded-run.json
+maelstrom replay threaded-run.json --format json --output threaded-repeated.json
+```
+
+`--execution serial` remains the default. `--execution threaded` requires `--backend uniform-grid`.
+`--threads N` is valid only for threaded execution, with an integer count from 1 through 256.
+If omitted, threaded execution uses `std::thread::available_parallelism()`, capped at 256; inability
+to query capacity is an input error. An explicit count may exceed available CPU capacity: workers
+are software threads, not reserved cores. Pool construction must honour the exact request or fail
+as an input-validation error (exit 3); no size is silently reduced. Invalid counts or incompatible
+CLI options are usage errors (exit 2). The 256-worker bound limits accidental resource requests;
+it is not a measured useful scaling range.
+
+Each solver owns a private Rayon pool for its lifetime. `RAYON_NUM_THREADS` and another solver's
+settings cannot change its size. There is no small-workload serial fallback: even one-worker mode
+uses its pool for non-empty Jacobi work. Rayon divides indexed particle ranges between workers;
+per-particle reductions retain ascending order. Active-interaction filtering, density/constraint/
+multiplier calculation and correction calculation have complete-pass barriers. All work finishes
+before the coordinator selects the earliest error in serial pass/particle order. Cancellation
+predicates run only on the calling thread at the existing polls; a Jacobi stage finishes before
+its next poll. Failed or cancelled steps discard working buffers and can be retried safely.
+
+Grid construction and discovery, prediction, acceleration/CFL, candidate formation, ordered plane
+projection, acceptance and independent audits remain serial. Threaded execution preserves the
+same binary32 operations and requires exact results, including signed zero, across tested worker
+counts in the supported build environment. This is not a cross-platform bitwise guarantee.
+
+Library callers select `execution::ExecutionMode::Threaded { workers: N }` in
+`workflow::ExecutionOptions`, or use `simulation::Simulation::from_scene_with_execution` and
+`new_with_execution`. `Simulation` owns its pool and accepted state. `SerialSimulation` remains
+a compatibility name; existing constructors still select serial execution. Standalone Jacobi
+callers can reuse `execution::Execution` with `fluid::compute_jacobi_stage_with_execution`.
+
 Output paths must name new files in existing directories. Existing files and symlinks are refused,
 including destinations that appear after preflight. Publication writes and syncs a temporary file
 beside the destination, then uses a non-replacing hard link for atomic visibility. The filesystem
@@ -89,18 +129,21 @@ The CLI attempts to publish a cancelled result and final accepted snapshot to th
 
 `replay` validates the recorded schema, inputs, comparison identities and backend, then executes the
 original request from its initial state. It requires neither original TOML files nor their paths.
-It restores brute-force or grid discovery from the recorded backend; there is no replay override.
+It restores discovery and the exact recorded worker count; there is no replay override or
+reselection of workers for the current machine.
 Historical brute-force identities retain their original meaning, including explicit work counts;
 unknown backend or arithmetic versions are rejected. Current eight-iteration identities are
 `serial-brute-force-pbf-binary32-8-jacobi-v2` and
-`serial-uniform-grid-pbf-binary32-8-jacobi-v2`.
+`serial-uniform-grid-pbf-binary32-8-jacobi-v2`, with
+`threaded-uniform-grid-pbf-binary32-8-jacobi-v2` for threaded execution.
 It reruns the requested step limit even if the original was interrupted; it does not resume a final
 snapshot or certify the saved outcome. Replay is unmeasured. Compare outputs using the declared
 numerical policy rather than elapsed time or variable build metadata.
 
-Library callers replaying either search should use `workflow::replay_execution`, then pass its
-backend to `workflow::run_with_options`. The older `workflow::replay_inputs` accepts brute-force
-records only and rejects grid records. Default solver constructors and workflow
+Library callers should use `workflow::replay_options`, then pass its complete execution options
+to `workflow::run_with_options`. `workflow::replay_execution` accepts serial records only;
+`workflow::replay_inputs` accepts serial brute-force records only. These compatibility helpers reject
+threaded records so they cannot silently discard worker settings. Default solver constructors and workflow
 calls continue to select brute force; choose `SearchBackend::UniformGrid` explicitly for the grid.
 
 ## Output contract
@@ -119,6 +162,7 @@ Result schema 1 contains these responsibilities:
 | Field | Meaning |
 | --- | --- |
 | `schema_version`, `application_version`, `backend` | Document, package and numerical implementation identity |
+| `execution` | Threaded mode and requested worker count, equal to effective count after admission; absent on historical and current serial records |
 | `metadata` | Run/input/configuration hashes and build context, or null when input validation failed |
 | `input` | Complete resolved configuration, provenance, initial particles and ordered planes, or null before admission |
 | `request` | Requested steps and checkpoints |
@@ -138,7 +182,8 @@ three-element arrays. A zero-speed CFL limit is `{ "kind": "unbounded" }`; a fin
 failed audit is distinct from a zero density error. A standalone snapshot has schema version,
 completed steps and ordered particles; it is an observation, not a replayable full input document.
 
-The run hash identifies the backend, application, physical input and requested step count. It is
+The run hash identifies the backend, application, physical input and requested step count, plus
+the worker count for threaded execution. Worker settings never change physical input/configuration hashes. It is
 repeatable rather than invocation-unique. Checkpoint selection and presentation do not change it;
 always retain the full request alongside the hash. Build revision is null unless supplied through
 `MAELSTROM_BUILD_REVISION` when compiling. A recorded revision is provenance, not proof of a clean
@@ -185,6 +230,10 @@ intervals. Profiling adds clocks and must be reported separately from primary to
 Iteration intervals accumulate across the configured work. Zero-step runs have no timing samples.
 
 Total timing includes mandatory validation, CFL diagnostics, allocation and cancellation polls.
+Threaded Jacobi intervals include dispatch, waiting at barriers, ordered error collection and
+working-buffer allocation. They are elapsed wall time measured by the coordinator, not a sum of
+overlapping worker clocks. One-time private-pool construction and teardown sit outside step timing;
+retain invocation wall time when evaluating whole-application performance.
 For the grid, neighbour-search timing includes bounds validation, cell construction, candidate
 enumeration, row sorting and destruction of temporary occupied-cell storage. Interaction rows
 remain through Jacobi and are released before total-step timing ends; setup is not moved outside the step.

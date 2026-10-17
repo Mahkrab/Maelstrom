@@ -93,6 +93,16 @@ impl RunResult {
             "Application: {}; backend: {}\n",
             self.application_version, self.backend
         ));
+        if let crate::execution::ExecutionMode::Threaded { workers } = self.execution {
+            text.push_str(&format!(
+                "CPU execution: threaded; requested workers: {workers}"
+            ));
+            if self.metadata.is_some() {
+                text.push_str(&format!("; effective workers: {workers}\n"));
+            } else {
+                text.push_str("; effective workers: unavailable\n");
+            }
+        }
         if let Some(input) = &self.input {
             let (scene, configuration) = input.display_names();
             text.push_str(&format!(

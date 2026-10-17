@@ -5,7 +5,9 @@ for scene discovery, validation, inspection, execution and replay.
 
 Neighbour discovery is selectable: `run --backend brute-force` is the default reference;
 `run --backend uniform-grid` uses sparse occupied cells with the same serial numerical work
-and particle reduction order. Saved results identify the selection, and `replay` restores it.
+and particle reduction order. Add `--execution threaded --threads N` to distribute Jacobi
+particle work across a private reusable pool. Threaded execution requires the grid; serial remains
+the default. Saved results identify discovery and worker settings, and `replay` restores them.
 Both remain available for comparison; dense support can still require quadratic work and storage.
 
 The [usage guide](docs/usage.md) covers building, CLI journeys, replay, JSON records, output
@@ -22,7 +24,7 @@ cargo run --release --locked --offline -- run falling-block-04 --refine-timestep
 
 `--measure` adds a versioned `measurements` object to the ordinary replayable result. It retains one
 `total_s` value per accepted step and a separate `failed_attempt_s` for an unsuccessful attempt.
-An unmeasured result has no additional fields. Replay uses the numerical inputs and request and
+An unmeasured result omits the timing object. Replay uses the numerical inputs and request and
 runs without measurements. Zero-step runs produce an empty timing list.
 
 `--measure --stage-profile` additionally records validation/acceleration, prediction, neighbour search,

@@ -1,11 +1,11 @@
-//! Failure types for serial simulation construction and execution.
+//! Failure types for simulation construction and execution.
 //!
 //! Failed or cancelled timesteps leave the accepted snapshot unchanged. A run
 //! failure keeps the outcomes that were accepted before the failed step.
 
 use std::fmt;
 
-use crate::{NumericalError, config::ConfigError};
+use crate::{NumericalError, config::ConfigError, execution::ExecutionError};
 
 use super::StepOutcome;
 
@@ -15,6 +15,8 @@ use super::StepOutcome;
 /// snapshots remain available.
 #[derive(Debug)]
 pub enum StepError {
+    /// Invalid execution selection or unavailable worker resources.
+    Execution(ExecutionError),
     /// The supplied numerical configuration is invalid or unsupported.
     Configuration(ConfigError),
     /// A checked input or intermediate calculation failed.
@@ -39,6 +41,12 @@ pub enum StepError {
     StepCountOverflow,
 }
 
+impl From<ExecutionError> for StepError {
+    fn from(error: ExecutionError) -> Self {
+        Self::Execution(error)
+    }
+}
+
 impl From<NumericalError> for StepError {
     fn from(error: NumericalError) -> Self {
         Self::Numerical(error)
@@ -54,6 +62,7 @@ impl From<ConfigError> for StepError {
 impl fmt::Display for StepError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Execution(error) => write!(formatter, "invalid execution settings: {error}"),
             Self::Configuration(error) => {
                 write!(formatter, "invalid solver configuration: {error}")
             }
@@ -74,6 +83,7 @@ impl fmt::Display for StepError {
 impl std::error::Error for StepError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Execution(error) => Some(error),
             Self::Configuration(error) => Some(error),
             Self::Numerical(error) => Some(error),
             _ => None,

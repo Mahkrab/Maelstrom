@@ -1,4 +1,4 @@
-//! Serial Position-Based Fluids timestep execution.
+//! Transactional Position-Based Fluids timesteps with selectable CPU execution.
 //!
 //! The solver constructs each timestep in working state, then replaces its
 //! snapshot only after the numerical and boundary checks succeed.
@@ -18,7 +18,8 @@ use crate::{
     boundary::{Plane, project_in_order},
     config::ResolvedConfiguration,
     diagnostics::{CflDiagnostic, cfl_diagnostic},
-    fluid::{PbfParameters, compute_jacobi_stage},
+    execution::{Execution, ExecutionError, ExecutionMode},
+    fluid::{PbfParameters, compute_jacobi_stage_with_execution},
     integration::{post_acceleration_velocity, predict_position, reconstruct_velocity},
     neighbours::SearchBackend,
     scene::{PLANE_UNIT_LENGTH_SQUARED_TOLERANCE, Particle, ResolvedScene},
@@ -36,9 +37,11 @@ pub struct StepOutcome {
     pub cfl: CflDiagnostic,
 }
 
-/// Serial PBF solver with selectable discovery and a fixed configured iteration count.
+/// PBF solver with private state, selectable discovery and CPU execution.
+/// Threaded mode distributes Jacobi particle work; all other stages remain serial.
 #[derive(Debug)]
-pub struct SerialSimulation {
+pub struct Simulation {
+    execution: Execution,
     backend: SearchBackend,
     configuration: ResolvedConfiguration,
     parameters: PbfParameters,
@@ -46,7 +49,10 @@ pub struct SerialSimulation {
     accepted: Snapshot,
 }
 
-impl SerialSimulation {
+/// Historical solver name. Existing constructors still select serial execution.
+pub type SerialSimulation = Simulation;
+
+impl Simulation {
     /// Copies a scene's simulation inputs into an independent solver.
     ///
     /// Scene metadata does not affect execution. All numerical inputs are checked
@@ -61,11 +67,23 @@ impl SerialSimulation {
         scene: &ResolvedScene,
         backend: SearchBackend,
     ) -> Result<Self, StepError> {
-        Self::new_with_backend(
+        Self::from_scene_with_execution(scene, backend, ExecutionMode::Serial)
+    }
+
+    /// Copies a scene into an independent solver with explicit CPU resources.
+    /// Threaded execution requires uniform-grid discovery. Invalid counts and
+    /// unavailable worker resources fail construction before any step is attempted.
+    pub fn from_scene_with_execution(
+        scene: &ResolvedScene,
+        backend: SearchBackend,
+        execution: ExecutionMode,
+    ) -> Result<Self, StepError> {
+        Self::new_with_execution(
             &scene.configuration,
             scene.particles.clone(),
             scene.planes.clone(),
             backend,
+            execution,
         )
     }
 
@@ -90,10 +108,33 @@ impl SerialSimulation {
     /// as in [`Self::new`]; selection does not change the physical configuration.
     pub fn new_with_backend(
         configuration: &ResolvedConfiguration,
-        mut particles: Vec<Particle>,
+        particles: Vec<Particle>,
         planes: Vec<Plane>,
         backend: SearchBackend,
     ) -> Result<Self, StepError> {
+        Self::new_with_execution(
+            configuration,
+            particles,
+            planes,
+            backend,
+            ExecutionMode::Serial,
+        )
+    }
+
+    /// Creates independently owned state and a reusable execution resource.
+    /// Numerical validation is identical to [`Self::new`]. Threaded mode accepts
+    /// only grid discovery, and never silently substitutes a serial fallback.
+    pub fn new_with_execution(
+        configuration: &ResolvedConfiguration,
+        mut particles: Vec<Particle>,
+        planes: Vec<Plane>,
+        backend: SearchBackend,
+        execution: ExecutionMode,
+    ) -> Result<Self, StepError> {
+        execution.validate()?;
+        if !execution.is_serial() && backend != SearchBackend::UniformGrid {
+            return Err(ExecutionError::RequiresUniformGrid.into());
+        }
         configuration.validate()?;
         for plane in &planes {
             Plane::new(
@@ -105,6 +146,7 @@ impl SerialSimulation {
         particles.sort_unstable_by_key(|particle| particle.identity);
         validate_particles(&particles)?;
         Ok(Self {
+            execution: Execution::new(execution)?,
             backend,
             configuration: configuration.clone(),
             parameters: configuration.pbf_parameters()?,
@@ -133,6 +175,12 @@ impl SerialSimulation {
     #[must_use]
     pub fn backend(&self) -> SearchBackend {
         self.backend
+    }
+
+    /// Effective CPU resources, fixed for this solver's lifetime.
+    #[must_use]
+    pub fn execution(&self) -> ExecutionMode {
+        self.execution.mode()
     }
 
     /// Attempts one complete step. Every error leaves accepted state unchanged.
@@ -229,7 +277,12 @@ impl SerialSimulation {
 
         clock.mark(Stage::NeighbourSearch);
         for _ in 0..model.solver_iterations {
-            let stage = compute_jacobi_stage(&positions, &fixed, self.parameters)?;
+            let stage = compute_jacobi_stage_with_execution(
+                &positions,
+                &fixed,
+                self.parameters,
+                &self.execution,
+            )?;
             for density in stage.normalised_densities {
                 validation::finite_result("physical density", density * derived.particle_mass_kg)?;
             }

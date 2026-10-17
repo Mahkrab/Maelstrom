@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     diagnostics::{CflDiagnostic, CflLimit, DensityAudit, audit_density},
+    execution::ExecutionMode,
     neighbours::SearchBackend,
     scene::ResolvedScene,
     simulation::{SerialSimulation, StepError},
@@ -27,7 +28,7 @@ use crate::{
 /// Historical four-iteration brute-force identity, retained for API compatibility.
 pub const BACKEND_ID: &str = "serial-brute-force-pbf-binary32-four-jacobi-v2";
 
-fn backend_id(backend: SearchBackend, iterations: u32) -> String {
+fn backend_id(backend: SearchBackend, iterations: u32, execution: ExecutionMode) -> String {
     let search = match backend {
         SearchBackend::BruteForce => "brute-force",
         SearchBackend::UniformGrid => "uniform-grid",
@@ -37,12 +38,19 @@ fn backend_id(backend: SearchBackend, iterations: u32) -> String {
     } else {
         iterations.to_string()
     };
-    format!("serial-{search}-pbf-binary32-{count}-jacobi-v2")
+    let mode = if execution.is_serial() {
+        "serial"
+    } else {
+        "threaded"
+    };
+    format!("{mode}-{search}-pbf-binary32-{count}-jacobi-v2")
 }
 
 /// Execution choices that do not change resolved physical input identity.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExecutionOptions {
+    /// CPU resources; serial by default. Threaded execution requires grid discovery.
+    pub execution: ExecutionMode,
     /// Discovery implementation; defaults to the historical brute-force path.
     pub backend: SearchBackend,
     /// Optional elapsed-time instrumentation, excluded from replay identity.
@@ -183,7 +191,7 @@ impl Checkpoint {
 /// identity, not a unique invocation identifier or a certification of correctness.
 #[derive(Clone, Debug, Serialize)]
 pub struct RunMetadata {
-    /// SHA-256 of the versioned backend, application version, input key and count.
+    /// SHA-256 of backend, application version, input key, steps and worker settings.
     /// Checkpoint selection, labels and provenance do not affect this identity.
     pub run_id: String,
     /// SHA-256 of the exact existing scene comparison key.
@@ -206,13 +214,22 @@ pub struct RunMetadata {
 }
 
 impl RunMetadata {
-    fn new(input: &RecordedInput, steps: u64, search: SearchBackend) -> Self {
+    fn new(
+        input: &RecordedInput,
+        steps: u64,
+        search: SearchBackend,
+        execution: ExecutionMode,
+    ) -> Self {
         let input_id = digest(input.comparison_key());
         let configuration_id = digest(input.configuration_key());
         let application_version = env!("CARGO_PKG_VERSION").to_owned();
-        let backend = backend_id(search, input.solver_iterations());
+        let backend = backend_id(search, input.solver_iterations(), execution);
+        let resources = match execution {
+            ExecutionMode::Serial => String::new(),
+            ExecutionMode::Threaded { workers } => format!("|workers={workers}"),
+        };
         let run_id = digest(&format!(
-            "maelstrom-run-v1|{backend}|{application_version}|{input_id}|{steps}"
+            "maelstrom-run-v1|{backend}|{application_version}|{input_id}|{steps}{resources}"
         ));
         Self {
             run_id,
@@ -244,6 +261,8 @@ pub struct RunResult {
     schema_version: u32,
     application_version: String,
     backend: String,
+    #[serde(skip_serializing_if = "ExecutionMode::is_serial")]
+    execution: ExecutionMode,
     request: RunRequest,
     #[serde(with = "record::decimal")]
     completed_steps: u64,
@@ -260,6 +279,13 @@ pub struct RunResult {
 }
 
 impl RunResult {
+    /// Requested execution mode; admitted threaded runs use exactly this pool size.
+    /// Invalid-input results may retain a rejected setting and have no worker pool.
+    #[must_use]
+    pub fn execution(&self) -> ExecutionMode {
+        self.execution
+    }
+
     /// Whole-request completion, including any failed publication attempts.
     #[must_use]
     pub fn status(&self) -> CompletionStatus {
@@ -364,7 +390,7 @@ impl RunResult {
     }
 }
 
-/// Runs resolved inputs through the serial solver with the requested observations.
+/// Runs resolved inputs through the default serial solver with requested observations.
 /// Input validation failures are explicit results with zero accepted work.
 #[must_use]
 pub fn run(scene: &ResolvedScene, request: RunRequest) -> RunResult {
@@ -407,8 +433,9 @@ pub fn run_measured_with_cancellation(
     )
 }
 
-/// Runs either discovery method through the same observation and timestep path.
-/// Grid construction, enumeration and row sorting stay inside solver timing.
+/// Runs either discovery method and CPU mode through one observation path.
+/// Grid construction, enumeration, row sorting, dispatch and barriers stay inside
+/// solver timing. Private worker setup and teardown remain outside that boundary.
 /// Each invocation owns its solver; cancellation and failure retain only its own
 /// last accepted state. Invalid inputs are explicit results with no accepted work.
 #[must_use]
@@ -424,7 +451,9 @@ pub fn run_with_options(
         backend: backend_id(
             options.backend,
             scene.configuration.numerical.solver_iterations,
+            options.execution,
         ),
+        execution: options.execution,
         request,
         completed_steps: 0,
         metadata: None,
@@ -439,7 +468,8 @@ pub fn run_with_options(
     let setup = (|| {
         result.request.validate()?;
         record::scene_version(scene.schema_version)?;
-        let solver = SerialSimulation::from_scene_with_backend(scene, options.backend)?;
+        let solver =
+            SerialSimulation::from_scene_with_execution(scene, options.backend, options.execution)?;
         let input = RecordedInput::capture(scene, &solver);
         // Also validate the portable record, so every admitted input can replay.
         input.resolve()?;
@@ -460,6 +490,7 @@ pub fn run_with_options(
         &input,
         result.request.steps,
         options.backend,
+        solver.execution(),
     ));
     result.input = Some(input);
     if result.observe(&solver) {
@@ -537,10 +568,28 @@ pub fn replay_inputs(json: &str) -> Result<(ResolvedScene, RunRequest), RecordEr
 pub fn replay_execution(
     json: &str,
 ) -> Result<(ResolvedScene, RunRequest, SearchBackend), RecordError> {
+    let (scene, request, options) = replay_options(json)?;
+    if !options.execution.is_serial() {
+        return Err(RecordError::Invalid(
+            "threaded replay requires replay_options to retain worker settings".into(),
+        ));
+    }
+    Ok((scene, request, options.backend))
+}
+
+/// Restores discovery and exact worker settings alongside physical inputs.
+/// Historical records without execution settings remain serial. Threaded records
+/// require valid explicit settings and their matching backend contract. Replay
+/// never reselects workers from the current machine or restores measurements.
+pub fn replay_options(
+    json: &str,
+) -> Result<(ResolvedScene, RunRequest, ExecutionOptions), RecordError> {
     #[derive(Deserialize)]
     struct Replay {
         schema_version: u32,
         backend: String,
+        #[serde(default)]
+        execution: ExecutionMode,
         request: RunRequest,
         input: Option<RecordedInput>,
     }
@@ -550,17 +599,31 @@ pub fn replay_execution(
         .input
         .as_ref()
         .map_or(4, RecordedInput::solver_iterations);
+    replay.execution.validate().map_err(StepError::from)?;
     let backend = [SearchBackend::BruteForce, SearchBackend::UniformGrid].into_iter()
-        .find(|&candidate| replay.backend == backend_id(candidate, iterations))
+        .find(|&candidate| replay.backend == backend_id(candidate, iterations, replay.execution))
         .ok_or_else(|| RecordError::Invalid(format!(
             "record backend {:?} is incompatible with {:?} or {:?}; use the original binary or rerun the scene with a current backend",
-            replay.backend, backend_id(SearchBackend::BruteForce, iterations), backend_id(SearchBackend::UniformGrid, iterations)
+            replay.backend, backend_id(SearchBackend::BruteForce, iterations, replay.execution), backend_id(SearchBackend::UniformGrid, iterations, replay.execution)
         )))?;
+    if !replay.execution.is_serial() && backend != SearchBackend::UniformGrid {
+        return Err(RecordError::Invalid(
+            "threaded execution requires uniform-grid discovery".into(),
+        ));
+    }
     replay.request.validate()?;
     let input = replay
         .input
         .ok_or_else(|| RecordError::Invalid("result has no validated input to replay".into()))?;
-    Ok((input.resolve()?, replay.request, backend))
+    Ok((
+        input.resolve()?,
+        replay.request,
+        ExecutionOptions {
+            backend,
+            execution: replay.execution,
+            measurement: None,
+        },
+    ))
 }
 
 #[cfg(test)]
