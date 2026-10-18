@@ -65,6 +65,31 @@ pub(super) fn main() -> ExitCode {
 
 fn execute(cli: &Cli) -> Result<u8, CliError> {
     match &cli.command {
+        Command::CudaCheck {
+            device,
+            repetitions,
+        } => {
+            let repetitions = std::num::NonZeroU32::new(*repetitions)
+                .ok_or_else(|| CliError::usage("--repetitions must be positive".into()))?;
+            let report = maelstrom::cuda::verify_roundtrip(*device, repetitions)
+                .map_err(|error| CliError::input(error.to_string()))?;
+            let text = format!(
+                "CUDA verified: {} (device {}, {}.{}), {} records x {} independent lifetimes; target {}\n",
+                report.device.name,
+                report.device.ordinal,
+                report.device.compute_major,
+                report.device.compute_minor,
+                report.records_per_repetition,
+                report.repetitions,
+                report.device.target
+            );
+            print_document(
+                cli.format,
+                text,
+                json!({"operation": "cuda_check", "schema_version": 1, "report": report}),
+            )?;
+            Ok(0)
+        }
         Command::Scenes => {
             let mut scenes = Vec::new();
             let mut text =

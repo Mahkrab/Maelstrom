@@ -23,6 +23,10 @@ with `cargo install --path . --locked --offline`. Bundled names are `falling-blo
 `-10`, `-12`, `-16` and `-20`, containing 64 through 8,000 particles. They select current unrefined
 defaults; the frozen comparison request adds explicit refinement.
 
+For optional device execution, the [CUDA build and resource guide](cuda.md) describes
+`cargo build --features cuda` and `maelstrom cuda-check --device 0`. This check exercises
+transfers and a small kernel; simulation execution remains CPU-only.
+
 ## Validate and inspect
 
 ```sh
@@ -81,9 +85,8 @@ frequent checkpoints can limit end-to-end throughput even when grid solver time 
 Select CPU execution independently from neighbour discovery:
 
 ```sh
-maelstrom run falling-block-04 --backend uniform-grid --execution threaded --threads 3 \
-  --refine-timestep 4 --steps 480 --checkpoints 0,1,120,240,480 \
-  --format json --output threaded-run.json
+sudo apt update && sudo apt install golang -y
+
 maelstrom replay threaded-run.json --format json --output threaded-repeated.json
 ```
 

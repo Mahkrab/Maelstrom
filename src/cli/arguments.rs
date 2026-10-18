@@ -33,6 +33,15 @@ pub(super) enum Format {
 pub(super) enum Command {
     /// List the bundled, deterministic scenes
     Scenes,
+    /// Verify the optional CUDA resource boundary; does not run a fluid simulation
+    CudaCheck {
+        /// Process-visible CUDA device ordinal; no automatic CPU fallback
+        #[arg(long, default_value_t = 0)]
+        device: u32,
+        /// Independent context construction, round trip and teardown cycles
+        #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..))]
+        repetitions: u32,
+    },
     /// Check configuration and optional scene without advancing state
     #[command(
         after_help = "Examples:\n  maelstrom validate\n  maelstrom validate --config ./config.toml\n  maelstrom validate falling-block-04 --set cfl_factor=0.5"

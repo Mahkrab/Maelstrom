@@ -6,6 +6,7 @@
 
 pub mod boundary;
 pub mod config;
+pub mod cuda;
 pub mod diagnostics;
 pub mod error;
 pub mod execution;
