@@ -38,7 +38,15 @@ fn main() {
     for variable in ["CUDA_HOME", "MAELSTROM_CUDA_ARCH", "CXX", "AR"] {
         println!("cargo:rerun-if-env-changed={variable}");
     }
-    for file in ["native/bridge.cpp", "native/probe.h", "native/roundtrip.cu"] {
+    for file in [
+        "native/bridge.cpp",
+        "native/probe.h",
+        "native/roundtrip.cu",
+        "native/solver.h",
+        "native/solver.cu",
+        "native/kernels.cu",
+        "native/power.cuh",
+    ] {
         println!("cargo:rerun-if-changed={file}");
     }
     let toolkit =
@@ -71,7 +79,7 @@ fn main() {
             "-O3",
         ])
         .arg(format!("--gpu-architecture=compute_{arch}"))
-        .arg("native/roundtrip.cu")
+        .arg("native/kernels.cu")
         .arg("-o")
         .arg(&ptx));
     let mut bytes = fs::read(&ptx).expect("compiled PTX");

@@ -15,10 +15,11 @@ publication and failure codes. The [input specification](docs/inputs.md) documen
 configuration field, scene construction, validation and precedence rule. Frozen correctness inputs
 and golden results are indexed by [the reference manifest](reference/manifest.json).
 
-An optional [CUDA resource check](docs/cuda.md) builds with `--features cuda` and runs through
-`maelstrom cuda-check --device 0`. It verifies device transfers and a small kernel with owned
-contexts and streams. Ordinary CPU builds need no CUDA toolkit; GPU fluid simulation is not yet
-implemented.
+The optional [CUDA solver](docs/cuda.md) builds with `--features cuda`. Select it with
+`run --backend uniform-grid --execution cuda --device 0 --block-size 128`.
+It executes discovery and numerical stages on a private device stream, retaining atomic accepted
+snapshots and public replay. `cuda-check` remains an independent resource probe. Ordinary CPU
+builds need no CUDA toolkit.
 
 Elapsed solver measurements are opt-in:
 

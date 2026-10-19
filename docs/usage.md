@@ -24,8 +24,8 @@ with `cargo install --path . --locked --offline`. Bundled names are `falling-blo
 defaults; the frozen comparison request adds explicit refinement.
 
 For optional device execution, the [CUDA build and resource guide](cuda.md) describes
-`cargo build --features cuda` and `maelstrom cuda-check --device 0`. This check exercises
-transfers and a small kernel; simulation execution remains CPU-only.
+`cargo build --features cuda`, the independent `maelstrom cuda-check --device 0` probe,
+and explicit GPU simulation with `--execution cuda`.
 
 ## Validate and inspect
 
@@ -112,6 +112,27 @@ Grid construction and discovery, prediction, acceleration/CFL, candidate formati
 projection, acceptance and independent audits remain serial. Threaded execution preserves the
 same binary32 operations and requires exact results, including signed zero, across tested worker
 counts in the supported build environment. This is not a cross-platform bitwise guarantee.
+
+### CUDA execution
+
+```sh
+maelstrom run falling-block-04 --backend uniform-grid --execution cuda --device 0 \
+  --block-size 128 --refine-timestep 4 --steps 480 --checkpoints 0,1,120,240,480 \
+  --format json --output cuda-run.json
+maelstrom replay cuda-run.json --format json --output cuda-repeated.json
+```
+
+CUDA requires an optional feature build, a compatible driver and the selected device. It has no
+CPU fallback. `--device` defaults to ordinal zero and `--block-size` to 128; supported sizes are
+32, 64, 128 and 256 lanes. These options require `--execution cuda`, which requires the grid and
+rejects `--threads`. Invalid combinations exit 2; unavailable resources produce an explicit
+input-validation failure (exit 3). Runtime driver failures preserve the last accepted snapshot.
+
+Records include CUDA settings, runtime device properties and a separate versioned arithmetic
+identity. Replay restores the device ordinal and block size; it requires a compatible current
+feature build and device. Input and configuration identity remain independent of execution.
+Historical CPU records retain their meaning. The [CUDA guide](cuda.md) explains storage,
+arithmetic, synchronisation, cancellation, retry and the limits of hardware qualification.
 
 Library callers select `execution::ExecutionMode::Threaded { workers: N }` in
 `workflow::ExecutionOptions`, or use `simulation::Simulation::from_scene_with_execution` and

@@ -15,6 +15,8 @@ use super::StepOutcome;
 /// snapshots remain available.
 #[derive(Debug)]
 pub enum StepError {
+    /// Device setup, storage, submission or completion failed without acceptance.
+    Cuda(crate::cuda::CudaError),
     /// Invalid execution selection or unavailable worker resources.
     Execution(ExecutionError),
     /// The supplied numerical configuration is invalid or unsupported.
@@ -41,6 +43,12 @@ pub enum StepError {
     StepCountOverflow,
 }
 
+impl From<crate::cuda::CudaError> for StepError {
+    fn from(error: crate::cuda::CudaError) -> Self {
+        Self::Cuda(error)
+    }
+}
+
 impl From<ExecutionError> for StepError {
     fn from(error: ExecutionError) -> Self {
         Self::Execution(error)
@@ -62,6 +70,7 @@ impl From<ConfigError> for StepError {
 impl fmt::Display for StepError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Cuda(error) => write!(formatter, "CUDA execution failed: {error}"),
             Self::Execution(error) => write!(formatter, "invalid execution settings: {error}"),
             Self::Configuration(error) => {
                 write!(formatter, "invalid solver configuration: {error}")
@@ -83,6 +92,7 @@ impl fmt::Display for StepError {
 impl std::error::Error for StepError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Cuda(error) => Some(error),
             Self::Execution(error) => Some(error),
             Self::Configuration(error) => Some(error),
             Self::Numerical(error) => Some(error),

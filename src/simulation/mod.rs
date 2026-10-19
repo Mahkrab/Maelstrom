@@ -1,11 +1,11 @@
-//! Transactional Position-Based Fluids timesteps with selectable CPU execution.
+//! Transactional Position-Based Fluids timesteps with selectable execution.
 //!
 //! The solver constructs each timestep in working state, then replaces its
 //! snapshot only after the numerical and boundary checks succeed.
 
 mod error;
 mod state;
-mod timing;
+pub(crate) mod timing;
 
 pub use error::{RunFailure, StepError};
 pub use state::Snapshot;
@@ -37,11 +37,15 @@ pub struct StepOutcome {
     pub cfl: CflDiagnostic,
 }
 
-/// PBF solver with private state, selectable discovery and CPU execution.
+/// PBF solver with private state, selectable discovery and execution resources.
 /// Threaded mode distributes Jacobi particle work; all other stages remain serial.
+/// CUDA runs discovery and numerical stages on its private device stream.
 #[derive(Debug)]
 pub struct Simulation {
     execution: Execution,
+    mode: ExecutionMode,
+    #[cfg(feature = "cuda")]
+    cuda: Option<crate::cuda::solver::CudaSolver>,
     backend: SearchBackend,
     configuration: ResolvedConfiguration,
     parameters: PbfParameters,
@@ -70,9 +74,9 @@ impl Simulation {
         Self::from_scene_with_execution(scene, backend, ExecutionMode::Serial)
     }
 
-    /// Copies a scene into an independent solver with explicit CPU resources.
-    /// Threaded execution requires uniform-grid discovery. Invalid counts and
-    /// unavailable worker resources fail construction before any step is attempted.
+    /// Copies a scene into an independent solver with explicit execution resources.
+    /// Parallel execution requires uniform-grid discovery. Invalid settings and
+    /// unavailable resources fail construction before any step is attempted.
     pub fn from_scene_with_execution(
         scene: &ResolvedScene,
         backend: SearchBackend,
@@ -122,7 +126,7 @@ impl Simulation {
     }
 
     /// Creates independently owned state and a reusable execution resource.
-    /// Numerical validation is identical to [`Self::new`]. Threaded mode accepts
+    /// Numerical validation is identical to [`Self::new`]. Parallel modes accept
     /// only grid discovery, and never silently substitutes a serial fallback.
     pub fn new_with_execution(
         configuration: &ResolvedConfiguration,
@@ -145,8 +149,26 @@ impl Simulation {
         }
         particles.sort_unstable_by_key(|particle| particle.identity);
         validate_particles(&particles)?;
+        #[cfg(feature = "cuda")]
+        let cuda = match execution {
+            ExecutionMode::Cuda { device, threads } => {
+                Some(crate::cuda::solver::CudaSolver::new(device, threads)?)
+            }
+            _ => None,
+        };
+        #[cfg(not(feature = "cuda"))]
+        if let ExecutionMode::Cuda { device, .. } = execution {
+            crate::cuda::CudaContext::new(device)?;
+        }
         Ok(Self {
-            execution: Execution::new(execution)?,
+            execution: Execution::new(if matches!(execution, ExecutionMode::Cuda { .. }) {
+                ExecutionMode::Serial
+            } else {
+                execution
+            })?,
+            mode: execution,
+            #[cfg(feature = "cuda")]
+            cuda,
             backend,
             configuration: configuration.clone(),
             parameters: configuration.pbf_parameters()?,
@@ -177,10 +199,22 @@ impl Simulation {
         self.backend
     }
 
-    /// Effective CPU resources, fixed for this solver's lifetime.
+    /// Effective execution settings, fixed for this solver's lifetime.
     #[must_use]
     pub fn execution(&self) -> ExecutionMode {
-        self.execution.mode()
+        self.mode
+    }
+
+    /// Selected device properties for CUDA, absent for CPU execution.
+    pub fn device(&self) -> Option<&crate::cuda::DeviceInfo> {
+        #[cfg(feature = "cuda")]
+        {
+            self.cuda.as_ref().map(|cuda| cuda.context.device())
+        }
+        #[cfg(not(feature = "cuda"))]
+        {
+            None
+        }
     }
 
     /// Attempts one complete step. Every error leaves accepted state unchanged.
@@ -241,6 +275,37 @@ impl Simulation {
             .completed_steps
             .checked_add(1)
             .ok_or(StepError::StepCountOverflow)?;
+        #[cfg(feature = "cuda")]
+        if let Some(cuda) = &mut self.cuda {
+            let (particles, cfl) = cuda.step(
+                &self.configuration,
+                &self.accepted.particles,
+                &self.planes,
+                cancelled,
+                clock,
+            )?;
+            validate_particles(&particles)?;
+            for particle in &particles {
+                for (index, plane) in self.planes.iter().enumerate() {
+                    if !plane.contains(particle.position_m)? {
+                        return Err(StepError::OutsidePlane {
+                            identity: particle.identity,
+                            plane: index,
+                        });
+                    }
+                }
+            }
+            check_cancellation(cancelled)?;
+            self.accepted = Snapshot {
+                completed_steps,
+                particles,
+            };
+            clock.mark(Stage::Acceptance);
+            return Ok(StepOutcome {
+                completed_steps,
+                cfl,
+            });
+        }
         let model = &self.configuration.numerical;
         let derived = &self.configuration.derived;
         let mut velocities = Vec::with_capacity(self.accepted.particles.len());
@@ -366,7 +431,7 @@ impl Simulation {
     }
 }
 
-fn check_cancellation(cancelled: &mut impl FnMut() -> bool) -> Result<(), StepError> {
+pub(crate) fn check_cancellation(cancelled: &mut impl FnMut() -> bool) -> Result<(), StepError> {
     if cancelled() {
         Err(StepError::Cancelled)
     } else {

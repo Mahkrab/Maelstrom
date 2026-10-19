@@ -1,5 +1,4 @@
-//! An optional CUDA resource boundary, separate from CPU simulation execution.
-//! The layout probe exercises real device work without claiming a fluid solver.
+//! Optional CUDA resources support the device solver and an independent layout probe.
 //! Successful calls complete before returning. Uncertain device work invalidates
 //! its resource and cannot publish output.
 
@@ -9,6 +8,8 @@ use serde::Serialize;
 
 #[cfg(feature = "cuda")]
 mod native;
+#[cfg(feature = "cuda")]
+pub(crate) mod solver;
 
 /// Explicit transfer layout: identity is untouched; the probe transforms three
 /// binary32 coordinates and a marker. Size is 24 bytes, alignment is eight.
@@ -80,7 +81,7 @@ impl fmt::Display for CudaError {
             ),
             Self::Capacity => write!(
                 f,
-                "CUDA probe count or byte size exceeds the supported u32/isize capacity"
+                "CUDA count or byte size exceeds the supported u32/isize capacity"
             ),
             Self::HostAllocation => write!(f, "could not allocate CUDA probe host output"),
             Self::Poisoned => write!(
@@ -146,6 +147,14 @@ pub struct CudaContext {
     _private: (),
     #[cfg(feature = "cuda")]
     inner: native::Context,
+}
+
+impl std::fmt::Debug for CudaContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CudaContext")
+            .field("device", self.device())
+            .finish_non_exhaustive()
+    }
 }
 
 impl CudaContext {

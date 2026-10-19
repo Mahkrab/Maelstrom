@@ -34,7 +34,7 @@ pub struct StepMeasurement {
     pub stages: Option<StageTimes>,
 }
 
-pub(super) enum Stage {
+pub(crate) enum Stage {
     ValidationAndAcceleration,
     Prediction,
     NeighbourSearch,
@@ -43,7 +43,7 @@ pub(super) enum Stage {
     Acceptance,
 }
 
-pub(super) struct StageClock<const ENABLED: bool> {
+pub(crate) struct StageClock<const ENABLED: bool> {
     previous: Option<Instant>,
     times: StageTimes,
 }
@@ -56,7 +56,7 @@ impl<const ENABLED: bool> StageClock<ENABLED> {
         }
     }
 
-    pub(super) fn mark(&mut self, stage: Stage) {
+    pub(crate) fn mark(&mut self, stage: Stage) {
         if ENABLED && let Some(previous) = self.previous {
             let now = Instant::now();
             let seconds = now.duration_since(previous).as_secs_f64();

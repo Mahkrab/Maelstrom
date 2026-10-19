@@ -1,4 +1,4 @@
-//! CPU scheduling belongs to each solver, separately from its physical inputs.
+//! Execution settings belong to each solver, separately from its physical inputs.
 //! A private pool lives across timesteps. Indexed results are joined before
 //! errors are inspected, preserving serial error precedence and stage barriers.
 
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// Oversubscription is allowed deliberately, but unbounded thread creation is not.
 pub const MAX_WORKERS: usize = 256;
 
-/// CPU execution settings. A worker is a pool thread, not a physical core.
+/// Execution resources. A CPU worker is a pool thread, not a physical core.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExecutionMode {
@@ -22,6 +22,13 @@ pub enum ExecutionMode {
     Threaded {
         /// Requested and effective pool size. Construction never silently clamps it.
         workers: usize,
+    },
+    /// One explicit CUDA device, with a reproducible block size.
+    Cuda {
+        /// Process-visible ordinal; unavailable devices fail without fallback.
+        device: u32,
+        /// Lanes per block: 32, 64, 128 or 256.
+        threads: u32,
     },
 }
 
@@ -38,6 +45,11 @@ impl ExecutionMode {
 
     /// Checks the resource domain without creating any workers.
     pub fn validate(self) -> Result<(), ExecutionError> {
+        if let Self::Cuda { device, threads } = self
+            && (device > i32::MAX as u32 || ![32, 64, 128, 256].contains(&threads))
+        {
+            return Err(ExecutionError::InvalidCudaSettings);
+        }
         if let Self::Threaded { workers } = self
             && !(1..=MAX_WORKERS).contains(&workers)
         {
@@ -54,6 +66,10 @@ impl ExecutionMode {
 /// An invalid execution request or an unavailable worker resource.
 #[derive(Debug)]
 pub enum ExecutionError {
+    /// CUDA device or block size is outside the supported request domain.
+    InvalidCudaSettings,
+    /// CPU particle scheduling cannot execute a device request.
+    RequiresCpu,
     /// Worker count lies outside the supported resource bound.
     InvalidWorkers {
         /// Count supplied by the caller.
@@ -77,11 +93,16 @@ pub enum ExecutionError {
 impl fmt::Display for ExecutionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidCudaSettings => write!(
+                f,
+                "CUDA requires a device ordinal in 0..=2147483647 and 32, 64, 128 or 256 lanes per block"
+            ),
+            Self::RequiresCpu => write!(f, "CUDA execution requires the device solver resource"),
             Self::InvalidWorkers { requested } => {
                 write!(f, "worker count {requested} must be in 1..={MAX_WORKERS}")
             }
             Self::RequiresUniformGrid => {
-                write!(f, "threaded execution requires uniform-grid discovery")
+                write!(f, "parallel execution requires uniform-grid discovery")
             }
             Self::UnavailableCapacity(error) => write!(
                 f,
@@ -123,6 +144,7 @@ impl Execution {
         mode.validate()?;
         match mode {
             ExecutionMode::Serial => Ok(Self::default()),
+            ExecutionMode::Cuda { .. } => Err(ExecutionError::RequiresCpu),
             ExecutionMode::Threaded { workers } => Self::from_pool(
                 workers,
                 ThreadPoolBuilder::new()

@@ -103,6 +103,21 @@ impl RunResult {
                 text.push_str("; effective workers: unavailable\n");
             }
         }
+        if let crate::execution::ExecutionMode::Cuda { device, threads } = self.execution {
+            text.push_str(&format!(
+                "CUDA execution: device {device}; lanes per block: {threads}\n"
+            ));
+            if let Some(info) = self
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.device.as_ref())
+            {
+                text.push_str(&format!(
+                    "GPU: {}; target: {}; driver API: {}\n",
+                    info.name, info.target, info.driver_version
+                ));
+            }
+        }
         if let Some(input) = &self.input {
             let (scene, configuration) = input.display_names();
             text.push_str(&format!(

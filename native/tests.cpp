@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include <map>
 
 struct Observed {
     int fail = 0;
@@ -14,7 +15,8 @@ struct Observed {
     int frees = 0;
     int completions = 0;
     int downloads = 0;
-    std::vector<Probe> memory;
+    CUdeviceptr next=1;
+    std::map<CUdeviceptr,std::vector<unsigned char>> memory;
 } observed;
 
 static CUresult fault(int stage) {
@@ -44,15 +46,15 @@ static void fake_driver(Driver &d) {
     d.cuStreamCreate_fn = [](CUstream *stream, unsigned int) { *stream = reinterpret_cast<CUstream>(1); return fault(6); };
     d.cuMemAlloc_fn = [](CUdeviceptr *buffer, std::size_t bytes) {
         if (observed.fail == 7) return CUDA_ERROR_OUT_OF_MEMORY;
-        observed.memory.resize(bytes / sizeof(Probe)); *buffer = 1; return CUDA_SUCCESS;
+        *buffer=observed.next++; observed.memory[*buffer].resize(bytes); return CUDA_SUCCESS;
     };
-    d.cuMemFree_fn = [](CUdeviceptr) { ++observed.frees; if (!observed.fail) observed.memory.clear(); return fault(12); };
-    d.cuMemcpyHtoD_fn = [](CUdeviceptr, const void *data, std::size_t bytes) { std::memcpy(observed.memory.data(), data, bytes); return fault(8); };
+    d.cuMemFree_fn = [](CUdeviceptr pointer) { ++observed.frees; if (!observed.fail) observed.memory.erase(pointer); return fault(12); };
+    d.cuMemcpyHtoD_fn = [](CUdeviceptr pointer, const void *data, std::size_t bytes) { assert(bytes<=observed.memory.at(pointer).size());std::memcpy(observed.memory.at(pointer).data(), data, bytes); return fault(8); };
     d.cuLaunchKernel_fn = [](CUfunction, unsigned int, unsigned int, unsigned int,
                             unsigned int, unsigned int, unsigned int, unsigned int,
                             CUstream, void **, void **) { return fault(9); };
     d.cuStreamSynchronize_fn = [](CUstream) { ++observed.completions; return fault(10); };
-    d.cuMemcpyDtoH_fn = [](void *data, CUdeviceptr, std::size_t bytes) { ++observed.downloads; std::memcpy(data, observed.memory.data(), bytes); return fault(11); };
+    d.cuMemcpyDtoH_fn = [](void *data, CUdeviceptr pointer, std::size_t bytes) { ++observed.downloads;assert(bytes<=observed.memory.at(pointer).size()); std::memcpy(data, observed.memory.at(pointer).data(), bytes); return fault(11); };
 }
 
 static void ready(Resource &r) {
@@ -126,6 +128,41 @@ int main() {
         observed.fail = stage;
         assert(maelstrom_cuda_close(r).stage == stage);
         assert(observed.destroys == 1);
+    }
+    for (int stage : {7,8,9,10,11,12,13,16}) {
+        observed={};
+        {
+            Resource r;ready(r);
+            SolverSettings settings{};settings.count=1;settings.padded=1;settings.words=1;
+            std::size_t sizes[13]={12,12,12,12,4,4,4,12,12,0,32,4,4};
+            for (unsigned int slot=0;slot<13;++slot) assert(maelstrom_cuda_storage(&r,slot,nullptr,sizes[slot],0).code==0);
+            const auto allocations=observed.memory.size();
+            assert(maelstrom_cuda_storage(&r,0,nullptr,12,0).code==0);
+            assert(observed.memory.size()==allocations);
+            assert(maelstrom_cuda_storage(&r,13,nullptr,0,0).code!=0);
+            assert(maelstrom_cuda_solver(&r,settings,0,33).code!=0);
+            assert(maelstrom_cuda_solver(&r,settings,4,128).code!=0); // missing cell width
+            Vector input{1,2,3},output{};
+            observed.fail=stage;
+            Status status;
+            if (stage==7 || stage==12) status=maelstrom_cuda_storage(&r,0,nullptr,24,0);
+            else if (stage==8) status=maelstrom_cuda_storage(&r,0,&input,12,1);
+            else if (stage==11) status=maelstrom_cuda_storage(&r,0,&output,12,2);
+            else status=maelstrom_cuda_solver(&r,settings,0,128);
+            assert(status.code!=0 && status.stage==(stage==16 ? 13 : stage));
+            assert(r.poisoned==(stage!=7));
+            observed.fail=0;
+            if (stage==7) {
+                assert(maelstrom_cuda_storage(&r,0,&input,12,1).code==0);
+                assert(maelstrom_cuda_storage(&r,0,&output,12,2).code==0);
+                assert(output.x==1 && output.y==2 && output.z==3);
+                assert(maelstrom_cuda_solver(&r,settings,0,128).code==0);
+            } else {
+                assert(maelstrom_cuda_storage(&r,0,nullptr,0,0).stage==14);
+                assert(maelstrom_cuda_solver(&r,settings,0,128).stage==14);
+            }
+        }
+        assert(observed.destroys==1 && observed.memory.empty());
     }
     std::puts("native lifecycle and injected failure checks passed");
 }

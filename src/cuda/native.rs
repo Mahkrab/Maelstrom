@@ -1,6 +1,7 @@
 //! The only Rust unsafe boundary. Native calls borrow slices synchronously and
 //! opaque handles are neither shared nor moved across threads.
 
+use super::solver::Settings;
 use super::{CudaError, CudaStage, DeviceInfo, Probe};
 use std::{
     ffi::{c_char, c_void},
@@ -71,7 +72,28 @@ unsafe extern "C" {
         count: usize,
     ) -> Status;
     fn maelstrom_cuda_close(handle: *mut c_void) -> Status;
+    fn maelstrom_cuda_storage(
+        handle: *mut c_void,
+        slot: u32,
+        host: *mut c_void,
+        bytes: usize,
+        action: u32,
+    ) -> Status;
+    fn maelstrom_cuda_solver(
+        handle: *mut c_void,
+        settings: Settings,
+        operation: u32,
+        threads: u32,
+    ) -> Status;
 }
+
+// Only these private, explicit layouts can cross the solver transfer boundary.
+// Every bit pattern is valid and no value contains references or padding.
+pub(super) trait Transfer: Copy + Default {}
+impl Transfer for [f32; 3] {}
+impl Transfer for [f32; 4] {}
+impl Transfer for f32 {}
+impl Transfer for u32 {}
 
 pub(super) struct Context {
     handle: Option<NonNull<c_void>>,
@@ -87,6 +109,71 @@ const _: () = {
 };
 
 impl Context {
+    pub(super) fn reserve(&mut self, slot: u32, bytes: usize) -> Result<(), CudaError> {
+        if bytes > isize::MAX as usize {
+            return Err(CudaError::Capacity);
+        }
+        let handle = self.handle.ok_or(CudaError::Poisoned)?;
+        // SAFETY: The unique thread-local handle is live. Action zero allocates
+        // context-owned storage and never dereferences the null host pointer.
+        unsafe { maelstrom_cuda_storage(handle.as_ptr(), slot, std::ptr::null_mut(), bytes, 0) }
+            .result()
+    }
+
+    pub(super) fn upload<T: Transfer>(&mut self, slot: u32, values: &[T]) -> Result<(), CudaError> {
+        let bytes = std::mem::size_of_val(values);
+        self.reserve(slot, bytes)?;
+        let handle = self.handle.ok_or(CudaError::Poisoned)?;
+        // SAFETY: The private transfer trait permits only C-compatible plain
+        // numbers. Action one reads exactly the borrowed slice, synchronously.
+        unsafe {
+            maelstrom_cuda_storage(
+                handle.as_ptr(),
+                slot,
+                values.as_ptr().cast_mut().cast(),
+                bytes,
+                1,
+            )
+        }
+        .result()
+    }
+
+    pub(super) fn download<T: Transfer>(
+        &mut self,
+        slot: u32,
+        count: usize,
+    ) -> Result<Vec<T>, CudaError> {
+        let bytes = count
+            .checked_mul(size_of::<T>())
+            .filter(|&n| n <= isize::MAX as usize)
+            .ok_or(CudaError::Capacity)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(count)
+            .map_err(|_| CudaError::HostAllocation)?;
+        values.resize(count, T::default());
+        let handle = self.handle.ok_or(CudaError::Poisoned)?;
+        // SAFETY: Action two writes only the allocated, initialised plain-number
+        // slice and finishes before returning. Native code checks slot capacity.
+        unsafe {
+            maelstrom_cuda_storage(handle.as_ptr(), slot, values.as_mut_ptr().cast(), bytes, 2)
+        }
+        .result()?;
+        Ok(values)
+    }
+
+    pub(super) fn launch(
+        &mut self,
+        settings: Settings,
+        operation: u32,
+        threads: u32,
+    ) -> Result<(), CudaError> {
+        let handle = self.handle.ok_or(CudaError::Poisoned)?;
+        // SAFETY: Settings has the asserted C layout. The bridge checks launch
+        // dimensions and all slot sizes, then waits for this private stream.
+        unsafe { maelstrom_cuda_solver(handle.as_ptr(), settings, operation, threads) }.result()
+    }
+
     pub fn new(ordinal: u32) -> Result<Self, CudaError> {
         let mut info = NativeInfo {
             name: [0; 128],

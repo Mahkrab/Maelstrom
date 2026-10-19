@@ -17,6 +17,39 @@ fn invalid_probe_requests_are_rejected_by_the_application() {
             "--execution",
             "cuda",
         ],
+        vec!["run", "falling-block-04", "--steps", "1", "--device", "0"],
+        vec![
+            "run",
+            "falling-block-04",
+            "--steps",
+            "1",
+            "--block-size",
+            "128",
+        ],
+        vec![
+            "run",
+            "falling-block-04",
+            "--steps",
+            "1",
+            "--backend",
+            "uniform-grid",
+            "--execution",
+            "cuda",
+            "--threads",
+            "2",
+        ],
+        vec![
+            "run",
+            "falling-block-04",
+            "--steps",
+            "1",
+            "--backend",
+            "uniform-grid",
+            "--execution",
+            "cuda",
+            "--block-size",
+            "33",
+        ],
     ] {
         let result = Command::new(env!("CARGO_BIN_EXE_maelstrom"))
             .args(args)
@@ -45,6 +78,25 @@ fn cpu_builds_report_disabled_cuda_without_falling_back() {
     assert_eq!(result.status.code(), Some(3));
     assert!(result.stdout.is_empty());
     assert!(String::from_utf8_lossy(&result.stderr).contains("--features cuda"));
+    let result = Command::new(env!("CARGO_BIN_EXE_maelstrom"))
+        .args([
+            "run",
+            "falling-block-04",
+            "--steps",
+            "1",
+            "--backend",
+            "uniform-grid",
+            "--execution",
+            "cuda",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(3));
+    let report: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(report["status"], "input_validation_failure");
+    assert!(report["final_snapshot"].is_null());
 }
 
 #[cfg(feature = "cuda")]
@@ -134,4 +186,24 @@ fn hardware_layout_lifetimes_and_public_application() {
         message.contains("Initialise") || message.contains("unavailable"),
         "{message}"
     );
+    let unavailable = Command::new(env!("CARGO_BIN_EXE_maelstrom"))
+        .env("CUDA_VISIBLE_DEVICES", "")
+        .args([
+            "run",
+            "falling-block-04",
+            "--steps",
+            "1",
+            "--backend",
+            "uniform-grid",
+            "--execution",
+            "cuda",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(unavailable.status.code(), Some(3));
+    let report: serde_json::Value = serde_json::from_slice(&unavailable.stdout).unwrap();
+    assert_eq!(report["status"], "input_validation_failure");
+    assert!(report["final_snapshot"].is_null());
 }

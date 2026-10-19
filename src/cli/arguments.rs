@@ -88,12 +88,18 @@ pub(super) struct Run {
     /// Neighbour discovery; physical inputs and serial reduction order are shared
     #[arg(long, value_enum, default_value = "brute-force")]
     pub backend: Backend,
-    /// CPU execution; threaded mode requires --backend uniform-grid
+    /// Execution resource; threaded and CUDA modes require --backend uniform-grid
     #[arg(long, value_enum, default_value = "serial")]
-    pub execution: CpuMode,
+    pub execution: ExecutionKind,
     /// Exact pool size (1..=256); defaults to available parallelism, capped at 256
     #[arg(long, value_name = "N")]
     pub threads: Option<usize>,
+    /// Process-visible CUDA ordinal; valid only with --execution cuda
+    #[arg(long)]
+    pub device: Option<u32>,
+    /// CUDA lanes per block: 32, 64, 128 or 256; default 128
+    #[arg(long)]
+    pub block_size: Option<u32>,
     /// Number of fixed timesteps; zero observes the initial state
     #[arg(
         long,
@@ -118,9 +124,10 @@ pub(super) struct Run {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub(super) enum CpuMode {
+pub(super) enum ExecutionKind {
     Serial,
     Threaded,
+    Cuda,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]

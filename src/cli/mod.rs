@@ -139,8 +139,27 @@ fn execute(cli: &Cli) -> Result<u8, CliError> {
             Ok(0)
         }
         Command::Run(run) => {
+            if run.execution != arguments::ExecutionKind::Cuda
+                && (run.device.is_some() || run.block_size.is_some())
+            {
+                return Err(CliError::usage(
+                    "--device and --block-size require --execution cuda".into(),
+                ));
+            }
             let execution = match run.execution {
-                arguments::CpuMode::Serial => {
+                arguments::ExecutionKind::Cuda => {
+                    if run.threads.is_some() || run.backend != arguments::Backend::UniformGrid {
+                        return Err(CliError::usage("--execution cuda requires --backend uniform-grid and cannot use --threads".into()));
+                    }
+                    let mode = maelstrom::execution::ExecutionMode::Cuda {
+                        device: run.device.unwrap_or(0),
+                        threads: run.block_size.unwrap_or(128),
+                    };
+                    mode.validate()
+                        .map_err(|error| CliError::usage(error.to_string()))?;
+                    mode
+                }
+                arguments::ExecutionKind::Serial => {
                     if run.threads.is_some() {
                         return Err(CliError::usage(
                             "--threads requires --execution threaded".into(),
@@ -148,7 +167,7 @@ fn execute(cli: &Cli) -> Result<u8, CliError> {
                     }
                     maelstrom::execution::ExecutionMode::Serial
                 }
-                arguments::CpuMode::Threaded => {
+                arguments::ExecutionKind::Threaded => {
                     if run.backend != arguments::Backend::UniformGrid {
                         return Err(CliError::usage(
                             "--execution threaded requires --backend uniform-grid".into(),

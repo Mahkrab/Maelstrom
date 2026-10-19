@@ -38,18 +38,23 @@ fn backend_id(backend: SearchBackend, iterations: u32, execution: ExecutionMode)
     } else {
         iterations.to_string()
     };
-    let mode = if execution.is_serial() {
-        "serial"
-    } else {
-        "threaded"
+    let mode = match execution {
+        ExecutionMode::Serial => "serial",
+        ExecutionMode::Threaded { .. } => "threaded",
+        ExecutionMode::Cuda { .. } => "cuda",
     };
-    format!("{mode}-{search}-pbf-binary32-{count}-jacobi-v2")
+    let version = if matches!(execution, ExecutionMode::Cuda { .. }) {
+        1
+    } else {
+        2
+    };
+    format!("{mode}-{search}-pbf-binary32-{count}-jacobi-v{version}")
 }
 
 /// Execution choices that do not change resolved physical input identity.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExecutionOptions {
-    /// CPU resources; serial by default. Threaded execution requires grid discovery.
+    /// Execution resources; serial by default. Parallel modes require grid discovery.
     pub execution: ExecutionMode,
     /// Discovery implementation; defaults to the historical brute-force path.
     pub backend: SearchBackend,
@@ -191,6 +196,9 @@ impl Checkpoint {
 /// identity, not a unique invocation identifier or a certification of correctness.
 #[derive(Clone, Debug, Serialize)]
 pub struct RunMetadata {
+    /// Runtime device identity for CUDA; absent in historical and CPU records.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<crate::cuda::DeviceInfo>,
     /// SHA-256 of backend, application version, input key, steps and worker settings.
     /// Checkpoint selection, labels and provenance do not affect this identity.
     pub run_id: String,
@@ -227,11 +235,16 @@ impl RunMetadata {
         let resources = match execution {
             ExecutionMode::Serial => String::new(),
             ExecutionMode::Threaded { workers } => format!("|workers={workers}"),
+            ExecutionMode::Cuda { device, threads } => format!(
+                "|device={device}|threads={threads}|target={}",
+                option_env!("MAELSTROM_CUDA_ARCH").unwrap_or("unbuilt")
+            ),
         };
         let run_id = digest(&format!(
             "maelstrom-run-v1|{backend}|{application_version}|{input_id}|{steps}{resources}"
         ));
         Self {
+            device: None,
             run_id,
             input_id,
             configuration_id,
@@ -433,7 +446,7 @@ pub fn run_measured_with_cancellation(
     )
 }
 
-/// Runs either discovery method and CPU mode through one observation path.
+/// Runs selected discovery and execution resources through one observation path.
 /// Grid construction, enumeration, row sorting, dispatch and barriers stay inside
 /// solver timing. Private worker setup and teardown remain outside that boundary.
 /// Each invocation owns its solver; cancellation and failure retain only its own
@@ -492,6 +505,9 @@ pub fn run_with_options(
         options.backend,
         solver.execution(),
     ));
+    if let Some(metadata) = &mut result.metadata {
+        metadata.device = solver.device().cloned();
+    }
     result.input = Some(input);
     if result.observe(&solver) {
         for _ in 0..result.request.steps {
@@ -571,7 +587,7 @@ pub fn replay_execution(
     let (scene, request, options) = replay_options(json)?;
     if !options.execution.is_serial() {
         return Err(RecordError::Invalid(
-            "threaded replay requires replay_options to retain worker settings".into(),
+            "parallel replay requires replay_options to retain execution settings".into(),
         ));
     }
     Ok((scene, request, options.backend))
@@ -608,7 +624,7 @@ pub fn replay_options(
         )))?;
     if !replay.execution.is_serial() && backend != SearchBackend::UniformGrid {
         return Err(RecordError::Invalid(
-            "threaded execution requires uniform-grid discovery".into(),
+            "parallel execution requires uniform-grid discovery".into(),
         ));
     }
     replay.request.validate()?;

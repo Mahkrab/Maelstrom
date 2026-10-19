@@ -1,10 +1,12 @@
 // Each handle owns an isolated driver context. Calls push/pop that context so
 // independent handles never reset a shared primary context or steal its stream.
 #include "probe.h"
+#include "solver.h"
 #include <cuda.h>
 #include <dlfcn.h>
 #include <limits>
 #include <new>
+#include <cmath>
 
 #if CUDA_VERSION < 13000
 #error "The CUDA bridge requires CUDA 13 headers; see docs/cuda.md"
@@ -52,6 +54,9 @@ struct Resource {
     CUstream stream = nullptr;
     CUmodule module = nullptr;
     CUfunction kernel = nullptr;
+    CUfunction solver = nullptr;
+    CUdeviceptr slots[13]{};
+    std::size_t capacities[13]{};
     CUdeviceptr buffer = 0;
     bool poisoned = false;
     ~Resource() {
@@ -88,6 +93,7 @@ static Status initialise(Resource &r, int ordinal, const char *ptx,
     Status status{0, 0};
     if ((code = d.cuModuleLoadData_fn(&r.module, ptx)) != CUDA_SUCCESS) status = {code, 5};
     if (!status.code && (code = d.cuModuleGetFunction_fn(&r.kernel, r.module, "roundtrip")) != CUDA_SUCCESS) status = {code, 5};
+    if (!status.code && (code = d.cuModuleGetFunction_fn(&r.solver, r.module, "solver")) != CUDA_SUCCESS) status = {code, 5};
     if (!status.code && (code = d.cuStreamCreate_fn(&r.stream, CU_STREAM_NON_BLOCKING)) != CUDA_SUCCESS) status = {code, 6};
     CUcontext previous;
     code = d.cuCtxPopCurrent_fn(&previous);
@@ -167,4 +173,77 @@ extern "C" Status maelstrom_cuda_close(void *handle) {
     r->context = nullptr;
     delete r;
     return {code, code == CUDA_SUCCESS ? 0 : 15};
+}
+
+// Operations finish their stream before returning. Only allocation exhaustion
+// permits driver-resource retry; partial solver output remains private scratch.
+template<class Operation> static Status solver_call(Resource &r, Operation operation) {
+    if (r.poisoned) return {-3,14};
+    auto &d=r.driver;
+    auto code=d.cuCtxPushCurrent_fn(r.context);
+    if (code!=CUDA_SUCCESS) { r.poisoned=true; return {code,13}; }
+    Status status=operation();
+    code=d.cuStreamSynchronize_fn(r.stream);
+    if (code!=CUDA_SUCCESS) status={code,10};
+    if (status.code && !(status.stage==7 && status.code==CUDA_ERROR_OUT_OF_MEMORY)) r.poisoned=true;
+    CUcontext previous;
+    code=d.cuCtxPopCurrent_fn(&previous);
+    if (code!=CUDA_SUCCESS) { status={code,13}; r.poisoned=true; }
+    return status;
+}
+
+extern "C" Status maelstrom_cuda_storage(void *handle, unsigned int slot,
+                                          void *host, std::size_t bytes, unsigned int action) {
+    auto &r=*static_cast<Resource *>(handle);
+    if (r.poisoned) return {-3,14};
+    if (slot>=13 || action>2 || bytes>static_cast<std::size_t>(PTRDIFF_MAX) ||
+        (action && bytes && !host)) return {CUDA_ERROR_INVALID_VALUE,7};
+    if (action && bytes>r.capacities[slot]) return {CUDA_ERROR_INVALID_VALUE,7};
+    return solver_call(r,[&]() -> Status {
+        auto &d=r.driver;
+        CUresult code=CUDA_SUCCESS;
+        if (!action && bytes>r.capacities[slot]) {
+            CUdeviceptr replacement=0;
+            code=d.cuMemAlloc_fn(&replacement,bytes);
+            if (code!=CUDA_SUCCESS) return {code,7};
+            if (r.slots[slot]) {
+                code=d.cuMemFree_fn(r.slots[slot]);
+                if (code!=CUDA_SUCCESS) return {code,12};
+            }
+            r.slots[slot]=replacement;
+            r.capacities[slot]=bytes;
+        } else if (action==1 && bytes) code=d.cuMemcpyHtoD_fn(r.slots[slot],host,bytes);
+        else if (action==2 && bytes) code=d.cuMemcpyDtoH_fn(host,r.slots[slot],bytes);
+        return {code,code==CUDA_SUCCESS ? 0 : (action==1 ? 8 : 11)};
+    });
+}
+
+extern "C" Status maelstrom_cuda_solver(void *handle, SolverSettings settings,
+                                         unsigned int operation, unsigned int threads) {
+    auto &r=*static_cast<Resource *>(handle);
+    if (r.poisoned) return {-3,14};
+    if (operation>11 || ((operation==2 || operation==4) && (!std::isfinite(settings.width) || settings.width<=0)) ||
+        (threads!=32 && threads!=64 && threads!=128 && threads!=256) ||
+        settings.padded==0 || (settings.padded&(settings.padded-1)) ||
+        settings.count>settings.padded || settings.words!=(static_cast<std::uint64_t>(settings.count)+31)/32 ||
+        (operation==3 && (!settings.stride || settings.stride>=settings.span ||
+        (settings.stride&(settings.stride-1)) || (settings.span&(settings.span-1)) || settings.span>settings.padded)))
+        return {CUDA_ERROR_INVALID_VALUE,7};
+    std::uint64_t n=settings.count;
+    std::uint64_t required[13]={n*12,n*12,n*12,n*12,n*4,n*4,n*4,n*12,n*12,
+        static_cast<std::uint64_t>(settings.planes)*16,static_cast<std::uint64_t>(settings.padded)*32,
+        n*settings.words*4,n*4};
+    for (unsigned int slot=0;slot<13;++slot) if (required[slot]>r.capacities[slot]) return {CUDA_ERROR_INVALID_VALUE,7};
+    if (!settings.count) return {0,0};
+    return solver_call(r,[&]() -> Status {
+        SolverBuffers buffers;
+        static_assert(sizeof(buffers)==sizeof(r.slots));
+        // CUdeviceptr holds the 64-bit address representation used by embedded PTX.
+        __builtin_memcpy(&buffers,r.slots,sizeof(buffers));
+        void *args[]={&buffers,&settings,&operation};
+        std::uint64_t count=(operation==2 || operation==3) ? settings.padded : settings.count;
+        auto code=r.driver.cuLaunchKernel_fn(r.solver,static_cast<unsigned int>((count+threads-1)/threads),
+            1,1,threads,1,1,0,r.stream,args,nullptr);
+        return {code,code==CUDA_SUCCESS ? 0 : 9};
+    });
 }
