@@ -752,6 +752,12 @@ fn cpu_workflow_matches_empty_warning_audit_input_and_late_failure_outcomes() {
                 );
                 if let Some(timings) = grid.measurements() {
                     assert_eq!(timings.steps.len(), grid.completed_steps() as usize);
+                    let constructed = timings.solver_construction_s;
+                    let destroyed = timings.solver_teardown_s;
+                    if status != CompletionStatus::InputValidationFailure {
+                        assert!(constructed.is_some_and(|s| s.is_finite() && s >= 0.0));
+                        assert!(destroyed.is_some_and(|s| s.is_finite() && s >= 0.0));
+                    }
                     assert_eq!(
                         timings.failed_attempt_s.is_some(),
                         status == CompletionStatus::SimulationFailure

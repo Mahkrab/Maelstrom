@@ -25,6 +25,12 @@ pub struct RunMeasurements {
     pub mode: MeasurementMode,
     /// One entry per accepted step, in the same order as the CFL diagnostics.
     pub steps: Vec<StepMeasurement>,
+    /// Solver construction, including private workers or CUDA context/module setup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub solver_construction_s: Option<f64>,
+    /// Consuming solver destruction, outside completed-step totals.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub solver_teardown_s: Option<f64>,
     /// Elapsed seconds of an unsuccessful solver attempt, excluded from totals.
     pub failed_attempt_s: Option<f64>,
 }
@@ -36,6 +42,8 @@ impl RunMeasurements {
             mode,
             steps: Vec::new(),
             failed_attempt_s: None,
+            solver_construction_s: None,
+            solver_teardown_s: None,
         }
     }
 }

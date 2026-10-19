@@ -115,7 +115,11 @@ operation, scratch allocation/growth, transfers, synchronisation, validation and
 Stage values are coordinated host elapsed intervals, never summed worker clocks or isolated device
 kernel times. Context/module setup and context destruction are outside step totals; fresh brute-force
 density audits, snapshot recording and publication remain outside. These boundaries describe
-instrumentation and do not establish a performance comparison.
+instrumentation and do not establish a performance comparison. Measured records also expose
+`solver_construction_s` and `solver_teardown_s` outside the step totals. Construction includes
+validated host state, context/module loading (and any driver JIT) and stream setup as one combined
+cost. Persistent device buffers are first reserved inside the first step. Teardown consumes the
+solver and releases its context and buffers; ordinary unmeasured records retain their existing shape.
 
 ## Ownership and failure contract
 

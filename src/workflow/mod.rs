@@ -481,8 +481,12 @@ pub fn run_with_options(
     let setup = (|| {
         result.request.validate()?;
         record::scene_version(scene.schema_version)?;
+        let start = options.measurement.map(|_| std::time::Instant::now());
         let solver =
             SerialSimulation::from_scene_with_execution(scene, options.backend, options.execution)?;
+        if let (Some(measurements), Some(start)) = (&mut result.measurements, start) {
+            measurements.solver_construction_s = Some(start.elapsed().as_secs_f64());
+        }
         let input = RecordedInput::capture(scene, &solver);
         // Also validate the portable record, so every admitted input can replay.
         input.resolve()?;
@@ -558,6 +562,11 @@ pub fn run_with_options(
     result.final_snapshot = Some(SnapshotRecord::capture(solver.snapshot()));
     if result.status == CompletionStatus::Completed && result.warning_count() > 0 {
         result.status = CompletionStatus::CompletedWithWarnings;
+    }
+    let start = options.measurement.map(|_| std::time::Instant::now());
+    drop(solver);
+    if let (Some(measurements), Some(start)) = (&mut result.measurements, start) {
+        measurements.solver_teardown_s = Some(start.elapsed().as_secs_f64());
     }
     result
 }
