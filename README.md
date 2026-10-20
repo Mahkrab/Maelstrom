@@ -21,6 +21,10 @@ It executes discovery and numerical stages on a private device stream, retaining
 snapshots and public replay. `cuda-check` remains an independent resource probe. Ordinary CPU
 builds need no CUDA toolkit.
 
+The [application controller](docs/application.md) lets a non-visual caller pause,
+single-step, restart and cancel a worker-owned solver through bounded commands
+and owned accepted observations. It is available in ordinary CPU-only builds.
+
 Elapsed solver measurements are opt-in:
 
 ```sh

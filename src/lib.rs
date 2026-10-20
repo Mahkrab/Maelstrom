@@ -4,6 +4,7 @@
 //! discovery with the shared numerical foundations. Configuration and scenes
 //! provide inputs; callers can inspect snapshots between transactional timesteps.
 
+pub mod application;
 pub mod boundary;
 pub mod config;
 pub mod cuda;
