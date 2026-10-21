@@ -3,6 +3,9 @@
 Build the optional viewer on x86_64 Linux/WSL2. It uses winit for the window and
 Vulkan through wgpu for drawing; simulation execution remains independent.
 The default Cargo build has no graphics dependencies or display requirement.
+Cargo builds with different feature selections share the same target executable
+name. If a later headless or render-only build replaces that executable, rebuild
+with `--features viewer` to restore `view` and `play`.
 `view` **starts a new simulation**; it is not historical playback. To watch a
 completed PNG export without simulation or particle rendering, use
 `maelstrom play <export-directory>` instead; see [saved playback](export.md#watching-a-saved-sequence).
@@ -91,7 +94,9 @@ testing, one sample per pixel and no blending or temporal interpolation.
 
 The configured camera remains fixed until changed explicitly. Use F or launch
 with `--fit-camera` to frame the initial particles. Empty scenes use a one-metre
-fallback box. Camera calculations use f64 metres before converting view-relative
+fallback box. A fit to initial particles can clip later motion; choose a wider
+camera in a render file when the whole trajectory needs to remain visible.
+Camera calculations use f64 metres before converting view-relative
 coordinates to graphics f32; accepted particle storage stays untouched. Views
 that cannot be represented finitely are rejected and preserve the previous
 camera. Very extreme dynamic ranges can still lose display precision or clip;

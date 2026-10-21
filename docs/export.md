@@ -45,8 +45,10 @@ Only completed schema-1 manifests are accepted. The player checks order, schedul
 timestamps and safe frame names, then verifies each image's recorded PNG and pixel
 hashes when loading it. Missing, changed or malformed images stop playback; nothing
 is regenerated or overwritten. The manifest is limited to 64 MiB, encoded frames to
-300 MiB and decoded dimensions to 8192 per side. Images are decoded on demand and
-one texture is reused, rather than loading the whole history. Slow decoding or
+300 MiB and decoded dimensions to 8192 per side. The exporter's one-million-frame
+ceiling does not guarantee that a manifest fits the player's separate size limit.
+Images are decoded on demand and one texture is reused, rather than loading the
+whole history. Slow decoding or
 presentation may skip displayed images to catch up; seeking still accesses every
 recorded image. There is no interpolation or fixed-FPS conversion.
 

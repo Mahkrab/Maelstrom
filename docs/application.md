@@ -3,7 +3,9 @@
 `maelstrom::application` is a non-visual library boundary for presentation code.
 The worker owns construction, stepping and destruction of its solver and any CUDA
 context. Existing headless commands and result/replay schemas are unchanged.
-The optional [particle viewer](viewer.md) consumes this boundary. There is no image-export command yet.
+The optional [particle viewer](viewer.md) consumes this boundary. The
+[offline exporter](export.md) uses its own lossless synchronous driver because
+the controller's coalesced observations cannot supply every scheduled frame.
 
 ```rust,no_run
 use maelstrom::{
