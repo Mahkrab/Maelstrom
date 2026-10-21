@@ -31,6 +31,14 @@ software Vulkan renderer, or omit `--software` to require hardware graphics.
 Its camera, controls and diagnostics consume accepted observations independently
 of numerical execution. The default build remains headless.
 
+The optional [offline exporter](docs/export.md) builds with `--features render`.
+Use `export saved` to draw stored observations, `export rerun` to rerun recorded
+inputs, or `export direct` to start a scene. Each sequence has explicit accepted
+step sampling, safe publication and a final provenance manifest. No window is required.
+With `--features viewer`, use `maelstrom play <export-directory>` to watch those
+saved images without rerunning physics or drawing the particles again. Playback
+supports pause, frame seeking and speed changes; its camera is the exported one.
+
 Elapsed solver measurements are opt-in:
 
 ```sh

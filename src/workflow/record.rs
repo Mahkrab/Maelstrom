@@ -204,7 +204,7 @@ impl RecordedInput {
         (&self.name, &self.configuration.name)
     }
 
-    pub(super) fn capture(scene: &ResolvedScene, solver: &SerialSimulation) -> Self {
+    pub(crate) fn capture(scene: &ResolvedScene, solver: &SerialSimulation) -> Self {
         let config = solver.configuration();
         let mut ordered = scene.clone();
         ordered.particles = solver.snapshot().particles().to_vec();

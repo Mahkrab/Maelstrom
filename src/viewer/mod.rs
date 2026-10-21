@@ -59,7 +59,7 @@ pub fn run(
     }
     Ok(())
 }
-fn window_error(context: &str, error: impl std::fmt::Display) -> RenderError {
+pub(crate) fn window_error(context: &str, error: impl std::fmt::Display) -> RenderError {
     let message = error.to_string();
     let message = message
         .strip_prefix("os error at ")
@@ -68,7 +68,7 @@ fn window_error(context: &str, error: impl std::fmt::Display) -> RenderError {
     RenderError(format!("{context}: {message}"))
 }
 #[cfg(target_os = "linux")]
-fn check_keyboard_libraries() -> Result<(), RenderError> {
+pub(crate) fn check_keyboard_libraries() -> Result<(), RenderError> {
     // Probe through winit's own safe loader before it calls an infallible handle.
     // This reports missing native packages without an upstream loader panic.
     if xkbcommon_dl::xkbcommon_option().is_none()
@@ -91,15 +91,18 @@ fn check_keyboard_libraries() -> Result<(), RenderError> {
 fn drawable(width: u32, height: u32, occluded: bool) -> bool {
     width != 0 && height != 0 && !occluded
 }
-struct Display {
+pub(crate) struct Display {
     instance: wgpu::Instance,
-    surface: wgpu::Surface<'static>,
-    graphics: Graphics,
-    config: wgpu::SurfaceConfiguration,
+    pub(crate) surface: wgpu::Surface<'static>,
+    pub(crate) graphics: Graphics,
+    pub(crate) config: wgpu::SurfaceConfiguration,
     depth: wgpu::Texture,
 }
 impl Display {
-    fn new(window: Arc<Window>, selection: GraphicsSelection) -> Result<Self, RenderError> {
+    pub(crate) fn new(
+        window: Arc<Window>,
+        selection: GraphicsSelection,
+    ) -> Result<Self, RenderError> {
         let instance = Graphics::instance();
         let surface = instance
             .create_surface(window.clone())
@@ -116,7 +119,7 @@ impl Display {
             .ok_or_else(|| RenderError("selected surface has no supported sRGB format".into()))?;
         let graphics = pollster::block_on(Graphics::from_adapter(adapter, Some(&surface), format))?;
         eprintln!(
-            "maelstrom viewer: Vulkan {:?}; {}; driver {} {}; surface {:?}",
+            "maelstrom graphics: Vulkan {:?}; {}; driver {} {}; surface {:?}",
             graphics.adapter_info.device_type,
             graphics.adapter_info.name,
             graphics.adapter_info.driver,
@@ -150,7 +153,7 @@ impl Display {
             depth,
         })
     }
-    fn resize(&mut self, width: u32, height: u32) -> Result<(), RenderError> {
+    pub(crate) fn resize(&mut self, width: u32, height: u32) -> Result<(), RenderError> {
         if !drawable(width, height, false) {
             return Ok(());
         }
@@ -160,7 +163,7 @@ impl Display {
         self.surface.configure(&self.graphics.device, &self.config);
         self.graphics.check()
     }
-    fn recreate(&mut self, window: Arc<Window>) -> Result<(), RenderError> {
+    pub(crate) fn recreate(&mut self, window: Arc<Window>) -> Result<(), RenderError> {
         self.surface = self
             .instance
             .create_surface(window)

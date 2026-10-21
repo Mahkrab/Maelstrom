@@ -11,6 +11,8 @@ mod output;
 mod record;
 
 pub use measurement::{MeasurementMode, RunMeasurements};
+#[cfg(feature = "render")]
+pub(crate) use output::publish_bytes;
 pub use output::{OutputError, OutputFormat};
 pub use record::{ParticleRecord, RecordError, RecordedInput, SCHEMA_VERSION, SnapshotRecord};
 
@@ -158,7 +160,7 @@ pub struct StepDiagnostic {
 }
 
 impl StepDiagnostic {
-    fn new(completed_steps: u64, cfl: CflDiagnostic) -> Self {
+    pub(crate) fn new(completed_steps: u64, cfl: CflDiagnostic) -> Self {
         Self {
             completed_steps,
             maximum_speed_m_s: cfl.maximum_speed,
@@ -222,7 +224,7 @@ pub struct RunMetadata {
 }
 
 impl RunMetadata {
-    fn new(
+    pub(crate) fn new(
         input: &RecordedInput,
         steps: u64,
         search: SearchBackend,

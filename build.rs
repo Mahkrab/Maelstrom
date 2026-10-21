@@ -16,6 +16,8 @@ fn run(command: &mut Command) {
 }
 
 fn main() {
+    #[cfg(feature = "render")]
+    export_build_identity();
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_CUDA");
     if env::var_os("CARGO_FEATURE_CUDA").is_none() {
         return;
@@ -113,4 +115,107 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=stdc++");
     println!("cargo:rustc-link-lib=dylib=dl");
     println!("cargo:rustc-env=MAELSTROM_CUDA_ARCH={arch}");
+}
+
+#[cfg(feature = "render")]
+fn export_build_identity() {
+    use sha2::{Digest, Sha256};
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+    fn files(directory: &std::path::Path, paths: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(directory)
+            .expect("source directory")
+            .map(Result::unwrap)
+        {
+            let path = entry.path();
+            if path.is_dir() {
+                files(&path, paths);
+            } else {
+                paths.push(path);
+            }
+        }
+    }
+    let mut paths = vec![
+        PathBuf::from("Cargo.toml"),
+        PathBuf::from("Cargo.lock"),
+        PathBuf::from("build.rs"),
+    ];
+    files(std::path::Path::new("src"), &mut paths);
+    files(std::path::Path::new("native"), &mut paths);
+    paths.sort();
+    let mut digest = Sha256::new();
+    for path in paths {
+        println!("cargo:rerun-if-changed={}", path.display());
+        digest.update(path.to_string_lossy().as_bytes());
+        digest.update([0]);
+        let bytes = fs::read(&path).expect("source bytes");
+        digest.update((bytes.len() as u64).to_le_bytes());
+        digest.update(bytes);
+    }
+    println!(
+        "cargo:rustc-env=MAELSTROM_EXPORT_SOURCE=sha256:{}",
+        hex(&digest.finalize())
+    );
+    println!(
+        "cargo:rustc-env=MAELSTROM_EXPORT_LOCK=sha256:{}",
+        hex(&Sha256::digest(fs::read("Cargo.lock").expect("lockfile")))
+    );
+    for (name, args) in [
+        ("COMMIT", vec!["rev-parse", "HEAD"]),
+        (
+            "DIRTY",
+            vec!["status", "--porcelain", "--untracked-files=normal"],
+        ),
+    ] {
+        let value = Command::new("git")
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| {
+                if name == "DIRTY" {
+                    (!o.stdout.is_empty()).to_string()
+                } else {
+                    String::from_utf8_lossy(&o.stdout).trim().to_owned()
+                }
+            })
+            .unwrap_or_else(|| "unavailable".into());
+        println!("cargo:rustc-env=MAELSTROM_EXPORT_{name}={value}");
+    }
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=native");
+    for name in ["HEAD", "index"] {
+        if let Ok(output) = Command::new("git")
+            .args(["rev-parse", "--git-path", name])
+            .output()
+            && output.status.success()
+        {
+            println!(
+                "cargo:rerun-if-changed={}",
+                String::from_utf8_lossy(&output.stdout).trim()
+            );
+        }
+    }
+    for key in ["PROFILE", "OPT_LEVEL", "CARGO_ENCODED_RUSTFLAGS"] {
+        let value = env::var(key).unwrap_or_else(|_| "unavailable".into());
+        let value = if key == "CARGO_ENCODED_RUSTFLAGS" {
+            format!("sha256:{}", hex(&Sha256::digest(value.as_bytes())))
+        } else {
+            value
+        };
+        println!("cargo:rustc-env=MAELSTROM_EXPORT_{key}={value}");
+    }
+    println!(
+        "cargo:rustc-env=MAELSTROM_EXPORT_TARGET={}",
+        env::var("TARGET").expect("Cargo target")
+    );
+    let rustc = Command::new(env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .unwrap_or_else(|| "unavailable".into());
+    println!("cargo:rustc-env=MAELSTROM_EXPORT_RUSTC={rustc}");
 }

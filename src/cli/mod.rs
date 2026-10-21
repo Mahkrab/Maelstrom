@@ -3,7 +3,11 @@
 //! diagnostics. Presentation flags never enter the numerical request.
 
 mod arguments;
+#[cfg(feature = "render")]
+mod export;
 mod inputs;
+#[cfg(feature = "viewer")]
+mod play;
 #[cfg(feature = "viewer")]
 mod viewer;
 
@@ -67,6 +71,10 @@ pub(super) fn main() -> ExitCode {
 
 fn execute(cli: &Cli) -> Result<u8, CliError> {
     match &cli.command {
+        #[cfg(feature = "viewer")]
+        Command::Play(play) => play::launch(play),
+        #[cfg(feature = "render")]
+        Command::Export(export) => export::launch(export),
         #[cfg(feature = "viewer")]
         Command::View(view) => viewer::launch(view),
         Command::CudaCheck {

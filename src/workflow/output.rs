@@ -228,7 +228,6 @@ static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
 struct StagedFile {
     path: PathBuf,
-    file: File,
 }
 
 impl Drop for StagedFile {
@@ -237,7 +236,7 @@ impl Drop for StagedFile {
     }
 }
 
-fn publish_bytes(destination: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn publish_bytes(destination: &Path, bytes: &[u8]) -> io::Result<()> {
     publish_with(destination, |file| file.write_all(bytes))
 }
 
@@ -258,21 +257,22 @@ fn publish_with(
         ));
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(file) => {
-                staged = Some(StagedFile { path, file });
+                staged = Some((StagedFile { path }, file));
                 break;
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
         }
     }
-    let mut staged = staged.ok_or_else(|| {
+    let (staged, mut file) = staged.ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::AlreadyExists,
             "no unused temporary output name",
         )
     })?;
-    write(&mut staged.file)?;
-    staged.file.sync_all()?;
+    write(&mut file)?;
+    file.sync_all()?;
+    drop(file);
     fs::hard_link(&staged.path, destination)
 }
 

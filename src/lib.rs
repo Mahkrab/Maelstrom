@@ -11,11 +11,15 @@ pub mod cuda;
 pub mod diagnostics;
 pub mod error;
 pub mod execution;
+#[cfg(feature = "render")]
+pub mod export;
 pub mod fluid;
 pub mod integration;
 pub mod kernel;
 pub mod math;
 pub mod neighbours;
+#[cfg(feature = "render")]
+pub mod playback;
 pub mod reference;
 #[cfg(feature = "render")]
 pub mod render;

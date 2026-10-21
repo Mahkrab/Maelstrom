@@ -56,6 +56,47 @@ fn cli(args: &[&str]) -> Output {
     command(&std::env::temp_dir()).args(args).output().unwrap()
 }
 
+#[test]
+fn saved_playback_command_is_optional_and_explains_its_non_numerical_input() {
+    let output = cli(&["play", "--help"]);
+    #[cfg(feature = "viewer")]
+    {
+        success(&output);
+        let help = String::from_utf8(output.stdout).unwrap();
+        assert!(help.contains("no simulation"));
+        for flag in ["--speed", "--paused", "--repeat", "--software"] {
+            assert!(help.contains(flag));
+        }
+        assert_eq!(
+            cli(&["play", "frames", "--backend", "uniform-grid"])
+                .status
+                .code(),
+            Some(2)
+        );
+    }
+    #[cfg(not(feature = "viewer"))]
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[cfg(feature = "viewer")]
+#[test]
+fn playback_rejects_raw_results_and_incomplete_exports_without_writing_files() {
+    let directory = Directory::new();
+    for name in ["result.json", "progress.json", "manifest.json"] {
+        let path = directory.write(name, r#"{"schema_version":1,"complete":false}"#);
+        let output = command(&directory.0)
+            .args(["play", path.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(3));
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8(output.stderr).unwrap();
+        assert!(!error.contains(&directory.0.to_string_lossy().to_string()));
+        assert!(!error.contains("panicked"));
+    }
+    assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 3);
+}
+
 fn success(output: &Output) {
     assert_eq!(
         output.status.code(),

@@ -65,6 +65,95 @@ pub(super) enum Command {
     /// Open the optional interactive particle viewer
     #[cfg(feature = "viewer")]
     View(View),
+    /// Play a completed PNG export; no simulation or particle rendering
+    #[cfg(feature = "viewer")]
+    Play(Play),
+    /// Export accepted observations to a new PNG sequence without a window
+    #[cfg(feature = "render")]
+    Export(Export),
+}
+
+#[cfg(feature = "viewer")]
+#[derive(Args)]
+#[command(
+    after_help = "Loads existing images only. Space: pause/play; Left/Right: seek and pause; Home/End: endpoints; R: restart; +/-: speed; Escape: close. Camera changes require a new export, not a numerical rerun when saved observations are available."
+)]
+pub(super) struct Play {
+    /// Completed export directory or its manifest.json
+    pub sequence: PathBuf,
+    /// Simulated seconds per wall-clock second (0.01..=100)
+    #[arg(long, default_value_t = 1.0)]
+    pub speed: f64,
+    /// Open on the initial frame without starting playback
+    #[arg(long)]
+    pub paused: bool,
+    /// Repeat after holding the final frame for the previous frame interval
+    #[arg(long)]
+    pub repeat: bool,
+    /// Index among Vulkan adapters of the selected hardware/software class
+    #[arg(long, default_value_t = 0)]
+    pub graphics_adapter: usize,
+    /// Explicitly require software Vulkan presentation
+    #[arg(long)]
+    pub software: bool,
+}
+
+#[cfg(feature = "render")]
+#[derive(Args)]
+pub(super) struct Export {
+    #[command(subcommand)]
+    pub source: ExportSource,
+    /// New destination directory; its parent must exist
+    #[arg(long, global = true)]
+    pub output: Option<PathBuf>,
+    /// Explicit presentation TOML file (schema 1)
+    #[arg(long, global = true)]
+    pub render_config: Option<PathBuf>,
+    #[arg(long, global = true)]
+    pub width: Option<u32>,
+    #[arg(long, global = true)]
+    pub height: Option<u32>,
+    /// Sample accepted indices with this positive stride, retaining both endpoints
+    #[arg(long, global = true)]
+    pub step_stride: Option<u64>,
+    /// Index among Vulkan adapters of the selected hardware/software class
+    #[arg(long, global = true, default_value_t = 0)]
+    pub graphics_adapter: usize,
+    /// Explicitly require software Vulkan rendering
+    #[arg(long, global = true)]
+    pub software: bool,
+    /// Fit the initial particles once instead of using the configured camera
+    #[arg(long, global = true)]
+    pub fit_camera: bool,
+}
+
+#[cfg(feature = "render")]
+#[derive(Subcommand)]
+pub(super) enum ExportSource {
+    /// Render stored accepted snapshots; missing steps fail without rerunning
+    Saved {
+        file: PathBuf,
+        /// Explicit prefix endpoint, required for an incomplete original run
+        #[arg(long)]
+        last_step: Option<u64>,
+    },
+    /// Rerun the full recorded request from zero, comparing stored checkpoints
+    Rerun { file: PathBuf },
+    /// Start a fresh simulation from a scene and export selected accepted steps
+    Direct {
+        #[command(flatten)]
+        inputs: Inputs,
+        #[arg(long)]
+        steps: u64,
+        #[arg(long, default_value = "serial-grid", value_parser = ["brute-force", "serial-grid", "threaded-grid", "cuda-grid"])]
+        mode: String,
+        #[arg(long)]
+        workers: Option<usize>,
+        #[arg(long)]
+        device: Option<u32>,
+        #[arg(long)]
+        block_size: Option<u32>,
+    },
 }
 
 #[derive(Args)]

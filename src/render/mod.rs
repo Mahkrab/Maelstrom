@@ -32,10 +32,10 @@ pub struct Settings {
     /// Drawable height, 1..=8192.
     #[serde(default = "default_height")]
     pub height: u32,
-    /// Image format reserved by the shared rendering contract; only png.
+    /// Image format for offline output; only png.
     #[serde(default = "default_format")]
     pub format: String,
-    /// Accepted-step stride for future offline consumers; positive.
+    /// Accepted-step stride for offline output; positive.
     #[serde(default = "default_stride")]
     pub step_stride: u64,
     /// Camera fields merge with built-in defaults.

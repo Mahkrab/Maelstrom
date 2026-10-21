@@ -3,6 +3,9 @@
 Build the optional viewer on x86_64 Linux/WSL2. It uses winit for the window and
 Vulkan through wgpu for drawing; simulation execution remains independent.
 The default Cargo build has no graphics dependencies or display requirement.
+`view` **starts a new simulation**; it is not historical playback. To watch a
+completed PNG export without simulation or particle rendering, use
+`maelstrom play <export-directory>` instead; see [saved playback](export.md#watching-a-saved-sequence).
 
 ```sh
 cargo run --locked --features viewer -- view falling-block-04 --steps 480
@@ -29,8 +32,8 @@ loader and compatible driver are required. Linux keyboard support requires
 `libxkbcommon0`; X11 additionally needs `libxkbcommon-x11-0` and `libxcb-xkb1`.
 The native keyboard libraries are checked before window creation. Missing
 displays, native libraries or selected adapters produce launch errors. The
-`render` feature alone supports shared drawing without pulling in winit; there
-is no image-export command yet.
+`render` feature alone supports shared drawing without pulling in winit; the
+[offline exporter](export.md) uses that feature for windowless PNG sequences.
 
 ## Choosing and controlling a run
 
@@ -111,8 +114,8 @@ vertical_fov_deg = 45.0
 
 Dimensions must be 1–8192 and within the actual device limit. Unknown fields,
 versions, invalid vectors or clipping distances fail validation. `format="png"`
-and positive `step_stride` are reserved shared settings; this viewer produces no
-PNG sequence.
+and positive `step_stride` are shared with the offline exporter; this viewer
+uses drawable dimensions and camera settings.
 
 Resize recreates the depth target; zero drawable extent and occlusion suspend
 drawing. Surface loss recreates the surface, outdated/suboptimal surfaces are
