@@ -25,6 +25,12 @@ The [application controller](docs/application.md) lets a non-visual caller pause
 single-step, restart and cancel a worker-owned solver through bounded commands
 and owned accepted observations. It is available in ordinary CPU-only builds.
 
+The optional [interactive viewer](docs/viewer.md) builds with `--features viewer`.
+Launch `view falling-block-04 --steps 480 --software` for an explicitly selected
+software Vulkan renderer, or omit `--software` to require hardware graphics.
+Its camera, controls and diagnostics consume accepted observations independently
+of numerical execution. The default build remains headless.
+
 Elapsed solver measurements are opt-in:
 
 ```sh

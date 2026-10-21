@@ -4,6 +4,8 @@
 
 mod arguments;
 mod inputs;
+#[cfg(feature = "viewer")]
+mod viewer;
 
 use std::{
     fs,
@@ -65,6 +67,8 @@ pub(super) fn main() -> ExitCode {
 
 fn execute(cli: &Cli) -> Result<u8, CliError> {
     match &cli.command {
+        #[cfg(feature = "viewer")]
+        Command::View(view) => viewer::launch(view),
         Command::CudaCheck {
             device,
             repetitions,

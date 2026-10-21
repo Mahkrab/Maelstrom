@@ -17,8 +17,12 @@ pub mod kernel;
 pub mod math;
 pub mod neighbours;
 pub mod reference;
+#[cfg(feature = "render")]
+pub mod render;
 pub mod scene;
 pub mod simulation;
+#[cfg(feature = "viewer")]
+pub mod viewer;
 pub mod workflow;
 
 mod validation;

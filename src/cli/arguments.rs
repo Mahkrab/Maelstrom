@@ -62,6 +62,9 @@ pub(super) enum Command {
         after_help = "Example: maelstrom replay result.json --format json -o repeated.json\nReplay validates recorded inputs and backend. It reruns the original request; it does not certify the original outcome."
     )]
     Replay(Replay),
+    /// Open the optional interactive particle viewer
+    #[cfg(feature = "viewer")]
+    View(View),
 }
 
 #[derive(Args)]
@@ -161,4 +164,44 @@ pub(super) struct Output {
     /// Publish the last accepted state to a separate new JSON file
     #[arg(long, value_name = "FILE")]
     pub snapshot: Option<PathBuf>,
+}
+
+#[cfg(feature = "viewer")]
+#[derive(Args)]
+pub(super) struct View {
+    #[command(flatten)]
+    pub inputs: Inputs,
+    /// Finite number of accepted steps; starts paused
+    #[arg(long)]
+    pub steps: u64,
+    /// Simulation mode, independent of the graphics adapter
+    #[arg(long, default_value = "serial-grid", value_parser = ["brute-force", "serial-grid", "threaded-grid", "cuda-grid"])]
+    pub mode: String,
+    /// Exact CPU pool size when selecting threaded-grid
+    #[arg(long, default_value_t = 4)]
+    pub workers: usize,
+    /// Process-visible CUDA ordinal when selecting cuda-grid
+    #[arg(long, default_value_t = 0)]
+    pub device: u32,
+    /// CUDA block size when selecting cuda-grid
+    #[arg(long, default_value_t = 128)]
+    pub block_size: u32,
+    /// Explicit presentation TOML file (schema 1)
+    #[arg(long)]
+    pub render_config: Option<PathBuf>,
+    /// Override drawable width from the render file
+    #[arg(long)]
+    pub width: Option<u32>,
+    /// Override drawable height from the render file
+    #[arg(long)]
+    pub height: Option<u32>,
+    /// Index among Vulkan adapters of the selected hardware/software class
+    #[arg(long, default_value_t = 0)]
+    pub graphics_adapter: usize,
+    /// Explicitly require a CPU/software Vulkan renderer
+    #[arg(long)]
+    pub software: bool,
+    /// Explicitly fit initial particles instead of using the configured camera
+    #[arg(long)]
+    pub fit_camera: bool,
 }
