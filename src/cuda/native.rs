@@ -85,6 +85,21 @@ unsafe extern "C" {
         operation: u32,
         threads: u32,
     ) -> Status;
+    fn maelstrom_cuda_checked_solver(
+        handle: *mut c_void,
+        settings: Settings,
+        operation: u32,
+        threads: u32,
+        diagnostic: *mut u64,
+    ) -> Status;
+    fn maelstrom_cuda_begin_attempt(handle: *mut c_void) -> Status;
+    fn maelstrom_cuda_checked_group(
+        handle: *mut c_void,
+        settings: Settings,
+        first_operation: u32,
+        threads: u32,
+        diagnostic: *mut u64,
+    ) -> Status;
 }
 
 // Only these private, explicit layouts can cross the solver transfer boundary.
@@ -110,6 +125,14 @@ const _: () = {
 };
 
 impl Context {
+    pub(super) fn begin_attempt(&mut self) -> Result<(), CudaError> {
+        let handle = self.handle.ok_or(CudaError::Poisoned)?;
+        // SAFETY: The unique live handle owns the diagnostic allocation. Native
+        // code completes any required reset before returning and rejects reuse
+        // after uncertain driver faults. No host storage is borrowed.
+        unsafe { maelstrom_cuda_begin_attempt(handle.as_ptr()) }.result()
+    }
+
     pub(super) fn reserve(&mut self, slot: u32, bytes: usize) -> Result<(), CudaError> {
         if bytes > isize::MAX as usize {
             return Err(CudaError::Capacity);
@@ -173,6 +196,55 @@ impl Context {
         // SAFETY: Settings has the asserted C layout. The bridge checks launch
         // dimensions and all slot sizes, then waits for this private stream.
         unsafe { maelstrom_cuda_solver(handle.as_ptr(), settings, operation, threads) }.result()
+    }
+
+    pub(super) fn checked_launch(
+        &mut self,
+        settings: Settings,
+        operation: u32,
+        threads: u32,
+    ) -> Result<u64, CudaError> {
+        let handle = self.handle.ok_or(CudaError::Poisoned)?;
+        let mut diagnostic = u64::MAX;
+        // SAFETY: The unique thread-local handle is live and Settings has its
+        // asserted C layout. Native code validates storage and dimensions, drains
+        // the kernel and completes the eight-byte copy before this borrow ends.
+        unsafe {
+            maelstrom_cuda_checked_solver(
+                handle.as_ptr(),
+                settings,
+                operation,
+                threads,
+                &mut diagnostic,
+            )
+        }
+        .result()?;
+        Ok(diagnostic)
+    }
+
+    pub(super) fn checked_group(
+        &mut self,
+        settings: Settings,
+        first_operation: u32,
+        threads: u32,
+    ) -> Result<u64, CudaError> {
+        let handle = self.handle.ok_or(CudaError::Poisoned)?;
+        let mut diagnostic = u64::MAX;
+        // SAFETY: The unique live handle owns all device scratch. Native code
+        // accepts only the fixed Jacobi/projection groups, validates layouts and
+        // sizes, drains submitted work, and finishes writing this result before
+        // returning. No borrowed host pointer escapes the call.
+        unsafe {
+            maelstrom_cuda_checked_group(
+                handle.as_ptr(),
+                settings,
+                first_operation,
+                threads,
+                &mut diagnostic,
+            )
+        }
+        .result()?;
+        Ok(diagnostic)
     }
 
     pub fn new(ordinal: u32) -> Result<Self, CudaError> {

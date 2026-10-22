@@ -75,6 +75,12 @@ extern "C" __global__ void solver(SolverBuffers b, SolverSettings s, unsigned in
     }
     if (lane>=s.count) return;
     auto i=static_cast<unsigned int>(lane);
+    const auto pass=b.first_operation ? operation-b.first_operation : 0;
+    // Earlier kernels have completed on this stream. Their records are no
+    // longer being written, so these reads do not race this pass's atomic min.
+    // Check every earlier slot: skipped kernels leave their own sentinel alone.
+    for (unsigned int previous=0;previous<pass;++previous)
+        if (b.diagnostic[previous]!=ULLONG_MAX) return;
     Checked c;
     if (operation==0) {
         Vector delta=c.vector(mul(s.acceleration,s.timestep),19);
@@ -167,4 +173,7 @@ extern "C" __global__ void solver(SolverBuffers b, SolverSettings s, unsigned in
         b.velocity[i]=c.vector(mul(displacement,reciprocal),51);
     }
     b.errors[i]=c.error;
+    // Only failing lanes contend. The high word preserves particle precedence;
+    // Checked already retained the first failing expression within that lane.
+    if (c.error && b.diagnostic) atomicMin(b.diagnostic+pass,(static_cast<unsigned long long>(i)<<32)|c.error);
 }

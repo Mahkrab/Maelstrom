@@ -25,6 +25,7 @@
     X(cuStreamCreate, "cuStreamCreate") X(cuStreamSynchronize, "cuStreamSynchronize") \
     X(cuMemAlloc, "cuMemAlloc_v2") X(cuMemFree, "cuMemFree_v2") \
     X(cuMemcpyHtoD, "cuMemcpyHtoD_v2") X(cuMemcpyDtoH, "cuMemcpyDtoH_v2") \
+    X(cuMemsetD8Async, "cuMemsetD8Async") \
     X(cuLaunchKernel, "cuLaunchKernel")
 
 struct Driver {
@@ -55,6 +56,8 @@ struct Resource {
     CUmodule module = nullptr;
     CUfunction kernel = nullptr;
     CUfunction solver = nullptr;
+    CUdeviceptr diagnostic = 0;
+    bool diagnostic_clear = false;
     CUdeviceptr slots[14]{};
     std::size_t capacities[14]{};
     CUdeviceptr buffer = 0;
@@ -97,6 +100,7 @@ static Status initialise(Resource &r, int ordinal, const char *ptx,
     // Pageable uploads may return before DMA finishes on the legacy stream.
     // This private stream must inherit that dependency before reading the data.
     if (!status.code && (code = d.cuStreamCreate_fn(&r.stream, CU_STREAM_DEFAULT)) != CUDA_SUCCESS) status = {code, 6};
+    if (!status.code && (code = d.cuMemAlloc_fn(&r.diagnostic, 4*sizeof(std::uint64_t))) != CUDA_SUCCESS) status = {code, 7};
     CUcontext previous;
     code = d.cuCtxPopCurrent_fn(&previous);
     if (!status.code && code != CUDA_SUCCESS) status = {code, 13};
@@ -179,7 +183,8 @@ extern "C" Status maelstrom_cuda_close(void *handle) {
 
 // Operations finish their stream before returning. Only allocation exhaustion
 // permits driver-resource retry; partial solver output remains private scratch.
-template<class Operation> static Status solver_call(Resource &r, Operation operation) {
+template<class Operation> static Status solver_call(Resource &r, Operation operation,
+        std::uint64_t *diagnostic=nullptr, unsigned int diagnostic_count=1) {
     if (r.poisoned) return {-3,14};
     auto &d=r.driver;
     auto code=d.cuCtxPushCurrent_fn(r.context);
@@ -187,6 +192,13 @@ template<class Operation> static Status solver_call(Resource &r, Operation opera
     Status status=operation();
     code=d.cuStreamSynchronize_fn(r.stream);
     if (code!=CUDA_SUCCESS) status={code,10};
+    // The stream is already drained. A synchronous device-to-host copy finishes
+    // writing the borrowed result before returning; another stream wait adds no
+    // dependency. Keep transfer faults inside the same invalidation boundary.
+    if (!status.code && diagnostic) {
+        code=d.cuMemcpyDtoH_fn(diagnostic,r.diagnostic,diagnostic_count*sizeof(*diagnostic));
+        if (code!=CUDA_SUCCESS) status={code,11};
+    }
     if (status.code && !(status.stage==7 && status.code==CUDA_ERROR_OUT_OF_MEMORY)) r.poisoned=true;
     CUcontext previous;
     code=d.cuCtxPopCurrent_fn(&previous);
@@ -220,11 +232,11 @@ extern "C" Status maelstrom_cuda_storage(void *handle, unsigned int slot,
     });
 }
 
-extern "C" Status maelstrom_cuda_solver(void *handle, SolverSettings settings,
-                                         unsigned int operation, unsigned int threads) {
-    auto &r=*static_cast<Resource *>(handle);
+static Status solver(Resource &r, SolverSettings settings, unsigned int operation,
+        unsigned int threads, std::uint64_t *diagnostic=nullptr, bool grouped=false) {
     if (r.poisoned) return {-3,14};
-    if (operation>13 || ((operation==2 || operation==4 || operation==12) && (!std::isfinite(settings.width) || settings.width<=0)) ||
+    if ((grouped && (!diagnostic || (operation!=5 && operation!=9))) ||
+        operation>13 || ((operation==2 || operation==4 || operation==12) && (!std::isfinite(settings.width) || settings.width<=0)) ||
         (threads!=32 && threads!=64 && threads!=128 && threads!=256) ||
         settings.padded==0 || (settings.padded&(settings.padded-1)) ||
         settings.count>settings.padded || settings.entries>static_cast<std::uint64_t>(PTRDIFF_MAX)/4 ||
@@ -236,12 +248,22 @@ extern "C" Status maelstrom_cuda_solver(void *handle, SolverSettings settings,
         static_cast<std::uint64_t>(settings.planes)*16,static_cast<std::uint64_t>(settings.padded)*32,
         settings.entries*4,n*4,(n+1)*8};
     for (unsigned int slot=0;slot<14;++slot) if (required[slot]>r.capacities[slot]) return {CUDA_ERROR_INVALID_VALUE,7};
-    if (!settings.count) return {0,0};
-    return solver_call(r,[&]() -> Status {
+    if (diagnostic && !r.diagnostic_clear) return {CUDA_ERROR_INVALID_VALUE,7};
+    if (!settings.count) {
+        if (diagnostic) *diagnostic=UINT64_MAX;
+        return {0,0};
+    }
+    const unsigned int passes=grouped ? (operation==5 ? 4 : 2) : 1;
+    std::uint64_t records[4]={UINT64_MAX,UINT64_MAX,UINT64_MAX,UINT64_MAX};
+    if (diagnostic) r.diagnostic_clear=false;
+    const auto status=solver_call(r,[&]() -> Status {
         SolverBuffers buffers;
-        static_assert(sizeof(buffers)==sizeof(r.slots));
+        static_assert(offsetof(SolverBuffers,diagnostic)==sizeof(r.slots));
         // CUdeviceptr holds the 64-bit address representation used by embedded PTX.
-        __builtin_memcpy(&buffers,r.slots,sizeof(buffers));
+        __builtin_memcpy(&buffers,r.slots,sizeof(r.slots));
+        buffers.diagnostic=nullptr;
+        buffers.first_operation=grouped ? operation : 0;
+        if (diagnostic) __builtin_memcpy(&buffers.diagnostic,&r.diagnostic,sizeof(r.diagnostic));
         const bool sort=operation==13;
         unsigned int kernel_operation=sort ? 3 : operation;
         void *args[]={&buffers,&settings,&kernel_operation};
@@ -251,7 +273,14 @@ extern "C" Status maelstrom_cuda_solver(void *handle, SolverSettings settings,
                 1,1,threads,1,1,0,r.stream,args,nullptr);
             return {code,code==CUDA_SUCCESS ? 0 : 9};
         };
-        if (!sort) return launch();
+        if (!sort) {
+            for (unsigned int pass=0;pass<passes;++pass) {
+                kernel_operation=operation+pass;
+                auto status=launch();
+                if (status.code) return status;
+            }
+            return {0,0};
+        }
         // These integer-only passes have no host observations or cancellation
         // polls between them. Stream order supplies their global dependency;
         // solver_call drains the batch even after an immediate launch failure.
@@ -263,5 +292,47 @@ extern "C" Status maelstrom_cuda_solver(void *handle, SolverSettings settings,
             }
         }
         return {0,0};
+    },diagnostic ? records : nullptr,passes);
+    if (diagnostic && !status.code) {
+        // Stage order precedes particle/expression order, even when a later
+        // stage would fail at an earlier particle. Never select by packet value.
+        *diagnostic=UINT64_MAX;
+        for (unsigned int pass=0;pass<passes;++pass)
+            if (records[pass]!=UINT64_MAX) { *diagnostic=records[pass];break; }
+        r.diagnostic_clear=*diagnostic==UINT64_MAX;
+    }
+    return status;
+}
+
+extern "C" Status maelstrom_cuda_begin_attempt(void *handle) {
+    auto &r=*static_cast<Resource *>(handle);
+    if (r.poisoned) return {-3,14};
+    if (r.diagnostic_clear) return {0,0};
+    // Successful passes leave the sentinel untouched. Reset only for the first
+    // attempt or after a numerical failure; never trust that flag after a driver
+    // fault. No dependent work can observe a partly initialised record.
+    auto status=solver_call(r,[&]() -> Status {
+        auto code=r.driver.cuMemsetD8Async_fn(r.diagnostic,0xff,4*sizeof(std::uint64_t),r.stream);
+        return {code,code==CUDA_SUCCESS ? 0 : 9};
     });
+    if (!status.code) r.diagnostic_clear=true;
+    return status;
+}
+
+extern "C" Status maelstrom_cuda_solver(void *handle, SolverSettings settings,
+                                         unsigned int operation, unsigned int threads) {
+    return solver(*static_cast<Resource *>(handle),settings,operation,threads);
+}
+
+extern "C" Status maelstrom_cuda_checked_solver(void *handle, SolverSettings settings,
+        unsigned int operation, unsigned int threads, std::uint64_t *diagnostic) {
+    auto &r=*static_cast<Resource *>(handle);
+    if (r.poisoned) return {-3,14};
+    if (!diagnostic || operation==2 || operation==3 || operation>=13) return {CUDA_ERROR_INVALID_VALUE,7};
+    return solver(r,settings,operation,threads,diagnostic);
+}
+
+extern "C" Status maelstrom_cuda_checked_group(void *handle, SolverSettings settings,
+        unsigned int first_operation, unsigned int threads, std::uint64_t *diagnostic) {
+    return solver(*static_cast<Resource *>(handle),settings,first_operation,threads,diagnostic,true);
 }

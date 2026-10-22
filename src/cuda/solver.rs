@@ -152,6 +152,24 @@ fn host_values<T>(values: impl ExactSizeIterator<Item = T>) -> Result<Vec<T>, Cu
     Ok(output)
 }
 
+fn diagnostic_error(record: u64, particles: u32) -> Result<(), StepError> {
+    if record == u64::MAX {
+        return Ok(());
+    }
+    let particle = (record >> 32) as usize;
+    let quantity = record as u32;
+    if particle >= particles as usize || quantity == 0 || quantity > 52 {
+        return Err(CudaError::Diagnostic { particle, quantity }.into());
+    }
+    if quantity == 52 {
+        return Err(CudaError::NeighbourStorage { particle }.into());
+    }
+    Err(NumericalError::NonFiniteResult {
+        quantity: QUANTITIES[quantity as usize],
+    }
+    .into())
+}
+
 impl CudaSolver {
     pub(crate) fn new(device: u32, threads: u32) -> Result<Self, CudaError> {
         Ok(Self {
@@ -179,27 +197,31 @@ impl CudaSolver {
         )?;
         self.context.inner.upload(0, &positions)?;
         self.context.inner.upload(1, &velocities)?;
-        self.context.inner.upload(9, &planes)
+        self.context.inner.upload(9, &planes)?;
+        self.context.inner.begin_attempt()
     }
 
     fn operation(&mut self, s: Settings, operation: u32) -> Result<(), StepError> {
-        self.context.inner.launch(s, operation, self.threads)?;
-        if operation != 2 && operation != 3 {
-            let errors: Vec<u32> = self.context.inner.download(12, s.count as usize)?;
-            if let Some((index, code)) = errors.into_iter().enumerate().find(|&(_, code)| code != 0)
-            {
-                if code == 52 {
-                    return Err(CudaError::NeighbourStorage { particle: index }.into());
-                }
-                let quantity = QUANTITIES
-                    .get(code as usize)
-                    .ok_or(CudaError::Verification {
-                        index: code as usize,
-                    })?;
-                return Err(NumericalError::NonFiniteResult { quantity }.into());
-            }
+        if operation == 2 || operation == 3 {
+            return self
+                .context
+                .inner
+                .launch(s, operation, self.threads)
+                .map_err(Into::into);
         }
-        Ok(())
+        let record = self
+            .context
+            .inner
+            .checked_launch(s, operation, self.threads)?;
+        diagnostic_error(record, s.count)
+    }
+
+    fn group(&mut self, s: Settings, first_operation: u32) -> Result<(), StepError> {
+        let record = self
+            .context
+            .inner
+            .checked_group(s, first_operation, self.threads)?;
+        diagnostic_error(record, s.count)
     }
 
     fn discover(&mut self, s: &mut Settings, positions: &[Vec3]) -> Result<(), StepError> {
@@ -290,13 +312,10 @@ impl CudaSolver {
         check_cancellation(cancelled)?;
         clock.mark(Stage::NeighbourSearch);
         for _ in 0..configuration.numerical.solver_iterations {
-            for op in [5, 6, 7, 8] {
-                self.operation(s, op)?;
-            }
+            self.group(s, 5)?;
             check_cancellation(cancelled)?;
             clock.mark(Stage::Jacobi);
-            self.operation(s, 9)?;
-            self.operation(s, 10)?;
+            self.group(s, 9)?;
             check_cancellation(cancelled)?;
             clock.mark(Stage::Projection);
         }

@@ -24,7 +24,11 @@ struct SolverBuffers {
     Cell *cells;
     std::uint32_t *neighbours, *errors;
     std::uint64_t *offsets;
+    unsigned long long *diagnostic;
+    // Zero for a single pass; otherwise each pass owns one ordered result slot.
+    std::uint32_t first_operation;
 };
 static_assert(sizeof(Vector) == 12 && sizeof(DevicePlane) == 16 && sizeof(Cell) == 32);
 static_assert(sizeof(SolverSettings) == 88 && offsetof(SolverSettings, width) == 64);
-static_assert(sizeof(SolverBuffers) == 112);
+static_assert(sizeof(SolverBuffers) == 128 && offsetof(SolverBuffers,diagnostic) == 112 &&
+              offsetof(SolverBuffers,first_operation) == 120);

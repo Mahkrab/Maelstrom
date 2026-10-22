@@ -1,6 +1,222 @@
 //! Hardware checks inspect private stage results without widening the solver API.
 
 use super::*;
+
+#[test]
+fn packed_diagnostics_preserve_quantities_and_reject_invalid_records() {
+    assert!(diagnostic_error(u64::MAX, 0).is_ok());
+    assert!(diagnostic_error(u64::MAX, 9).is_ok());
+    assert!(matches!(
+        diagnostic_error((3_u64 << 32) | 22, 9),
+        Err(StepError::Numerical(NumericalError::NonFiniteResult {
+            quantity: "predicted position"
+        }))
+    ));
+    assert!(matches!(
+        diagnostic_error((3_u64 << 32) | 52, 9),
+        Err(StepError::Cuda(CudaError::NeighbourStorage { particle: 3 }))
+    ));
+    for (particle, quantity, count) in [(0, 0, 1), (0, 53, 1), (1, 22, 1), (0, 22, 0)] {
+        assert!(matches!(
+            diagnostic_error((particle as u64) << 32 | u64::from(quantity), count),
+            Err(StepError::Cuda(CudaError::Diagnostic { particle: actual_particle, quantity: actual_quantity }))
+                if actual_particle == particle && actual_quantity == quantity
+        ));
+    }
+}
+
+#[test]
+#[ignore = "requires an explicitly selected CUDA hardware test run"]
+fn hardware_diagnostic_selection_preserves_particle_priority_and_clears_old_failures() {
+    let config = crate::config::resolve_effective_configuration(None, None, None).unwrap();
+    for threads in [32, 64, 128, 256] {
+        let mut gpu = CudaSolver::new(0, threads).unwrap();
+        for count in [1, 31, 32, 33, 257, 1025] {
+            let mut s = settings(&config, count, 0).unwrap();
+            s.timestep = 2.0;
+            for failure in [None, Some(count - 1), Some(count / 2), None] {
+                let mut positions = vec![Vec3::ZERO; count];
+                let mut velocities = vec![Vec3::ZERO; count];
+                if let Some(first) = failure {
+                    positions[first].x = f32::MAX;
+                    velocities[first].x = f32::MAX / 2.0;
+                    if first + 1 < count {
+                        // A later particle fails earlier within its expression
+                        // (code 21). Identity must still select this one's code 22.
+                        velocities[count - 1].x = f32::MAX;
+                    }
+                }
+                let particles: Vec<_> = positions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &p)| Particle {
+                        identity: i as u64,
+                        position_m: p,
+                        velocity_m_s: Vec3::ZERO,
+                    })
+                    .collect();
+                gpu.prepare(s, &particles, &[]).unwrap();
+                gpu.context
+                    .inner
+                    .upload(3, &velocities.into_iter().map(array).collect::<Vec<_>>())
+                    .unwrap();
+                gpu.context.inner.upload(12, &vec![52_u32; count]).unwrap();
+                let result = gpu.context.inner.checked_launch(s, 1, threads).unwrap();
+                let expected = failure.map_or(u64::MAX, |index| (index as u64) << 32 | 22);
+                assert_eq!(
+                    result, expected,
+                    "count {count}, block {threads}, first {failure:?}"
+                );
+                let errors: Vec<u32> = gpu.context.inner.download(12, count).unwrap();
+                assert_eq!(errors.iter().position(|&code| code != 0), failure);
+                if let Some(first) = failure {
+                    assert_eq!(errors[first], 22);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires an explicitly selected CUDA hardware test run"]
+fn hardware_groups_preserve_stage_priority_and_skip_dependent_writes() {
+    let config = crate::config::resolve_effective_configuration(None, None, None).unwrap();
+    for threads in [32, 64, 128, 256] {
+        let mut gpu = CudaSolver::new(0, threads).unwrap();
+        for count in [2, 31, 32, 33, 257, 1025] {
+            for failure in 0..4 {
+                let mut s = settings(&config, count, 0).unwrap();
+                let particles: Vec<_> = (0..count)
+                    .map(|i| Particle {
+                        identity: i as u64,
+                        position_m: Vec3::ZERO,
+                        velocity_m_s: Vec3::ZERO,
+                    })
+                    .collect();
+                gpu.prepare(s, &particles, &[]).unwrap();
+                let mut positions = vec![[0.0_f32; 3]; count];
+                let mut offsets = vec![0_u64; count + 1];
+                let mut indices = Vec::new();
+                match failure {
+                    0 => {
+                        // Only the last row contains a distant pair. Its squared
+                        // length overflows in the first pass, while rest_density
+                        // would make the NEXT pass fail at particle zero.
+                        positions[count - 1][0] = f32::MAX;
+                        offsets[count] = 1;
+                        indices.push(0_u32);
+                        s.rest_density = 0.0;
+                    }
+                    1 => s.rest_density = 0.0,
+                    _ => {
+                        for i in 0..count {
+                            offsets[i + 1] = (i + 1) as u64;
+                            indices.push(((i + 1) % count) as u32);
+                        }
+                        if failure == 2 {
+                            s.reference_weight = 0.0;
+                        } else {
+                            s.mass = f32::MAX;
+                        }
+                    }
+                }
+                s.entries = indices.len() as u64;
+                gpu.context.inner.reserve(11, indices.len() * 4).unwrap();
+                gpu.context.inner.upload(11, &indices).unwrap();
+                gpu.context.inner.upload(13, &offsets).unwrap();
+                gpu.context.inner.upload(2, &positions).unwrap();
+                gpu.context.inner.upload(4, &vec![99.0_f32; count]).unwrap();
+                let untouched = vec![[77.0_f32, 78.0, 79.0]; count];
+                gpu.context.inner.upload(7, &untouched).unwrap();
+                let record = gpu.context.inner.checked_group(s, 5, threads).unwrap();
+                let expected = match failure {
+                    0 => ((count as u64 - 1) << 32) | 2,
+                    1 => 24,
+                    2 => 34,
+                    _ => 43,
+                };
+                assert_eq!(
+                    record, expected,
+                    "count {count}, block {threads}, pass {failure}"
+                );
+                if failure <= 1 {
+                    let correction: Vec<[f32; 3]> = gpu.context.inner.download(7, count).unwrap();
+                    assert_eq!(correction, untouched);
+                }
+                if failure == 0 {
+                    let density: Vec<f32> = gpu.context.inner.download(4, count).unwrap();
+                    assert_eq!(density, vec![99.0_f32; count]);
+                }
+                // Reset and reuse the same resource with an independently simple
+                // no-neighbour case. No failed slot may leak into this attempt.
+                let clean = settings(&config, count, 0).unwrap();
+                gpu.prepare(clean, &particles, &[]).unwrap();
+                gpu.context
+                    .inner
+                    .upload(2, &vec![[0.0_f32; 3]; count])
+                    .unwrap();
+                gpu.context
+                    .inner
+                    .upload(13, &vec![0_u64; count + 1])
+                    .unwrap();
+                assert_eq!(
+                    gpu.context.inner.checked_group(clean, 5, threads).unwrap(),
+                    u64::MAX
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires an explicitly selected CUDA hardware test run"]
+fn hardware_projection_group_keeps_candidate_failure_before_plane_failure() {
+    let config = crate::config::resolve_effective_configuration(None, None, None).unwrap();
+    let plane = Plane::new(Vec3::new(1.0, 0.0, 0.0), 0.0, 0.0).unwrap();
+    for threads in [32, 64, 128, 256] {
+        let mut gpu = CudaSolver::new(0, threads).unwrap();
+        for count in [1, 31, 32, 33, 257, 1025] {
+            let particles: Vec<_> = (0..count)
+                .map(|i| Particle {
+                    identity: i as u64,
+                    position_m: Vec3::ZERO,
+                    velocity_m_s: Vec3::ZERO,
+                })
+                .collect();
+            let s = settings(&config, count, 1).unwrap();
+            for candidate_failure in [true, false] {
+                gpu.prepare(s, &particles, &[plane]).unwrap();
+                let mut positions = vec![[0.0_f32; 3]; count];
+                let mut corrections = positions.clone();
+                if candidate_failure {
+                    positions[count - 1][0] = f32::MAX;
+                    corrections[count - 1][0] = f32::MAX;
+                }
+                gpu.context.inner.upload(2, &positions).unwrap();
+                gpu.context.inner.upload(7, &corrections).unwrap();
+                // Private fault injection: public scene validation rejects this.
+                gpu.context
+                    .inner
+                    .upload(9, &[[1.0_f32, 0.0, 0.0, f32::NAN]])
+                    .unwrap();
+                let record = gpu.context.inner.checked_group(s, 9, threads).unwrap();
+                assert_eq!(
+                    record,
+                    if candidate_failure {
+                        ((count as u64 - 1) << 32) | 44
+                    } else {
+                        46
+                    }
+                );
+                if candidate_failure {
+                    let actual: Vec<[f32; 3]> = gpu.context.inner.download(2, count).unwrap();
+                    assert_eq!(actual, positions, "projection must not touch any position");
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn capacity_arithmetic_rejects_unrepresentable_workspace_without_allocating() {
     assert!(

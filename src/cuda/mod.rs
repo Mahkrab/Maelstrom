@@ -70,6 +70,11 @@ pub enum CudaError {
     NeighbourStorage {
         particle: usize,
     },
+    /// A packed solver diagnostic must identify a valid particle and checked quantity.
+    Diagnostic {
+        particle: usize,
+        quantity: u32,
+    },
 }
 
 impl fmt::Display for CudaError {
@@ -129,6 +134,10 @@ impl fmt::Display for CudaError {
             Self::NeighbourStorage { particle } => write!(
                 f,
                 "CUDA neighbour storage is inconsistent at particle index {particle}"
+            ),
+            Self::Diagnostic { particle, quantity } => write!(
+                f,
+                "CUDA solver returned an invalid diagnostic at particle index {particle} with quantity code {quantity}"
             ),
         }
     }

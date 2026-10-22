@@ -75,7 +75,15 @@ input can still require quadratic space and is never silently capped or truncate
 
 Each attempt uploads accepted state, returns velocities for the host CFL diagnostic
 and predictions for bounds checks, then retains iterative working arrays on device.
-Numerical launches synchronise; ordered per-particle errors and final state return for inspection.
+Failing lanes select the first particle's checked quantity with an integer atomic
+minimum instead of returning the complete error array. Each Jacobi calculation and
+candidate/projection pair is submitted as a stream-ordered group, with one result
+slot per pass. A kernel skips work if an earlier pass failed; later slots cannot
+replace the earlier error. One readback returns the group's results in stage order.
+Successful passes leave their sentinels untouched; the four-slot record is reset for the first
+attempt and after a numerical failure. The following synchronous readback needs no
+additional wait after kernel completion. Numerical checks and their stage,
+particle and expression ordering remain unchanged. Final state still returns for inspection.
 The integer cell-sort passes are submitted in order to the private stream and completed
 as one batch. Their kernels and dependencies are unchanged; submission failure stops
 the batch, drains outstanding work and invalidates the context before returning.
