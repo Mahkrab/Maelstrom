@@ -6,7 +6,7 @@ fn capacity_arithmetic_rejects_unrepresentable_workspace_without_allocating() {
     assert!(
         storage_sizes(Settings {
             count: u32::MAX,
-            words: u32::MAX,
+            entries: u64::MAX,
             ..Default::default()
         })
         .is_err()
@@ -15,9 +15,104 @@ fn capacity_arithmetic_rejects_unrepresentable_workspace_without_allocating() {
     assert!(settings(&c, usize::MAX, 0).is_err());
     assert!(settings(&c, 1, usize::MAX).is_err());
     assert_eq!(
-        storage_sizes(settings(&c, 33, 2).unwrap()).unwrap()[11],
-        264
+        storage_sizes(settings(&c, 33, 2).unwrap()).unwrap()[13],
+        272
     );
+    assert_eq!(
+        storage_sizes(settings(&c, 8000, 6).unwrap()).unwrap()[11],
+        0
+    );
+}
+
+#[test]
+fn neighbour_prefixes_preserve_empty_rows_and_reject_invalid_counts() {
+    let mut counts = [0, 2, 0, 1, 3];
+    assert_eq!(prefix_offsets(&mut counts, 4).unwrap(), 6);
+    assert_eq!(counts, [0, 2, 2, 3, 6]);
+    assert_eq!(prefix_offsets(&mut [0], 0).unwrap(), 0);
+    assert!(prefix_offsets(&mut [0, 4, 0, 0, 0], 4).is_err());
+    assert!(prefix_offsets(&mut [1, 0], 1).is_err());
+    assert!(prefix_offsets(&mut [0], 1).is_err());
+}
+
+#[test]
+#[ignore = "requires an explicitly selected CUDA hardware test run"]
+fn hardware_batched_sort_matches_integer_keys_and_individual_passes() {
+    let configuration = crate::config::resolve_effective_configuration(None, None, None).unwrap();
+    for threads in [32, 64, 128, 256] {
+        let mut gpu = CudaSolver::new(0, threads).unwrap();
+        for count in [1, 3, 9, 129, 257] {
+            // Integral coordinates make the expected unit-width cell keys
+            // independent of the device's floating-point cell calculation.
+            let keys: Vec<_> = (0..count)
+                .map(|i| ((i * 7 % 11) as i64 - 5, (i * 3 % 7) as i64 - 3, 0_i64, i))
+                .collect();
+            let particles: Vec<_> = keys
+                .iter()
+                .map(|&(x, y, z, i)| Particle {
+                    identity: i as u64,
+                    position_m: Vec3::new(x as f32, y as f32, z as f32),
+                    velocity_m_s: Vec3::ZERO,
+                })
+                .collect();
+            let mut expected = keys;
+            expected.sort_unstable();
+            let mut s = settings(&configuration, count, 0).unwrap();
+            s.width = 1.0;
+            gpu.prepare(s, &particles, &[]).unwrap();
+            gpu.context
+                .inner
+                .upload(
+                    2,
+                    &particles
+                        .iter()
+                        .map(|p| array(p.position_m))
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap();
+            gpu.operation(s, 2).unwrap();
+            gpu.context.inner.launch(s, 13, threads).unwrap();
+            let batched: Vec<u64> = gpu
+                .context
+                .inner
+                .download(10, s.padded as usize * 4)
+                .unwrap();
+            for (cell, &(x, y, z, index)) in batched.chunks_exact(4).zip(&expected) {
+                assert_eq!(
+                    (cell[0] as i64, cell[1] as i64, cell[2] as i64, cell[3]),
+                    (x, y, z, index as u64)
+                );
+            }
+            for cell in batched.chunks_exact(4).skip(count) {
+                assert_eq!(
+                    cell,
+                    &[
+                        i64::MAX as u64,
+                        i64::MAX as u64,
+                        i64::MAX as u64,
+                        u32::MAX as u64
+                    ]
+                );
+            }
+            gpu.operation(s, 2).unwrap();
+            let mut span = 2_u64;
+            while span <= u64::from(s.padded) {
+                s.span = span as u32;
+                s.stride = s.span / 2;
+                while s.stride != 0 {
+                    gpu.operation(s, 3).unwrap();
+                    s.stride /= 2;
+                }
+                span *= 2;
+            }
+            let separate: Vec<u64> = gpu
+                .context
+                .inner
+                .download(10, s.padded as usize * 4)
+                .unwrap();
+            assert_eq!(batched, separate, "count {count}, block {threads}");
+        }
+    }
 }
 
 fn discovered(
@@ -41,18 +136,122 @@ fn discovered(
     gpu.context
         .inner
         .upload(2, &positions.iter().copied().map(array).collect::<Vec<_>>())?;
-    gpu.discover(s, positions)?;
-    let bits: Vec<u32> = gpu
-        .context
-        .inner
-        .download(11, positions.len() * s.words as usize)?;
+    gpu.discover(&mut s, positions)?;
+    let offsets: Vec<u64> = gpu.context.inner.download(13, positions.len() + 1)?;
+    let indices: Vec<u32> = gpu.context.inner.download(11, s.entries as usize)?;
     Ok((0..positions.len())
         .map(|i| {
-            (0..positions.len())
-                .filter(|&j| bits[i * s.words as usize + j / 32] & (1 << (j % 32)) != 0)
+            indices[offsets[i] as usize..offsets[i + 1] as usize]
+                .iter()
+                .map(|&j| j as usize)
                 .collect()
         })
         .collect())
+}
+
+#[test]
+#[ignore = "requires an explicitly selected CUDA hardware test run"]
+fn hardware_compact_rows_grow_shrink_and_reject_inconsistent_offsets() {
+    let mut gpu = CudaSolver::new(0, 128).unwrap();
+    let dense = vec![Vec3::ZERO; 513];
+    let rows = discovered(&mut gpu, &dense, 0.1).unwrap();
+    for (owner, row) in rows.iter().enumerate() {
+        assert_eq!(row, &(0..513).filter(|&j| j != owner).collect::<Vec<_>>());
+    }
+    let sparse: Vec<_> = (0..513).map(|i| Vec3::new(i as f32, 0.0, 0.0)).collect();
+    assert!(
+        discovered(&mut gpu, &sparse, 0.1)
+            .unwrap()
+            .iter()
+            .all(Vec::is_empty)
+    );
+    assert_eq!(
+        discovered(&mut gpu, &[Vec3::ZERO; 2], 0.1).unwrap(),
+        vec![vec![1], vec![0]]
+    );
+    let config = crate::config::resolve_effective_configuration(None, None, None).unwrap();
+    let mut s = settings(&config, 2, 0).unwrap();
+    s.width = 0.125;
+    s.entries = 2;
+    // A bad row must fail before writing past its reserved range. This private
+    // injection does not expose arbitrary native buffers through the public API.
+    gpu.context.inner.upload(13, &[0_u64, 0, 2]).unwrap();
+    assert!(matches!(
+        gpu.operation(s, 12),
+        Err(StepError::Cuda(CudaError::NeighbourStorage { particle: 0 }))
+    ));
+    // Rebuilding from fresh prediction data must not retain the injected layout.
+    assert_eq!(
+        discovered(&mut gpu, &[Vec3::ZERO; 2], 0.1).unwrap(),
+        vec![vec![1], vec![0]]
+    );
+}
+
+#[test]
+#[ignore = "requires an explicitly selected CUDA hardware test run"]
+fn hardware_large_lattice_count_and_fill_match_independent_grid_rows() {
+    let overlay =
+        crate::config::parse_configuration_overlay("[numerical]\nrefine_timestep=4").unwrap();
+    let config =
+        crate::config::resolve_effective_configuration(None, None, Some(&overlay)).unwrap();
+    let mut gpu = CudaSolver::new(0, 128).unwrap();
+    for side in [32, 48] {
+        let mut points = Vec::new();
+        for x in 0..side {
+            for y in 0..side {
+                for z in 0..side {
+                    let p = Vec3::new(0.2, 0.4, 0.2)
+                        + Vec3::new(x as f32 * 0.05, y as f32 * 0.05, z as f32 * 0.05);
+                    let velocity = config.numerical.external_acceleration_m_s2
+                        * config.numerical.fixed_timestep_s;
+                    points.push(p + velocity * config.numerical.fixed_timestep_s);
+                }
+            }
+        }
+        let expected = crate::neighbours::uniform_grid(&points, 0.1).unwrap();
+        let mut s = settings(&config, points.len(), 0).unwrap();
+        let particles: Vec<_> = points
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| Particle {
+                identity: i as u64,
+                position_m: p,
+                velocity_m_s: Vec3::ZERO,
+            })
+            .collect();
+        gpu.prepare(s, &particles, &[]).unwrap();
+        gpu.context
+            .inner
+            .upload(2, &points.iter().copied().map(array).collect::<Vec<_>>())
+            .unwrap();
+        let result = gpu.discover(&mut s, &points);
+        if result.is_err() {
+            let errors: Vec<u32> = gpu.context.inner.download(12, points.len()).unwrap();
+            let offsets: Vec<u64> = gpu.context.inner.download(13, points.len() + 1).unwrap();
+            let failing = errors.iter().position(|&e| e != 0).unwrap_or(0);
+            let indices: Vec<u32> = gpu.context.inner.download(11, s.entries as usize).unwrap();
+            panic!(
+                "side {side}: {result:?}, total {}, row {failing} bounds {:?}, actual {:?}, expected {:?}",
+                s.entries,
+                &offsets[failing..=failing + 1],
+                &indices[offsets[failing] as usize..offsets[failing + 1] as usize],
+                expected.for_particle(failing)
+            );
+        }
+        let offsets: Vec<u64> = gpu.context.inner.download(13, points.len() + 1).unwrap();
+        let indices: Vec<u32> = gpu.context.inner.download(11, s.entries as usize).unwrap();
+        for i in 0..points.len() {
+            let actual: Vec<usize> = indices[offsets[i] as usize..offsets[i + 1] as usize]
+                .iter()
+                .map(|&j| j as usize)
+                .collect();
+            assert_eq!(
+                actual,
+                expected.for_particle(i).unwrap(),
+                "side {side}, row {i}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -182,7 +381,7 @@ fn hardware_fixed_membership_and_independent_two_particle_equations() {
         .collect();
     gpu.prepare(s, &particles, &[]).unwrap();
     gpu.context.inner.upload(2, &points.map(array)).unwrap();
-    gpu.discover(s, &points).unwrap();
+    gpu.discover(&mut s, &points).unwrap();
     for op in [5, 6, 7] {
         gpu.operation(s, op).unwrap();
     }
@@ -240,7 +439,9 @@ fn hardware_fixed_membership_and_independent_two_particle_equations() {
         Vec3::new(0.025, 0.0, 0.0),
     ];
     let _ = discovered(&mut gpu, &original, 0.1).unwrap();
-    let s = settings(&config, 3, 0).unwrap();
+    let mut s = settings(&config, 3, 0).unwrap();
+    // Retain the previously discovered membership rather than rebuilding it.
+    s.entries = 2;
     gpu.context.inner.upload(2, &current.map(array)).unwrap();
     for op in [5, 6, 7] {
         gpu.operation(s, op).unwrap();
@@ -281,7 +482,7 @@ fn hardware_components_preserve_ordered_cpu_arithmetic() {
     )
     .unwrap();
     let mut gpu = CudaSolver::new(0, 128).unwrap();
-    let s = settings(
+    let mut s = settings(
         &scene.configuration,
         scene.particles.len(),
         scene.planes.len(),
@@ -302,7 +503,7 @@ fn hardware_components_preserve_ordered_cpu_arithmetic() {
             .into_iter()
             .map(vector)
             .collect();
-        gpu.discover(s, &positions).unwrap();
+        gpu.discover(&mut s, &positions).unwrap();
         let rows = brute_force(&positions, s.radius).unwrap();
         if step == 0 {
             for i in 0..positions.len() {

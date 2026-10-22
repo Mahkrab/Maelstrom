@@ -55,8 +55,8 @@ struct Resource {
     CUmodule module = nullptr;
     CUfunction kernel = nullptr;
     CUfunction solver = nullptr;
-    CUdeviceptr slots[13]{};
-    std::size_t capacities[13]{};
+    CUdeviceptr slots[14]{};
+    std::size_t capacities[14]{};
     CUdeviceptr buffer = 0;
     bool poisoned = false;
     ~Resource() {
@@ -94,7 +94,9 @@ static Status initialise(Resource &r, int ordinal, const char *ptx,
     if ((code = d.cuModuleLoadData_fn(&r.module, ptx)) != CUDA_SUCCESS) status = {code, 5};
     if (!status.code && (code = d.cuModuleGetFunction_fn(&r.kernel, r.module, "roundtrip")) != CUDA_SUCCESS) status = {code, 5};
     if (!status.code && (code = d.cuModuleGetFunction_fn(&r.solver, r.module, "solver")) != CUDA_SUCCESS) status = {code, 5};
-    if (!status.code && (code = d.cuStreamCreate_fn(&r.stream, CU_STREAM_NON_BLOCKING)) != CUDA_SUCCESS) status = {code, 6};
+    // Pageable uploads may return before DMA finishes on the legacy stream.
+    // This private stream must inherit that dependency before reading the data.
+    if (!status.code && (code = d.cuStreamCreate_fn(&r.stream, CU_STREAM_DEFAULT)) != CUDA_SUCCESS) status = {code, 6};
     CUcontext previous;
     code = d.cuCtxPopCurrent_fn(&previous);
     if (!status.code && code != CUDA_SUCCESS) status = {code, 13};
@@ -196,7 +198,7 @@ extern "C" Status maelstrom_cuda_storage(void *handle, unsigned int slot,
                                           void *host, std::size_t bytes, unsigned int action) {
     auto &r=*static_cast<Resource *>(handle);
     if (r.poisoned) return {-3,14};
-    if (slot>=13 || action>2 || bytes>static_cast<std::size_t>(PTRDIFF_MAX) ||
+    if (slot>=14 || action>2 || bytes>static_cast<std::size_t>(PTRDIFF_MAX) ||
         (action && bytes && !host)) return {CUDA_ERROR_INVALID_VALUE,7};
     if (action && bytes>r.capacities[slot]) return {CUDA_ERROR_INVALID_VALUE,7};
     return solver_call(r,[&]() -> Status {
@@ -222,28 +224,44 @@ extern "C" Status maelstrom_cuda_solver(void *handle, SolverSettings settings,
                                          unsigned int operation, unsigned int threads) {
     auto &r=*static_cast<Resource *>(handle);
     if (r.poisoned) return {-3,14};
-    if (operation>11 || ((operation==2 || operation==4) && (!std::isfinite(settings.width) || settings.width<=0)) ||
+    if (operation>13 || ((operation==2 || operation==4 || operation==12) && (!std::isfinite(settings.width) || settings.width<=0)) ||
         (threads!=32 && threads!=64 && threads!=128 && threads!=256) ||
         settings.padded==0 || (settings.padded&(settings.padded-1)) ||
-        settings.count>settings.padded || settings.words!=(static_cast<std::uint64_t>(settings.count)+31)/32 ||
+        settings.count>settings.padded || settings.entries>static_cast<std::uint64_t>(PTRDIFF_MAX)/4 ||
         (operation==3 && (!settings.stride || settings.stride>=settings.span ||
         (settings.stride&(settings.stride-1)) || (settings.span&(settings.span-1)) || settings.span>settings.padded)))
         return {CUDA_ERROR_INVALID_VALUE,7};
     std::uint64_t n=settings.count;
-    std::uint64_t required[13]={n*12,n*12,n*12,n*12,n*4,n*4,n*4,n*12,n*12,
+    std::uint64_t required[14]={n*12,n*12,n*12,n*12,n*4,n*4,n*4,n*12,n*12,
         static_cast<std::uint64_t>(settings.planes)*16,static_cast<std::uint64_t>(settings.padded)*32,
-        n*settings.words*4,n*4};
-    for (unsigned int slot=0;slot<13;++slot) if (required[slot]>r.capacities[slot]) return {CUDA_ERROR_INVALID_VALUE,7};
+        settings.entries*4,n*4,(n+1)*8};
+    for (unsigned int slot=0;slot<14;++slot) if (required[slot]>r.capacities[slot]) return {CUDA_ERROR_INVALID_VALUE,7};
     if (!settings.count) return {0,0};
     return solver_call(r,[&]() -> Status {
         SolverBuffers buffers;
         static_assert(sizeof(buffers)==sizeof(r.slots));
         // CUdeviceptr holds the 64-bit address representation used by embedded PTX.
         __builtin_memcpy(&buffers,r.slots,sizeof(buffers));
-        void *args[]={&buffers,&settings,&operation};
-        std::uint64_t count=(operation==2 || operation==3) ? settings.padded : settings.count;
-        auto code=r.driver.cuLaunchKernel_fn(r.solver,static_cast<unsigned int>((count+threads-1)/threads),
-            1,1,threads,1,1,0,r.stream,args,nullptr);
-        return {code,code==CUDA_SUCCESS ? 0 : 9};
+        const bool sort=operation==13;
+        unsigned int kernel_operation=sort ? 3 : operation;
+        void *args[]={&buffers,&settings,&kernel_operation};
+        std::uint64_t count=(operation==2 || kernel_operation==3) ? settings.padded : settings.count;
+        auto launch=[&]() -> Status {
+            auto code=r.driver.cuLaunchKernel_fn(r.solver,static_cast<unsigned int>((count+threads-1)/threads),
+                1,1,threads,1,1,0,r.stream,args,nullptr);
+            return {code,code==CUDA_SUCCESS ? 0 : 9};
+        };
+        if (!sort) return launch();
+        // These integer-only passes have no host observations or cancellation
+        // polls between them. Stream order supplies their global dependency;
+        // solver_call drains the batch even after an immediate launch failure.
+        for (std::uint64_t span=2;span<=settings.padded;span*=2) {
+            settings.span=static_cast<unsigned int>(span);
+            for (settings.stride=settings.span/2;settings.stride;settings.stride/=2) {
+                auto status=launch();
+                if (status.code) return status;
+            }
+        }
+        return {0,0};
     });
 }

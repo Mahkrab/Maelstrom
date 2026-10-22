@@ -50,43 +50,11 @@ __device__ Vector spiky(Vector displacement, float h, Checked &c) {
     float scale=c.scalar(__fdiv_rn(coeff*(remain*remain),d),16);
     return c.vector(mul(displacement,scale),17);
 }
-__device__ bool member(SolverBuffers b, SolverSettings s, unsigned int i, unsigned int j) {
-    return (b.membership[static_cast<std::size_t>(i)*s.words+j/32] >> (j%32)) & 1u;
-}
 __device__ bool active(SolverBuffers b, SolverSettings s, unsigned int i, unsigned int j, Checked &c) {
-    return member(b,s,i,j) && separation(b.position[i],b.position[j],c,18) < s.radius;
+    // Callers enumerate the fixed row; only current-distance filtering remains.
+    return separation(b.position[i],b.position[j],c,18) < s.radius;
 }
-struct Members {
-    const unsigned int *row;
-    unsigned int words, word=0, bits=0, base=0, owner;
-    bool include_self;
-    __device__ Members(SolverBuffers b,SolverSettings s,unsigned int i,bool self=false)
-        :row(b.membership+static_cast<std::size_t>(i)*s.words),words(s.words),owner(i),include_self(self) {}
-    __device__ unsigned int next(unsigned int end) {
-        while (!bits) {
-            if (word==words) return end;
-            base=word*32;
-            bits=row[word];
-            if (include_self && word==owner/32) bits |= 1u<<(owner%32);
-            ++word;
-        }
-        unsigned int index=static_cast<unsigned int>(__ffs(bits)-1);
-        bits &= bits-1;
-        return base+index;
-    }
-};
-__device__ bool less(Cell a, Cell b) {
-    if (a.x!=b.x) return a.x<b.x;
-    if (a.y!=b.y) return a.y<b.y;
-    if (a.z!=b.z) return a.z<b.z;
-    return a.index<b.index;
-}
-__device__ bool same(Cell a, Cell b) { return a.x==b.x && a.y==b.y && a.z==b.z; }
-__device__ Cell cell(Vector p, double width, unsigned int i) {
-    return {static_cast<long long>(floor(static_cast<double>(p.x)/width)),
-            static_cast<long long>(floor(static_cast<double>(p.y)/width)),
-            static_cast<long long>(floor(static_cast<double>(p.z)/width)),i,0};
-}
+#include "neighbours.cuh"
 
 extern "C" __global__ void solver(SolverBuffers b, SolverSettings s, unsigned int operation) {
     const auto lane=static_cast<std::uint64_t>(blockIdx.x)*blockDim.x+threadIdx.x;
@@ -114,24 +82,8 @@ extern "C" __global__ void solver(SolverBuffers b, SolverSettings s, unsigned in
     } else if (operation==1) {
         Vector delta=c.vector(mul(b.velocity[i],s.timestep),21);
         b.position[i]=c.vector(add(b.old_position[i],delta),22);
-    } else if (operation==4) {
-        auto row=b.membership+static_cast<std::size_t>(i)*s.words;
-        for (unsigned int w=0;w<s.words;++w) row[w]=0;
-        // Unsafe bounding diagonals require the reference's distant-pair checks.
-        if (s.validate_pairs) for (unsigned int j=0;j<s.count;++j) if (i!=j) {
-            separation(b.position[i],b.position[j],c);
-            if (c.error) break;
-        }
-        Cell origin=cell(b.position[i],s.width,i);
-        for (int x=-1;x<=1;++x) for (int y=-1;y<=1;++y) for (int z=-1;z<=1;++z) {
-            Cell target{origin.x+x,origin.y+y,origin.z+z,0,0};
-            unsigned int lo=0, hi=s.count;
-            while (lo<hi) { auto mid=lo+(hi-lo)/2; if (less(b.cells[mid],target)) lo=mid+1; else hi=mid; }
-            for (auto k=lo;k<s.count && same(b.cells[k],target);++k) {
-                auto j=b.cells[k].index;
-                if (i!=j && separation(b.position[i],b.position[j],c)<s.radius) row[j/32] |= 1u<<(j%32);
-            }
-        }
+    } else if (operation==4 || operation==12) {
+        discover_row(b,s,i,c,operation==12);
     } else if (operation==5) {
         // Complete all active-distance checks before any multiplier calculation.
         Members row(b,s,i);

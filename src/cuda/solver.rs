@@ -21,8 +21,8 @@ use crate::{
 pub(super) struct Settings {
     count: u32,
     padded: u32,
-    words: u32,
     planes: u32,
+    validate_pairs: u32,
     timestep: f32,
     radius: f32,
     rest_density: f32,
@@ -36,8 +36,7 @@ pub(super) struct Settings {
     width: f64,
     stride: u32,
     span: u32,
-    validate_pairs: u32,
-    reserved: u32,
+    entries: u64,
 }
 const _: () = {
     assert!(size_of::<Settings>() == 88 && align_of::<Settings>() == 8);
@@ -48,6 +47,7 @@ const _: () = {
 pub(crate) struct CudaSolver {
     pub(crate) context: CudaContext,
     threads: u32,
+    neighbour_capacity: usize,
 }
 
 fn array(v: Vec3) -> [f32; 3] {
@@ -74,7 +74,6 @@ fn settings(
     Ok(Settings {
         count,
         padded,
-        words: count.div_ceil(32),
         planes,
         timestep: model.fixed_timestep_s,
         radius: derived.support_radius_m,
@@ -93,7 +92,7 @@ fn settings(
     })
 }
 
-fn storage_sizes(s: Settings) -> Result<[usize; 13], CudaError> {
+fn storage_sizes(s: Settings) -> Result<[usize; 14], CudaError> {
     let n = u128::from(s.count);
     let sizes = [
         n * 12,
@@ -107,10 +106,11 @@ fn storage_sizes(s: Settings) -> Result<[usize; 13], CudaError> {
         n * 12,
         u128::from(s.planes) * 16,
         u128::from(s.padded) * 32,
-        n * u128::from(s.words) * 4,
+        u128::from(s.entries) * 4,
         n * 4,
+        (n + 1) * 8,
     ];
-    let mut output = [0; 13];
+    let mut output = [0; 14];
     for (out, size) in output.iter_mut().zip(sizes) {
         *out = usize::try_from(size)
             .ok()
@@ -118,6 +118,29 @@ fn storage_sizes(s: Settings) -> Result<[usize; 13], CudaError> {
             .ok_or(CudaError::Capacity)?;
     }
     Ok(output)
+}
+
+/// Replace independently counted row lengths with checked exclusive offsets.
+fn prefix_offsets(counts: &mut [u64], particles: u32) -> Result<u64, CudaError> {
+    if counts.len() != particles as usize + 1 || counts.first() != Some(&0) {
+        return Err(CudaError::NeighbourStorage { particle: 0 });
+    }
+    let mut total = 0_u64;
+    for (index, value) in counts.iter_mut().enumerate().skip(1) {
+        if *value > u64::from(particles.saturating_sub(1)) {
+            return Err(CudaError::NeighbourStorage {
+                particle: index - 1,
+            });
+        }
+        total = total.checked_add(*value).ok_or(CudaError::Capacity)?;
+        *value = total;
+    }
+    usize::try_from(total)
+        .ok()
+        .and_then(|entries| entries.checked_mul(size_of::<u32>()))
+        .filter(|&bytes| bytes <= isize::MAX as usize)
+        .ok_or(CudaError::Capacity)?;
+    Ok(total)
 }
 
 fn host_values<T>(values: impl ExactSizeIterator<Item = T>) -> Result<Vec<T>, CudaError> {
@@ -134,6 +157,7 @@ impl CudaSolver {
         Ok(Self {
             context: CudaContext::new(device)?,
             threads,
+            neighbour_capacity: 0,
         })
     }
 
@@ -162,7 +186,11 @@ impl CudaSolver {
         self.context.inner.launch(s, operation, self.threads)?;
         if operation != 2 && operation != 3 {
             let errors: Vec<u32> = self.context.inner.download(12, s.count as usize)?;
-            if let Some(code) = errors.into_iter().find(|&code| code != 0) {
+            if let Some((index, code)) = errors.into_iter().enumerate().find(|&(_, code)| code != 0)
+            {
+                if code == 52 {
+                    return Err(CudaError::NeighbourStorage { particle: index }.into());
+                }
                 let quantity = QUANTITIES
                     .get(code as usize)
                     .ok_or(CudaError::Verification {
@@ -174,7 +202,12 @@ impl CudaSolver {
         Ok(())
     }
 
-    fn discover(&mut self, mut s: Settings, positions: &[Vec3]) -> Result<(), StepError> {
+    fn discover(&mut self, s: &mut Settings, positions: &[Vec3]) -> Result<(), StepError> {
+        s.entries = 0;
+        if s.count == 0 {
+            self.context.inner.upload(13, &[0_u64])?;
+            return Ok(());
+        }
         let mut largest = 0.0_f64;
         let mut lower = Vec3::new(f32::MAX, f32::MAX, f32::MAX);
         let mut upper = Vec3::new(-f32::MAX, -f32::MAX, -f32::MAX);
@@ -192,18 +225,29 @@ impl CudaSolver {
         while s.width < minimum {
             s.width *= 2.0;
         }
-        self.operation(s, 2)?;
-        let mut span = 2_u64;
-        while span <= u64::from(s.padded) {
-            s.span = span as u32;
-            s.stride = s.span / 2;
-            while s.stride != 0 {
-                self.operation(s, 3)?;
-                s.stride /= 2;
-            }
-            span *= 2;
+        self.operation(*s, 2)?;
+        if s.padded > 1 {
+            self.context.inner.launch(*s, 13, self.threads)?;
         }
-        self.operation(s, 4)
+        self.operation(*s, 4)?;
+        let mut offsets: Vec<u64> = self.context.inner.download(13, s.count as usize + 1)?;
+        s.entries = prefix_offsets(&mut offsets, s.count)?;
+        let required = storage_sizes(*s)?[11];
+        // Membership changes as the block moves. Geometric growth avoids a
+        // device reallocation for every small increase, without capping a row.
+        let capacity = if required > self.neighbour_capacity {
+            self.neighbour_capacity
+                .checked_add(self.neighbour_capacity / 2)
+                .filter(|&bytes| bytes <= isize::MAX as usize)
+                .unwrap_or(required)
+                .max(required)
+        } else {
+            self.neighbour_capacity
+        };
+        self.context.inner.reserve(11, capacity)?;
+        self.neighbour_capacity = capacity;
+        self.context.inner.upload(13, &offsets)?;
+        self.operation(*s, 12)
     }
 
     pub(crate) fn step<const PROFILE: bool>(
@@ -214,7 +258,7 @@ impl CudaSolver {
         cancelled: &mut impl FnMut() -> bool,
         clock: &mut StageClock<PROFILE>,
     ) -> Result<(Vec<Particle>, CflDiagnostic), StepError> {
-        let s = settings(configuration, particles.len(), planes.len())?;
+        let mut s = settings(configuration, particles.len(), planes.len())?;
         self.prepare(s, particles, planes)?;
         self.operation(s, 0)?;
         let velocities = host_values(
@@ -242,7 +286,7 @@ impl CudaSolver {
                 .into_iter()
                 .map(vector),
         )?;
-        self.discover(s, &positions)?;
+        self.discover(&mut s, &positions)?;
         check_cancellation(cancelled)?;
         clock.mark(Stage::NeighbourSearch);
         for _ in 0..configuration.numerical.solver_iterations {

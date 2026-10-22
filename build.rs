@@ -56,6 +56,7 @@ fn main() {
         "native/roundtrip.cu",
         "native/solver.h",
         "native/solver.cu",
+        "native/neighbours.cuh",
         "native/kernels.cu",
         "native/power.cuh",
     ] {

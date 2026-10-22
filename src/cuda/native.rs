@@ -94,6 +94,7 @@ impl Transfer for [f32; 3] {}
 impl Transfer for [f32; 4] {}
 impl Transfer for f32 {}
 impl Transfer for u32 {}
+impl Transfer for u64 {}
 
 pub(super) struct Context {
     handle: Option<NonNull<c_void>>,

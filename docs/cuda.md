@@ -52,10 +52,12 @@ Passing the probe does not qualify a fluid workload or physical accuracy.
 
 ## Implementation and numerical limits
 
-Each solver owns a context, module, non-blocking stream and persistent scratch.
+Each solver owns a context, module, private stream and persistent scratch.
 It constructs, uses and destroys them on one thread; the resource is neither Send nor
 Sync. Native calls restore the previous context and complete borrowed host transfers
-before returning. No shared primary-context reset or process-wide stream is used.
+before returning. The private stream participates in legacy-stream ordering so
+pageable uploads finish before dependent kernels read them. No shared primary-context
+reset or process-wide stream is used.
 
 Device data uses separate packed binary32 vectors (12 bytes), planes (16 bytes) and
 cell entries (32 bytes); probe records use a checked 24-byte layout. u64 identities
@@ -64,14 +66,19 @@ cells using conservative power-of-two widths and strict binary32 distance member
 An unsafe bounding diagonal retains distant-pair overflow checks rather than silently
 discarding them.
 
-Fixed prediction membership currently uses `N * ceil(N/32)` u32 words, including empty
-words: 8 MB at 8,000 particles. Traversal scans these rows in ascending identity order.
-This quadratic storage/traversal is a scalability limitation, not an optimal GPU
-neighbour representation. Dense input is not silently capped or truncated.
+Fixed prediction membership uses contiguous u32 neighbour indices and `N + 1` u64
+row offsets. A counting pass determines exact row lengths; checked host prefixes
+size reusable storage before a second pass fills and sorts each row by identity.
+Traversal visits those indices, inserting self once at its ordered position where
+required. Storage follows actual membership rather than an all-pairs matrix; dense
+input can still require quadratic space and is never silently capped or truncated.
 
 Each attempt uploads accepted state, returns velocities for the host CFL diagnostic
 and predictions for bounds checks, then retains iterative working arrays on device.
-Launches synchronise; ordered per-particle errors and final state return for inspection.
+Numerical launches synchronise; ordered per-particle errors and final state return for inspection.
+The integer cell-sort passes are submitted in order to the private stream and completed
+as one batch. Their kernels and dependencies are unchanged; submission failure stops
+the batch, drains outstanding work and invalidates the context before returning.
 Whole-stage Jacobi dependencies and ordered plane projection remain intact. The host
 validates and atomically accepts a complete step; scratch never becomes accepted state
 merely because a kernel finished.

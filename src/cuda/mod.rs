@@ -66,6 +66,10 @@ pub enum CudaError {
     Verification {
         index: usize,
     },
+    /// Counted and filled prediction-time rows must describe the same storage.
+    NeighbourStorage {
+        particle: usize,
+    },
 }
 
 impl fmt::Display for CudaError {
@@ -122,6 +126,10 @@ impl fmt::Display for CudaError {
                 f,
                 "CUDA layout probe disagreed with the independent expected value at index {index}"
             ),
+            Self::NeighbourStorage { particle } => write!(
+                f,
+                "CUDA neighbour storage is inconsistent at particle index {particle}"
+            ),
         }
     }
 }
@@ -140,7 +148,7 @@ pub struct DeviceInfo {
     pub target: String,
 }
 
-/// A private context, module and non-blocking stream on one explicitly selected
+/// A private context, module and ordered private stream on one explicitly selected
 /// device. It stays on its creating thread and never resets a shared context.
 /// Dropping attempts cleanup; [`Self::close`] additionally reports teardown errors.
 pub struct CudaContext {
