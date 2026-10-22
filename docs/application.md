@@ -1,11 +1,11 @@
-# Controlling a simulation worker
+# Developer application API
 
-`maelstrom::application` is a non-visual library boundary for presentation code.
-The worker owns construction, stepping and destruction of its solver and any CUDA
-context. Existing headless commands and result/replay schemas are unchanged.
-The optional [particle viewer](viewer.md) consumes this boundary. The
-[offline exporter](export.md) uses its own lossless synchronous driver because
-the controller's coalesced observations cannot supply every scheduled frame.
+The CLI is described in [usage](usage.md). This page is for callers embedding the
+non-visual `maelstrom::application` controller. Its worker owns solver construction,
+stepping and teardown, including any thread-bound CUDA context. Presentation receives
+owned accepted observations; it cannot mutate the solver or decide step acceptance.
+
+## Start, observe and control
 
 ```rust,no_run
 use maelstrom::{
@@ -31,40 +31,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(run.observe().snapshot.unwrap().completed_steps(), 1);
     controller.control(&run, Action::Resume)?.wait()?;
     if let Some(outcome) = run.wait_for_terminal(Duration::from_secs(30)) {
-        println!("{:?}", outcome.status); // Inspect failure and accepted state too.
+        println!("{:?}", outcome.status);
     }
     controller.join()?;
     Ok(())
 }
 ```
 
-Start acknowledges successful construction or a terminal setup outcome; inspect
-the status and failure rather than assuming `Ok` means completion. Pause/resume
-and single-step are asynchronous. A receipt acknowledges the state at the worker
-boundary; in an event loop poll `try_result` instead of calling blocking `wait`.
-Pause takes effect between timesteps, and single-step is valid only while paused.
-A zero-step run completes immediately. Running executes all fixed timesteps as
-fast as resources permit, independently of redraw clocks, without interpolation.
+The start receipt acknowledges construction or terminal setup failure, not successful
+completion. Inspect status and failure. Control receipts describe a worker boundary;
+event loops should poll `try_result` rather than block in `wait`.
+Single-step requires pause. Pause takes effect between steps; a zero-step request ends
+at zero. The worker advances fixed steps as fast as resources permit, independently of
+redraws. Headless CLI pacing is a separate caller concern, not a new solver policy.
 
-There are eight queued command slots. A full queue returns `QueueFull` without
-replacing the selected run; retry after processing acknowledgements. Each run
-has one coalescing observation slot holding the latest owned accepted snapshot,
-effective settings, cumulative warnings and terminal failure. Presentation can
-skip observations but never numerical work. Retain an observation to keep its
-snapshot. This slot cannot supply a lossless offline frame sequence.
+## Backpressure and generation ownership
 
-`start` also resets/restarts: supply the original or changed initial request and
-retain the old handle to inspect its outcome. A new generation cancels obsolete
-work, while old handles remain isolated. Inputs should be resolved and validated
-before replacing a selected run. Worker construction can still fail, for example
-when an explicitly selected CUDA device is unavailable. No fallback is performed;
-the previous handle remains readable. Ordinary control cannot resume a terminal
-or superseded run. Replay reruns initial inputs; it does not resume a snapshot.
+Eight queued command slots bound admission. `QueueFull` leaves the selected request
+intact; process receipts before retrying. Each run has one coalescing observation slot
+with its latest accepted snapshot, effective resources, warnings and terminal outcome.
+Keep an observation to retain its snapshot. Dropping intermediate observations does
+not drop numerical work.
 
-`run.cancel()` is latched and bypasses queue capacity. `request_shutdown()` stops
-admission, cancels work and wakes an idle/paused worker. Keep the event loop alive
-while polling `is_finished()`, then `join()` to confirm teardown. `join()` and the
-destructor wait for synchronous solver stages; no shutdown deadline is promised.
-A wait timeout is not a terminal result. Failures and final state survive through
-retained handles after joining. Unexpected worker panic is reported by join;
-process abort or forced termination cannot guarantee retained output.
+Starting another request creates a generation, cancels obsolete work and preserves
+old handles as independent readable outcomes. Resolve and validate input before
+replacement; resource construction may still fail. Explicit CUDA failure has no
+worker-level CPU fallback. A terminal or superseded handle cannot be resumed.
+Numerical rerun reconstructs initial input, not a mid-simulation checkpoint.
+
+Compilation cannot use this coalesced slot as a lossless history. The exporter drives
+accepted steps synchronously and waits for each scheduled image publication. Both
+paths retain the same mathematical and atomic-acceptance boundaries.
+
+## Cancellation and teardown
+
+`run.cancel()` is latched and bypasses queued-command capacity.
+`request_shutdown()` stops admission, cancels work and wakes paused/idle workers.
+Keep processing events while polling `is_finished()`, then `join()` to confirm teardown.
+Joining and destruction can wait for synchronous solver/driver stages; there is no
+universal shutdown deadline. A wait timeout is not a terminal simulation result.
+
+Failures and accepted state remain available through retained handles after joining.
+Unexpected worker panic is reported by join. Process abort or forced termination
+cannot guarantee output. Never add unsafe cross-thread CUDA sharing to bypass the
+worker's ownership boundary.

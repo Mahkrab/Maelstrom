@@ -1,195 +1,96 @@
-# Exporting accepted observations
+# Compile once and play later
 
-Build with `--features render` for PNG sequences without a window or display
-server. Vulkan, its loader and a compatible graphics driver are still required.
-Default builds retain the headless solver and have no graphics dependencies.
-`viewer` includes `render`; `cuda` remains an independent simulation feature.
-Run the commands below from the Maelstrom directory. Each output directory must
-be new, with an existing parent.
+A compiled run is a directory containing rendered PNG frames and a versioned manifest.
+Its images are ready to watch; playback does not reconstruct particles, run a solver or
+initialise CUDA. Install `--features viewer` for both compilation and playback, or
+`--features render` for windowless compilation alone.
 
-The examples use the installed `maelstrom` command. To install export and playback
-from this checkout, run `cargo install --locked --path . --features viewer`.
-Add `cuda` to the feature list only if new CUDA simulation is needed. A headless
-installation does not expose the optional export/play commands.
-
-## Watching a saved sequence
-
-This command **loads already rendered images**. It does not load a numerical scene,
-run a solver, initialise CUDA or render particles again:
+## Create a compiled run
 
 ```sh
-maelstrom play frames-direct
+maelstrom compile builtin:falling-block-04 --backend serial-grid --refine-timestep 4 \
+  --steps 480 --frame-stride 4 --name water
+maelstrom runs list
+maelstrom play <run-id>
 ```
 
-The argument is a completed export directory or its `manifest.json`, not a raw
-simulation result. The `viewer` feature and a window-capable Vulkan device are
-required. Hardware graphics is the default; select `--software` explicitly for
-software Vulkan. Copy the whole directory to another machine to watch it there;
-the original simulation backend and CUDA device are not needed.
+Compilation runs a fresh simulation, samples accepted steps and renders them without a
+window. Vulkan and a compatible graphics driver are still required. `--software`
+intentionally selects software Vulkan; it is not a solver backend.
 
-Playback follows the recorded simulated timestamps at 1x, independently of how
-long the original computation took. `--speed 0.25` plays at quarter speed;
-`--paused` opens on the initial image, and `--repeat` loops. Space pauses/resumes,
-Left/Right seek one recorded frame and pause, Home/End select the endpoints, R
-restarts, +/- change speed, and Escape closes. Speed must be finite and within
-0.01–100. The title shows the selected frame, accepted step, simulated time and
-speed. Click the window before using keyboard controls.
+Without `--output`, a new ID is created in the run library printed by `maelstrom paths`.
+Set `MAELSTROM_RUNS_DIR` or `--runs-dir` to relocate that library. An explicit
+`--output ./frames` uses that new directory instead; its parent must exist.
+`--name` is a display label, not a replacement policy or an ambiguous lookup key.
+Commands select exact IDs or explicit paths. Existing output is never overwritten.
 
-The final image stays visible. A loop holds it for the preceding recorded interval
-before returning to the start; a one-frame sequence stays static. Resizing preserves
-aspect ratio with black letterboxing. The camera is baked into these images, so
-it cannot be orbited during playback. Changing it requires a new image export;
-available saved observations can be rendered again without a numerical rerun.
-
-Only completed schema-1 manifests are accepted. The player checks order, schedule,
-timestamps and safe frame names, then verifies each image's recorded PNG and pixel
-hashes when loading it. Missing, changed or malformed images stop playback; nothing
-is regenerated or overwritten. The manifest is limited to 64 MiB, encoded frames to
-300 MiB and decoded dimensions to 8192 per side. The exporter's one-million-frame
-ceiling does not guarantee that a manifest fits the player's separate size limit.
-Images are decoded on demand and one texture is reused, rather than loading the
-whole history. Slow decoding or
-presentation may skip displayed images to catch up; seeking still accesses every
-recorded image. There is no interpolation or fixed-FPS conversion.
-
-A raw result containing only sparse checkpoints is not a full animation. Export
-those stored states explicitly, or choose a one-time numerical rerun to capture
-the missing states. After that export, `play` never needs the computation again.
-
-## Creating a sequence once
-
-Choose the numerical source explicitly. This command **loads saved observations**
-and does no new simulation work:
+## Watch or transfer it
 
 ```sh
-maelstrom export saved reference/small-lattice-v1.json \
-  --step-stride 12 --output frames-saved --software --fit-camera
+maelstrom play <run-id> --paused
+maelstrom play ./copied-run --speed 0.25 --repeat
+maelstrom runs show <run-id>
+maelstrom runs validate <run-id>
 ```
 
-This command **starts a fresh simulation from the recorded initial inputs**,
-retaining the full recorded request and execution resources:
+Copy the **whole directory**, not just its manifest. Input values and frame references
+are portable; the original scene library and original simulation device are not needed.
+`runs validate` checks the frame schedule and decodes/hashes every PNG without a window.
+Playback validates each frame as it loads it and never writes to the bundle.
+
+Playback uses recorded simulated timestamps. Space pauses/resumes, Left/Right seek and
+pause, Home/End select endpoints, R restarts, +/- change speed and Escape closes.
+Click the window before using keys. Speed is finite, 0.01–100. A loop holds the last
+image for the previous interval before restarting. Slow presentation can skip displayed
+images to catch up; every stored frame remains seekable. There is no interpolation.
+
+The camera is baked into the images. Resizing preserves aspect ratio rather than
+redrawing particles. Choose a different camera by creating another image sequence.
+Missing or changed images are errors, never a reason to recompute the simulation.
+
+## Render an existing numerical result
 
 ```sh
-maelstrom export rerun reference/falling-block-v1.json \
-  --step-stride 120 --output frames-rerun --software --fit-camera
+maelstrom export saved ./result.json --frame-stride 240 --output ./saved-frames
 ```
 
-Every available source checkpoint and final snapshot is compared with the newly
-accepted state. Serial comparisons preserve every binary32 bit, including signed
-zero. Threaded/CUDA comparisons use the recorded comparison policy's absolute
-component budgets: position `1e-5 m`, velocity `0.005 m/s`, with exact identities
-and step counts. A mismatch fails the export and retains expected/actual snapshots
-in `comparison-failure.json`. Rerunning does not resume or certify the original
-outcome; original failures and disposition remain in provenance.
+This renders only stored observations. The stride must select available checkpoints;
+the usual 0/1/120/240/480 history supports stride 240, not stride 120, because 360 is
+absent. Missing observations fail before publication. Partial results require an
+explicit `--last-step` within the accepted prefix.
 
-This command **starts a fresh simulation from a scene**:
+`rerun <result-or-run>` deliberately recomputes recorded input from zero. It is not
+resumption, rendering saved observations or playing images. The old `export direct`
+and `export rerun` spellings remain hidden compatibility routes; prefer `compile`
+for fresh scenes and `export saved` when the necessary observations already exist.
 
-```sh
-maelstrom export direct falling-block-04 \
-  --steps 5 --mode threaded-grid --workers 2 --step-stride 2 \
-  --output frames-direct --software --fit-camera
-```
+## Sampling and image settings
 
-Direct execution accepts the ordinary `--config`, repeatable `--set` and
-`--refine-timestep` input selections. Modes are `brute-force`, `serial-grid`
-(default), `threaded-grid` and `cuda-grid`. CPU workers require threaded grid;
-`--device` and `--block-size` require CUDA grid. CUDA requires `--features
-cuda,render`, a toolkit when building and a supported runtime device. There is
-no automatic CPU fallback. Saved CUDA observations can be rendered with a CPU-only
-build because their original simulation device is never constructed.
+Use `--frame-stride N` to select accepted step indices, always including initial and
+final state. It must be positive; schedules are bounded to one million frames.
+`--width`, `--height` and `--render-config` control presentation, not physics.
+The [viewer guide](viewer.md) describes camera files and graphics selection.
 
-Graphics defaults to hardware Vulkan adapter zero. `--software` explicitly
-requires the software class; `--graphics-adapter N` selects within that class.
-The manifest identifies the actual adapter, driver and API separately from
-simulation execution. Local qualification uses llvmpipe software Vulkan on
-x86_64 WSL2 Linux. Hardware Vulkan export, native Windows, macOS, browsers and
-other graphics APIs have not been qualified.
+Images are opaque RGBA8 PNGs, with stable ordering and names such as
+`frame-00000000.png`. The manifest records resolved inputs, request and effective
+execution, accepted diagnostics, simulated times, frame/observation hashes, camera,
+build and graphics/encoder context. `run.json` adds the optional compilation label.
+The manifest alone is sufficient for playback and numerical reruns.
 
-## Schedule and presentation
+Reproducibility means identical decoded pixels for the qualified binary, adapter/driver,
+settings and accepted observations. Different drivers/devices need not produce identical
+pixels. Encoded PNG bytes and decoded pixels are hashed separately. The player bounds
+manifests to 64 MiB, PNGs to 300 MiB and dimensions to 8192 per side; the export frame-count
+ceiling is not a guarantee that every possible manifest fits the player.
 
-For `S` accepted steps and positive stride `K`, frames sample `0,K,2K,... <= S`,
-then `S` if it was absent. `S=5,K=2` produces steps `[0,2,4,5]`; zero steps
-produces one initial frame. Frame indices are contiguous from zero and names
-are `frame-00000000.png`, `frame-00000001.png`, and so on. The checked limit is
-one million frames. Simulated timestamps are `step * fixed_timestep_s`; a
-sequence has no implicit playback FPS; `play` uses these timestamps. There is no interpolation, wall-clock
-sampling or duplication of observations to fill missing steps.
+## Failures and costs
 
-Saved mode requires every scheduled state to exist as an explicitly stored
-checkpoint or the final snapshot. Initial inputs alone cannot supply frame zero.
-Missing indices fail before output creation. Incomplete source results require
-`--last-step S` explicitly; that prefix must have all scheduled observations.
-The manifest retains the original request, completed count, status and failures.
-A completed image sequence of that prefix does not claim original run completion.
+Frames publish only after they are closed and hashed. A completed `manifest.json`
+appears only after all frames succeed. A cancelled or failed compilation retains
+`progress.json` and any published prefix, explicitly incomplete; it is not normal
+playback input. Never infer completion from a directory or a few images alone.
 
-Select strict TOML render schema 1 with `--render-config FILE`. Built-in defaults
-are overridden by that file, then explicit `--width`, `--height` and
-`--step-stride` options. Camera fields merge individually with defaults. There
-is no implicit configuration lookup. For example:
-
-```toml
-schema_version = 1
-width = 640
-height = 360
-step_stride = 120
-[camera]
-eye_m = [1.2, 1.0, 1.2]
-target_m = [0.3, 0.4, 0.3]
-vertical_fov_deg = 45.0
-```
-
-Dimensions must be 1–8192 and fit actual graphics limits. Only opaque RGBA8 sRGB
-PNG is supported. Camera, sphere radius, lighting and clipped boundary depiction
-are shared with the [viewer](viewer.md); exported images have no diagnostic
-overlay. `--fit-camera` resolves the initial geometry once and records the result.
-No interactive camera history is consulted. Presentation settings do not change
-physical input identity.
-
-## Publication, reconstruction and failures
-
-The destination is created exclusively. Existing files, directories and symlinks
-are rejected. Each image is encoded completely, synced, then published by a
-hard link without replacement. The filesystem must support hard links. At most
-one frame is being drawn/read back/encoded at a time, and stepping waits until
-publication finishes. Slow output cannot discard a scheduled state or alter the
-solver's timestep. Per-frame records, accepted diagnostics and selected input
-records remain in memory; particle history is not accumulated internally.
-
-`progress.json` always says `complete=false`. It records published frames and
-any caught failure. Cancellation (Ctrl+C), solver, graphics, encoding and disk
-errors leave those files in place. An additional failure to record progress is
-reported alongside the first error. Process termination may leave stale progress
-or temporary files. These files never prove completion. Choose a new directory
-to retry; automatic resume and cleanup are not provided.
-
-`manifest.json` is published last without replacement, only after every expected
-frame is closed and hashed. It alone establishes sequence completion. It includes
-full resolved physical inputs and identities, effective execution and source
-outcomes, frame/step/time mappings, PNG and decoded-pixel hashes, observation
-hashes, camera/display box, renderer/shader identity, compiled source/lock hashes,
-commit/dirty state at build time, compiler/target/features and graphics/encoder
-context. Missing build information is explicit. Destination labels contain only
-the final directory name. Source content hashes describe the compiled source;
-Git metadata is supplementary and may be unavailable or stale between builds.
-
-The manifest's input/backend/execution/request fields are accepted by the ordinary
-replay input loader. To **start a new numerical rerun** that reconstructs its
-sampled observations, use a build supporting its recorded execution mode:
-
-```sh
-maelstrom replay frames-direct/manifest.json --format json \
-  --output reconstructed-result.json
-```
-
-Compare each reconstructed checkpoint's portable snapshot hash with the frame's
-`snapshot_sha256`. Saved image rendering still uses result records rather than
-image manifests, so this new result can subsequently be passed to `export saved`.
-Original source outcomes remain separate from the manifest's rendered-prefix
-request. Solver step, graphics/readback and encoding durations have distinct
-fields; they are local diagnostics, not a benchmark or an interactive FPS claim.
-
-Repeated exports with the same binary, observations, resolved settings and
-qualified adapter/driver produce identical decoded RGBA pixels. PNG byte hashes
-are retained too; encoding bytes may differ across encoder versions. No
-cross-device or cross-driver pixel equality is promised. A useful picture does
-not establish fluid-model accuracy.
+Compilation uses a lossless synchronous frame boundary, unlike the live viewer's
+coalesced observations. Numerical outcome and image publication are distinct.
+Solver work, graphics/readback and PNG encoding have separate manifest timings;
+total wall time includes additional work and is not an interchangeable solver benchmark.

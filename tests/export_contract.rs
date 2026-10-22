@@ -178,7 +178,8 @@ fn export_cli_help_and_source_errors_are_usable_without_a_display() {
         .unwrap();
     assert!(help.status.success());
     let text = String::from_utf8(help.stdout).unwrap();
-    assert!(text.contains("saved") && text.contains("rerun") && text.contains("direct"));
+    assert!(text.contains("saved"));
+    assert!(!text.contains("  rerun") && !text.contains("  direct"));
     let missing = Command::new(exe)
         .args(["export", "direct", "falling-block-04", "--steps", "0"])
         .output()
@@ -198,6 +199,8 @@ fn export_cli_help_and_source_errors_are_usable_without_a_display() {
             "0",
             "--workers",
             "2",
+            "--backend",
+            "serial-grid",
             "--output",
             "unused-directory",
         ])

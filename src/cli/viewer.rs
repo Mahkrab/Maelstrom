@@ -15,7 +15,28 @@ use maelstrom::{
 };
 use std::fs;
 
-pub(super) fn launch(view: &View) -> Result<u8, CliError> {
+pub(super) fn launch(view: &View, storage: &super::storage::Storage) -> Result<u8, CliError> {
+    let resolved = inputs::resolve_in(&view.inputs, storage)?;
+    let options = super::selection::resolve(&view.selection, &storage.preferences()?)?;
+    let steps = super::run_limit(
+        view.limit.steps,
+        view.limit.duration,
+        resolved.configuration.numerical.fixed_timestep_s,
+    )?;
+    let (mode, workers, device, block_size) = match options.execution {
+        ExecutionMode::Cuda { device, threads } => ("cuda-grid", 4, device, threads),
+        ExecutionMode::Threaded { workers } => ("threaded-grid", workers, 0, 128),
+        ExecutionMode::Serial => (
+            if options.backend == SearchBackend::BruteForce {
+                "brute-force"
+            } else {
+                "serial-grid"
+            },
+            4,
+            0,
+            128,
+        ),
+    };
     let mut settings = match &view.render_config {
         Some(path) => Settings::parse(&fs::read_to_string(path).map_err(|e| {
             CliError::input(format!("could not read selected render file: {}", e.kind()))
@@ -42,14 +63,16 @@ pub(super) fn launch(view: &View) -> Result<u8, CliError> {
                 .config
                 .as_ref()
                 .map_or_else(String::new, |p| p.to_string_lossy().into()),
-            mode: view.mode.clone(),
-            workers: view.workers.to_string(),
-            device: view.device.to_string(),
-            block_size: view.block_size.to_string(),
-            steps: view.steps.to_string(),
+            mode: mode.into(),
+            workers: workers.to_string(),
+            device: device.to_string(),
+            block_size: block_size.to_string(),
+            steps: steps.to_string(),
         };
     let overrides = view.inputs.overrides.clone();
     let refinement = view.inputs.refine_timestep;
+    let storage = storage.clone();
+    let paused = view.paused;
     maelstrom::viewer::run(
         draft,
         settings,
@@ -58,15 +81,29 @@ pub(super) fn launch(view: &View) -> Result<u8, CliError> {
             software: view.software,
         },
         view.fit_camera,
-        Box::new(move |draft| resolve(draft, &overrides, refinement)),
+        Box::new(move |draft| {
+            let mut spec = resolve_in(draft, &overrides, refinement, &storage)?;
+            spec.initially_paused = paused;
+            Ok(spec)
+        }),
     )
     .map_err(|e| CliError::input(e.to_string()))?;
     Ok(0)
 }
+#[cfg(test)]
 fn resolve(
     draft: &Draft,
     overrides: &[String],
     refinement: Option<u32>,
+) -> Result<RunSpec, String> {
+    let storage = super::storage::Storage::new(None, None).map_err(|e| e.message)?;
+    resolve_in(draft, overrides, refinement, &storage)
+}
+fn resolve_in(
+    draft: &Draft,
+    overrides: &[String],
+    refinement: Option<u32>,
+    storage: &super::storage::Storage,
 ) -> Result<RunSpec, String> {
     let (backend, execution) = match draft.mode.as_str() {
         "brute-force" => (SearchBackend::BruteForce, ExecutionMode::Serial),
@@ -108,7 +145,7 @@ fn resolve(
         overrides: overrides.to_vec(),
         refine_timestep: refinement,
     };
-    let resolved = inputs::resolve(&selected).map_err(|e| redact(e.message, draft))?;
+    let resolved = inputs::resolve_in(&selected, storage).map_err(|e| redact(e.message, draft))?;
     let scene = resolved.scene.ok_or_else(|| "select a scene".to_owned())?;
     Ok(RunSpec {
         scene,

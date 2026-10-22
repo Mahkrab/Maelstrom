@@ -1,296 +1,338 @@
-//! Commands expose input resolution separately from execution. Every run names
-//! its scene and limit; formatting and diagnostic flags are process concerns.
-
+//! Commands distinguish fresh execution, numerical reruns and saved playback.
+//! Old spellings remain parseable without crowding primary help.
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
-
-const EXAMPLES: &str = "Examples:\n  maelstrom scenes\n  maelstrom inspect falling-block-04\n  maelstrom validate ./scene.toml --config ./config.toml\n  maelstrom run falling-block-04 --steps 12 --checkpoints 0,6,12\n  maelstrom run ./scene.toml --duration 0.1 --format json --output result.json\n  maelstrom replay result.json --format json\n\nPrecedence: built-in defaults < selected configuration file < scene values < --set.\nNo environment variables select numerical inputs. Use '<command> --help' for details.";
-
 #[derive(Parser)]
-#[command(name = "maelstrom", version, about = "Deterministic headless Position-Based Fluids simulation", after_help = EXAMPLES)]
+#[command(
+    name = "maelstrom",
+    version,
+    about = "Particle-fluid simulation, compilation and playback"
+)]
 pub(super) struct Cli {
-    /// Select result presentation; JSON uses versioned documents
+    /// Result presentation; progress and errors use stderr
     #[arg(long, global = true, value_enum, default_value = "text")]
     pub format: Format,
-    /// Suppress optional stderr diagnostics; requested stdout data is retained
+    /// Suppress optional diagnostics, not errors or requested data
     #[arg(short, long, global = true, conflicts_with = "verbose")]
     pub quiet: bool,
-    /// Report resolved input and execution context to stderr
+    /// Include resolved input context in diagnostics
     #[arg(short, long, global = true)]
     pub verbose: bool,
+    /// User scene-library root, overriding MAELSTROM_SCENES_DIR
+    #[arg(long, global = true)]
+    pub scenes_dir: Option<PathBuf>,
+    /// Durable run-library root, overriding MAELSTROM_RUNS_DIR
+    #[arg(long, global = true)]
+    pub runs_dir: Option<PathBuf>,
+    /// Diagnostic colour policy; machine data is never coloured
+    #[arg(long, global = true, value_enum, default_value = "auto")]
+    pub color: Color,
     #[command(subcommand)]
     pub command: Command,
 }
-
 #[derive(Clone, Copy, ValueEnum)]
 pub(super) enum Format {
     Text,
     Json,
 }
-
+#[derive(Clone, Copy, ValueEnum)]
+pub(super) enum Color {
+    Auto,
+    Always,
+    Never,
+}
 #[derive(Subcommand)]
 pub(super) enum Command {
-    /// List the bundled, deterministic scenes
-    Scenes,
-    /// Verify the optional CUDA resource boundary; does not run a fluid simulation
+    /// Discover or create editable scenes
+    Scenes {
+        #[command(subcommand)]
+        command: Option<Scenes>,
+    },
+    /// Diagnose installed simulation and graphics capabilities
+    Doctor {
+        #[command(subcommand)]
+        command: Option<Doctor>,
+    },
+    /// Show effective application preferences
+    Config {
+        #[command(subcommand)]
+        command: Config,
+    },
+    /// Show resolved storage locations
+    Paths,
+    /// Print shell completions without changing shell configuration
+    Completions {
+        #[arg(value_parser = ["bash", "zsh", "fish"])]
+        shell: String,
+    },
+    /// Inspect or validate compiled output
+    Runs {
+        #[command(subcommand)]
+        command: Runs,
+    },
+    /// Validate inputs without simulation
+    Validate(Inputs),
+    /// Show resolved inputs and execution selection
+    Inspect {
+        #[command(flatten)]
+        inputs: Inputs,
+        #[command(flatten)]
+        selection: Selection,
+    },
+    /// Execute headlessly at 1x simulated time, or use --unpaced
+    Run(Run),
+    /// Recompute recorded inputs from zero; not playback or resumption
+    Rerun(Replay),
+    /// Simulate once and publish portable images for later playback
+    Compile(Compile),
+    /// Start a fresh simulation with live visualisation
+    View(View),
+    /// Play existing images with no simulation or particle rendering
+    Play(Play),
+    #[cfg(feature = "render")]
+    /// Render saved observations without recomputation
+    Export(Export),
+    #[command(hide = true)]
+    Replay(Replay),
+    #[command(hide = true)]
     CudaCheck {
-        /// Process-visible CUDA device ordinal; no automatic CPU fallback
         #[arg(long, default_value_t = 0)]
         device: u32,
-        /// Independent context construction, round trip and teardown cycles
         #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..))]
         repetitions: u32,
     },
-    /// Check configuration and optional scene without advancing state
-    #[command(
-        after_help = "Examples:\n  maelstrom validate\n  maelstrom validate --config ./config.toml\n  maelstrom validate falling-block-04 --set cfl_factor=0.5"
-    )]
-    Validate(Inputs),
-    /// Show all effective configuration values, provenance and scene summary
-    #[command(
-        after_help = "Examples:\n  maelstrom inspect --format json\n  maelstrom inspect falling-block-04 --config ./config.toml\n  maelstrom inspect ./scene.toml --set 'external_acceleration_m_s2=[0.0, -9.81, 0.0]'"
-    )]
-    Inspect(Inputs),
-    /// Run a named scene or external TOML file with an explicit limit
-    #[command(
-        after_help = "Examples:\n  maelstrom run falling-block-04 --steps 12 --checkpoints 0,6,12\n  maelstrom run ./scene.toml --config ./config.toml --steps 12 --format json -o result.json\n  maelstrom run falling-block-04 --duration 0.1 --snapshot final.json\n\nDuration is simulated seconds, rounded up to whole fixed timesteps; it is not a wall-clock timeout.\nCheckpoints must be unique, ascending and within the run limit. No checkpoints are selected by default.\nOutput and snapshot paths must be new files in existing directories; replacement is never implicit."
-    )]
-    Run(Run),
-    /// Repeat the recorded inputs and request from a result JSON file
-    #[command(
-        after_help = "Example: maelstrom replay result.json --format json -o repeated.json\nReplay validates recorded inputs and backend. It reruns the original request; it does not certify the original outcome."
-    )]
-    Replay(Replay),
-    /// Open the optional interactive particle viewer
-    #[cfg(feature = "viewer")]
-    View(View),
-    /// Play a completed PNG export; no simulation or particle rendering
-    #[cfg(feature = "viewer")]
-    Play(Play),
-    /// Export accepted observations to a new PNG sequence without a window
-    #[cfg(feature = "render")]
-    Export(Export),
 }
-
-#[cfg(feature = "viewer")]
-#[derive(Args)]
-#[command(
-    after_help = "Loads existing images only. Space: pause/play; Left/Right: seek and pause; Home/End: endpoints; R: restart; +/-: speed; Escape: close. Camera changes require a new export, not a numerical rerun when saved observations are available."
-)]
-pub(super) struct Play {
-    /// Completed export directory or its manifest.json
-    pub sequence: PathBuf,
-    /// Simulated seconds per wall-clock second (0.01..=100)
-    #[arg(long, default_value_t = 1.0)]
-    pub speed: f64,
-    /// Open on the initial frame without starting playback
-    #[arg(long)]
-    pub paused: bool,
-    /// Repeat after holding the final frame for the previous frame interval
-    #[arg(long)]
-    pub repeat: bool,
-    /// Index among Vulkan adapters of the selected hardware/software class
-    #[arg(long, default_value_t = 0)]
-    pub graphics_adapter: usize,
-    /// Explicitly require software Vulkan presentation
-    #[arg(long)]
-    pub software: bool,
-}
-
-#[cfg(feature = "render")]
-#[derive(Args)]
-pub(super) struct Export {
-    #[command(subcommand)]
-    pub source: ExportSource,
-    /// New destination directory; its parent must exist
-    #[arg(long, global = true)]
-    pub output: Option<PathBuf>,
-    /// Explicit presentation TOML file (schema 1)
-    #[arg(long, global = true)]
-    pub render_config: Option<PathBuf>,
-    #[arg(long, global = true)]
-    pub width: Option<u32>,
-    #[arg(long, global = true)]
-    pub height: Option<u32>,
-    /// Sample accepted indices with this positive stride, retaining both endpoints
-    #[arg(long, global = true)]
-    pub step_stride: Option<u64>,
-    /// Index among Vulkan adapters of the selected hardware/software class
-    #[arg(long, global = true, default_value_t = 0)]
-    pub graphics_adapter: usize,
-    /// Explicitly require software Vulkan rendering
-    #[arg(long, global = true)]
-    pub software: bool,
-    /// Fit the initial particles once instead of using the configured camera
-    #[arg(long, global = true)]
-    pub fit_camera: bool,
-}
-
-#[cfg(feature = "render")]
 #[derive(Subcommand)]
-pub(super) enum ExportSource {
-    /// Render stored accepted snapshots; missing steps fail without rerunning
-    Saved {
-        file: PathBuf,
-        /// Explicit prefix endpoint, required for an incomplete original run
-        #[arg(long)]
-        last_step: Option<u64>,
-    },
-    /// Rerun the full recorded request from zero, comparing stored checkpoints
-    Rerun { file: PathBuf },
-    /// Start a fresh simulation from a scene and export selected accepted steps
-    Direct {
-        #[command(flatten)]
-        inputs: Inputs,
-        #[arg(long)]
-        steps: u64,
-        #[arg(long, default_value = "serial-grid", value_parser = ["brute-force", "serial-grid", "threaded-grid", "cuda-grid"])]
-        mode: String,
-        #[arg(long)]
-        workers: Option<usize>,
-        #[arg(long)]
-        device: Option<u32>,
-        #[arg(long)]
-        block_size: Option<u32>,
+pub(super) enum Scenes {
+    /// List bundled and user scenes
+    List,
+    /// Create a new editable package without replacing existing files
+    Create {
+        name: String,
+        #[arg(long, default_value = "builtin:falling-block-04")]
+        from: String,
     },
 }
-
-#[derive(Args)]
+#[derive(Subcommand)]
+pub(super) enum Doctor {
+    /// Check independent CUDA resource lifetimes
+    Cuda {
+        #[arg(long, default_value_t = 0)]
+        device: u32,
+        #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..))]
+        repetitions: u32,
+    },
+    /// Check windowless graphics independently of simulation
+    Graphics {
+        #[arg(long, default_value_t = 0)]
+        graphics_adapter: usize,
+        #[arg(long)]
+        software: bool,
+    },
+}
+#[derive(Subcommand)]
+pub(super) enum Config {
+    Show,
+}
+#[derive(Subcommand)]
+pub(super) enum Runs {
+    List,
+    Show { run: String },
+    Validate { run: String },
+}
+#[derive(Args, Clone)]
 pub(super) struct Inputs {
-    /// Bundled name from 'scenes', or path to an external scene TOML file
+    /// Named scene, namespace-qualified name or explicit TOML path
     #[arg(value_name = "SCENE")]
     pub scene: Option<String>,
-    /// Select a base configuration TOML file instead of the scene's selection
     #[arg(long, value_name = "FILE")]
     pub config: Option<PathBuf>,
-    /// Override a primary numerical field using a TOML literal; repeat for fields
+    /// Primary numerical override expressed as a TOML literal
     #[arg(long = "set", value_name = "FIELD=VALUE")]
     pub overrides: Vec<String>,
-    /// Divide the effective timestep by N and the complete Jacobi correction
-    /// scale by N² after --set overrides
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=16))]
     pub refine_timestep: Option<u32>,
 }
-
-#[derive(Args)]
-pub(super) struct Run {
-    #[command(flatten)]
-    pub inputs: Inputs,
-    /// Neighbour discovery; physical inputs and serial reduction order are shared
-    #[arg(long, value_enum, default_value = "brute-force")]
-    pub backend: Backend,
-    /// Execution resource; threaded and CUDA modes require --backend uniform-grid
-    #[arg(long, value_enum, default_value = "serial")]
-    pub execution: ExecutionKind,
-    /// Exact pool size (1..=256); defaults to available parallelism, capped at 256
-    #[arg(long, value_name = "N")]
+#[derive(Args, Clone, Default)]
+pub(super) struct Selection {
+    /// auto (default), brute-force, serial-grid, threaded-grid or cuda
+    #[arg(long, alias = "mode", value_name = "BACKEND")]
+    pub backend: Option<String>,
+    /// Exact CPU pool size; constrains auto to threaded-grid
+    #[arg(long, alias = "workers")]
     pub threads: Option<usize>,
-    /// Process-visible CUDA ordinal; valid only with --execution cuda
+    /// CUDA ordinal; constrains auto to CUDA
     #[arg(long)]
     pub device: Option<u32>,
-    /// CUDA lanes per block: 32, 64, 128 or 256; default 128
     #[arg(long)]
     pub block_size: Option<u32>,
-    /// Number of fixed timesteps; zero observes the initial state
-    #[arg(
-        long,
-        required_unless_present = "duration",
-        conflicts_with = "duration"
-    )]
-    pub steps: Option<u64>,
-    /// Simulated duration in seconds, rounded up to whole fixed timesteps
-    #[arg(long, value_name = "SECONDS")]
-    pub duration: Option<f64>,
-    /// Accepted step boundaries to snapshot and audit; comma-separated
-    #[arg(long, value_delimiter = ',', value_name = "STEPS")]
-    pub checkpoints: Vec<u64>,
-    /// Record monotonic elapsed seconds around each complete solver step
-    #[arg(long)]
-    pub measure: bool,
-    /// Also profile internal stages; adds clock overhead, so report separately
-    #[arg(long, requires = "measure")]
-    pub stage_profile: bool,
-    #[command(flatten)]
-    pub output: Output,
+    #[arg(long, value_enum, hide = true)]
+    pub execution: Option<ExecutionKind>,
 }
-
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(super) enum ExecutionKind {
     Serial,
     Threaded,
     Cuda,
 }
-
-#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub(super) enum Backend {
-    BruteForce,
-    UniformGrid,
+#[derive(Args)]
+pub(super) struct Run {
+    #[command(flatten)]
+    pub inputs: Inputs,
+    #[command(flatten)]
+    pub selection: Selection,
+    #[command(flatten)]
+    pub limit: Limit,
+    /// Run without wall-clock pacing
+    #[arg(long)]
+    pub unpaced: bool,
+    #[arg(long, value_delimiter = ',', value_name = "STEPS")]
+    pub checkpoints: Vec<u64>,
+    #[arg(long)]
+    pub measure: bool,
+    #[arg(long, requires = "measure")]
+    pub stage_profile: bool,
+    #[command(flatten)]
+    pub output: Output,
 }
-
-impl From<Backend> for maelstrom::neighbours::SearchBackend {
-    fn from(value: Backend) -> Self {
-        match value {
-            Backend::BruteForce => Self::BruteForce,
-            Backend::UniformGrid => Self::UniformGrid,
-        }
-    }
+#[derive(Args)]
+pub(super) struct Limit {
+    /// Exact fixed timestep count; zero observes initial state
+    #[arg(
+        long,
+        required_unless_present = "duration",
+        conflicts_with = "duration"
+    )]
+    pub steps: Option<u64>,
+    /// Simulated seconds, rounded up to complete fixed timesteps
+    #[arg(long, value_name = "SECONDS")]
+    pub duration: Option<f64>,
 }
-
 #[derive(Args)]
 pub(super) struct Replay {
-    /// Versioned JSON result containing complete inputs and a run request
     pub file: PathBuf,
     #[command(flatten)]
     pub output: Output,
 }
-
 #[derive(Args)]
 pub(super) struct Output {
-    /// Publish the result to a new file instead of stdout
+    /// Publish a result to a new file; never replace an existing path
     #[arg(short, long, value_name = "FILE")]
     pub output: Option<PathBuf>,
-    /// Publish the last accepted state to a separate new JSON file
+    /// Publish the last accepted numerical snapshot to a separate new file
     #[arg(long, value_name = "FILE")]
     pub snapshot: Option<PathBuf>,
 }
-
-#[cfg(feature = "viewer")]
+#[derive(Args)]
+pub(super) struct Compile {
+    #[command(flatten)]
+    pub inputs: Inputs,
+    #[command(flatten)]
+    pub selection: Selection,
+    #[command(flatten)]
+    pub limit: Limit,
+    /// New bundle directory; omitted selects a new ID in the run library
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+    /// Human-readable catalogue label, not a lookup ID or overwrite permission
+    #[arg(long)]
+    pub name: Option<String>,
+    /// Presentation-only TOML settings
+    #[arg(long)]
+    pub render_config: Option<PathBuf>,
+    #[arg(long)]
+    pub width: Option<u32>,
+    #[arg(long)]
+    pub height: Option<u32>,
+    /// Sample accepted steps, always retaining both endpoints
+    #[arg(long)]
+    pub frame_stride: Option<u64>,
+    #[arg(long, default_value_t = 0)]
+    pub graphics_adapter: usize,
+    #[arg(long)]
+    pub software: bool,
+    #[arg(long)]
+    pub fit_camera: bool,
+}
+#[derive(Args)]
+pub(super) struct Play {
+    /// Run ID, completed export directory or manifest.json
+    pub sequence: PathBuf,
+    #[arg(long, default_value_t = 1.0)]
+    pub speed: f64,
+    #[arg(long)]
+    pub paused: bool,
+    #[arg(long)]
+    pub repeat: bool,
+    #[arg(long, default_value_t = 0)]
+    pub graphics_adapter: usize,
+    #[arg(long)]
+    pub software: bool,
+}
 #[derive(Args)]
 pub(super) struct View {
     #[command(flatten)]
     pub inputs: Inputs,
-    /// Finite number of accepted steps; starts paused
+    #[command(flatten)]
+    pub selection: Selection,
+    #[command(flatten)]
+    pub limit: Limit,
     #[arg(long)]
-    pub steps: u64,
-    /// Simulation mode, independent of the graphics adapter
-    #[arg(long, default_value = "serial-grid", value_parser = ["brute-force", "serial-grid", "threaded-grid", "cuda-grid"])]
-    pub mode: String,
-    /// Exact CPU pool size when selecting threaded-grid
-    #[arg(long, default_value_t = 4)]
-    pub workers: usize,
-    /// Process-visible CUDA ordinal when selecting cuda-grid
-    #[arg(long, default_value_t = 0)]
-    pub device: u32,
-    /// CUDA block size when selecting cuda-grid
-    #[arg(long, default_value_t = 128)]
-    pub block_size: u32,
-    /// Explicit presentation TOML file (schema 1)
+    pub paused: bool,
     #[arg(long)]
     pub render_config: Option<PathBuf>,
-    /// Override drawable width from the render file
     #[arg(long)]
     pub width: Option<u32>,
-    /// Override drawable height from the render file
     #[arg(long)]
     pub height: Option<u32>,
-    /// Index among Vulkan adapters of the selected hardware/software class
     #[arg(long, default_value_t = 0)]
     pub graphics_adapter: usize,
-    /// Explicitly require a CPU/software Vulkan renderer
     #[arg(long)]
     pub software: bool,
-    /// Explicitly fit initial particles instead of using the configured camera
     #[arg(long)]
     pub fit_camera: bool,
+}
+#[cfg(feature = "render")]
+#[derive(Args)]
+pub(super) struct Export {
+    #[command(subcommand)]
+    pub source: ExportSource,
+    #[arg(short, long, global = true)]
+    pub output: Option<PathBuf>,
+    #[arg(long, global = true)]
+    pub render_config: Option<PathBuf>,
+    #[arg(long, global = true)]
+    pub width: Option<u32>,
+    #[arg(long, global = true)]
+    pub height: Option<u32>,
+    #[arg(long = "frame-stride", alias = "step-stride", global = true)]
+    pub step_stride: Option<u64>,
+    #[arg(long, global = true, default_value_t = 0)]
+    pub graphics_adapter: usize,
+    #[arg(long, global = true)]
+    pub software: bool,
+    #[arg(long, global = true)]
+    pub fit_camera: bool,
+}
+#[cfg(feature = "render")]
+#[derive(Subcommand)]
+pub(super) enum ExportSource {
+    /// Render stored observations; missing steps never trigger a rerun
+    Saved {
+        file: PathBuf,
+        #[arg(long)]
+        last_step: Option<u64>,
+    },
+    #[command(hide = true)]
+    Rerun { file: PathBuf },
+    #[command(hide = true)]
+    Direct {
+        #[command(flatten)]
+        inputs: Inputs,
+        #[arg(long)]
+        steps: u64,
+        #[command(flatten)]
+        selection: Selection,
+    },
 }

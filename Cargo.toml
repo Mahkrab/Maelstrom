@@ -10,13 +10,14 @@ render = ["dep:wgpu", "dep:pollster", "dep:png"]
 viewer = ["render", "dep:winit", "dep:font8x8", "dep:xkbcommon-dl"]
 
 [dependencies]
-clap = { version = "4.6.7", default-features = false, features = ["derive", "std", "help", "usage", "error-context", "suggestions"] }
+clap = { version = "4.6.7", default-features = false, features = ["derive", "std", "help", "usage", "error-context", "suggestions", "color"] }
+clap_complete = { version = "4.6.11", default-features = false }
 ctrlc = { version = "3.5.2", default-features = false }
 rayon = { version = "1.12.0", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 sha2 = { version = "0.11.1", default-features = false }
-toml = { version = "1.1.4", default-features = false, features = ["parse", "serde"] }
+toml = { version = "1.1.4", default-features = false, features = ["parse", "serde", "display"] }
 
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "vulkan", "wgsl"], optional = true }
 pollster = { version = "0.4.0", optional = true }

@@ -3,11 +3,18 @@
 //! diagnostics. Presentation flags never enter the numerical request.
 
 mod arguments;
+mod bundle;
+mod bundled;
 #[cfg(feature = "render")]
 mod export;
 mod inputs;
+mod management;
+mod pacing;
 #[cfg(feature = "viewer")]
 mod play;
+mod scenes;
+mod selection;
+mod storage;
 #[cfg(feature = "viewer")]
 mod viewer;
 
@@ -22,15 +29,15 @@ use std::{
     },
 };
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use maelstrom::workflow::{
     CompletionStatus, ExecutionOptions, MeasurementMode, OutputFormat, RunRequest, replay_options,
-    run_with_options,
+    run_with_observer,
 };
 use serde_json::{Value, json};
 
 use arguments::{Cli, Command, Format, Output};
-use inputs::{ResolvedInputs, SCENES};
+use inputs::ResolvedInputs;
 
 struct CliError {
     code: u8,
@@ -50,7 +57,29 @@ impl CliError {
 }
 
 pub(super) fn main() -> ExitCode {
-    let cli = match Cli::try_parse() {
+    let args: Vec<_> = std::env::args_os().collect();
+    let mut color = clap::ColorChoice::Auto;
+    for (index, arg) in args
+        .iter()
+        .enumerate()
+        .take_while(|(_, a)| a.as_os_str() != "--")
+    {
+        let value = if arg == "--color" {
+            args.get(index + 1).and_then(|a| a.to_str())
+        } else {
+            arg.to_str().and_then(|a| a.strip_prefix("--color="))
+        };
+        color = match value {
+            Some("always") => clap::ColorChoice::Always,
+            Some("never") => clap::ColorChoice::Never,
+            _ => color,
+        };
+    }
+    let parsed = Cli::command()
+        .color(color)
+        .try_get_matches_from(args)
+        .and_then(|matches| Cli::from_arg_matches(&matches));
+    let cli = match parsed {
         Ok(cli) => cli,
         Err(error) => {
             let code = if error.use_stderr() { 2 } else { 0 };
@@ -70,13 +99,18 @@ pub(super) fn main() -> ExitCode {
 }
 
 fn execute(cli: &Cli) -> Result<u8, CliError> {
+    let storage = storage::Storage::for_cli(cli)?;
     match &cli.command {
+        #[cfg(not(feature = "viewer"))]
+        Command::Play(_) | Command::View(_) => Err(CliError::input(
+            "viewing support is not installed; reinstall with --features viewer".into(),
+        )),
         #[cfg(feature = "viewer")]
-        Command::Play(play) => play::launch(play),
+        Command::Play(play) => play::launch(play, &storage),
         #[cfg(feature = "render")]
-        Command::Export(export) => export::launch(export),
+        Command::Export(export) => export::launch(export, &storage),
         #[cfg(feature = "viewer")]
-        Command::View(view) => viewer::launch(view),
+        Command::View(view) => viewer::launch(view, &storage),
         Command::CudaCheck {
             device,
             repetitions,
@@ -102,28 +136,23 @@ fn execute(cli: &Cli) -> Result<u8, CliError> {
             )?;
             Ok(0)
         }
-        Command::Scenes => {
-            let mut scenes = Vec::new();
-            let mut text =
-                String::from("Bundled scenes (configuration: defaults-v4; no randomness):\n");
-            for (name, source) in SCENES {
-                let document = maelstrom::scene::parse_scene(source)
-                    .map_err(|error| CliError::input(error.to_string()))?;
-                text.push_str(&format!("  {name}: {}\n", document.description));
-                scenes.push(json!({"name": name, "description": document.description}));
+        Command::Scenes { command } => match command {
+            None | Some(arguments::Scenes::List) => scenes::list(cli, &storage),
+            Some(arguments::Scenes::Create { name, from }) => {
+                scenes::create(cli, &storage, name, from)
             }
-            print_document(
-                cli.format,
-                text,
-                json!({"schema_version": 1, "application_version": env!("CARGO_PKG_VERSION"), "scenes": scenes}),
-            )?;
-            Ok(0)
-        }
-        Command::Validate(inputs) | Command::Inspect(inputs) => {
-            let resolved = inputs::resolve(inputs)?;
+        },
+        Command::Doctor { command } => management::doctor(cli, command.as_ref()),
+        Command::Paths => management::paths(cli, &storage),
+        Command::Config { .. } => management::config(cli, &storage),
+        Command::Completions { shell } => management::completions(shell),
+        Command::Runs { command } => bundle::manage(cli, &storage, command),
+        Command::Compile(args) => bundle::compile(cli, &storage, args),
+        Command::Validate(inputs) | Command::Inspect { inputs, .. } => {
+            let resolved = inputs::resolve_in(inputs, &storage)?;
             diagnostic(cli, &resolved)?;
-            let inspect = matches!(cli.command, Command::Inspect(_));
-            let text = if inspect {
+            let inspect = matches!(cli.command, Command::Inspect { .. });
+            let mut text = if inspect {
                 let mut text = resolved.configuration.canonical_toml();
                 if let Some(scene) = &resolved.scene {
                     text.push_str(&format!("\nScene: {:?}\nDescription: {:?}\nParticles: {}; planes: {}; randomness: none\nScene schema: {}\n",
@@ -146,65 +175,43 @@ fn execute(cli: &Cli) -> Result<u8, CliError> {
                 )
             };
             let mut document = inspection(&resolved);
+            if let Command::Inspect {
+                selection: args, ..
+            } = &cli.command
+            {
+                let options = selection::resolve(args, &storage.preferences()?)?;
+                text.push_str(&format!(
+                    "\nExecution: {:?}; {:?}\n",
+                    options.backend, options.execution
+                ));
+                document["execution"] = json!({"discovery":format!("{:?}",options.backend),"resources":options.execution});
+            }
             document["operation"] = json!(if inspect { "inspect" } else { "validate" });
             print_document(cli.format, text, document)?;
             Ok(0)
         }
         Command::Run(run) => {
-            if run.execution != arguments::ExecutionKind::Cuda
-                && (run.device.is_some() || run.block_size.is_some())
-            {
+            if run.measure && !run.unpaced && run.selection.execution.is_none() {
                 return Err(CliError::usage(
-                    "--device and --block-size require --execution cuda".into(),
+                    "--measure requires --unpaced; pacing waits are not solver measurements".into(),
                 ));
             }
-            let execution = match run.execution {
-                arguments::ExecutionKind::Cuda => {
-                    if run.threads.is_some() || run.backend != arguments::Backend::UniformGrid {
-                        return Err(CliError::usage("--execution cuda requires --backend uniform-grid and cannot use --threads".into()));
-                    }
-                    let mode = maelstrom::execution::ExecutionMode::Cuda {
-                        device: run.device.unwrap_or(0),
-                        threads: run.block_size.unwrap_or(128),
-                    };
-                    mode.validate()
-                        .map_err(|error| CliError::usage(error.to_string()))?;
-                    mode
-                }
-                arguments::ExecutionKind::Serial => {
-                    if run.threads.is_some() {
-                        return Err(CliError::usage(
-                            "--threads requires --execution threaded".into(),
-                        ));
-                    }
-                    maelstrom::execution::ExecutionMode::Serial
-                }
-                arguments::ExecutionKind::Threaded => {
-                    if run.backend != arguments::Backend::UniformGrid {
-                        return Err(CliError::usage(
-                            "--execution threaded requires --backend uniform-grid".into(),
-                        ));
-                    }
-                    let mode = match run.threads {
-                        Some(workers) => maelstrom::execution::ExecutionMode::Threaded { workers },
-                        None => maelstrom::execution::ExecutionMode::threaded_default()
-                            .map_err(|e| CliError::input(e.to_string()))?,
-                    };
-                    mode.validate()
-                        .map_err(|e| CliError::usage(e.to_string()))?;
-                    mode
-                }
-            };
+            let mut options = selection::resolve(&run.selection, &storage.preferences()?)?;
+            options.measurement = run.measure.then_some(if run.stage_profile {
+                MeasurementMode::Stages
+            } else {
+                MeasurementMode::Total
+            });
             if run.inputs.scene.is_none() {
                 return Err(CliError::usage(
                     "run requires SCENE; use 'maelstrom scenes' or 'maelstrom run --help'".into(),
                 ));
             }
-            let resolved = inputs::resolve(&run.inputs)?;
+            let resolved = inputs::resolve_in(&run.inputs, &storage)?;
             diagnostic(cli, &resolved)?;
             let steps = run_limit(
-                run.steps,
-                run.duration,
+                run.limit.steps,
+                run.limit.duration,
                 resolved.configuration.numerical.fixed_timestep_s,
             )?;
             if run.checkpoints.iter().any(|&step| step > steps)
@@ -223,20 +230,12 @@ fn execute(cli: &Cli) -> Result<u8, CliError> {
                     checkpoints: run.checkpoints.clone(),
                 },
                 &run.output,
-                ExecutionOptions {
-                    backend: run.backend.into(),
-                    execution,
-                    measurement: run.measure.then_some(if run.stage_profile {
-                        MeasurementMode::Stages
-                    } else {
-                        MeasurementMode::Total
-                    }),
-                },
+                options,
+                !run.unpaced && run.selection.execution.is_none(),
             )
         }
-        Command::Replay(replay) => {
-            let source = fs::read_to_string(&replay.file)
-                .map_err(|error| CliError::input(format!("result {:?}: {error}", replay.file)))?;
+        Command::Replay(replay) | Command::Rerun(replay) => {
+            let source = bundle::source(&storage, &replay.file)?;
             let (scene, request, options) = replay_options(&source)
                 .map_err(|error| CliError::input(format!("result {:?}: {error}", replay.file)))?;
             diagnostic(
@@ -246,7 +245,7 @@ fn execute(cli: &Cli) -> Result<u8, CliError> {
                     scene: Some(scene.clone()),
                 },
             )?;
-            execute_run(cli, &scene, request, &replay.output, options)
+            execute_run(cli, &scene, request, &replay.output, options, false)
         }
     }
 }
@@ -304,6 +303,7 @@ fn execute_run(
     request: RunRequest,
     output: &Output,
     options: ExecutionOptions,
+    paced: bool,
 ) -> Result<u8, CliError> {
     check_destinations(output)?;
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -319,7 +319,27 @@ fn execute_run(
             .map_err(|error| CliError::output(format!("stderr: {error}")))?;
     }
     let is_cancelled = || cancelled.load(Ordering::Relaxed);
-    let mut result = run_with_options(scene, request, options, is_cancelled);
+    if !cli.quiet {
+        writeln!(
+            io::stderr().lock(),
+            "maelstrom: {:?}; {:?}; {}",
+            options.backend,
+            options.execution,
+            if paced { "paced 1x" } else { "unpaced" }
+        )
+        .map_err(|e| CliError::output(e.to_string()))?;
+    }
+    let mut pacer = pacing::Pacer::new(scene.configuration.numerical.fixed_timestep_s, paced);
+    let mut result = run_with_observer(scene, request, options, is_cancelled, |step| {
+        pacer.wait(step, &cancelled)
+    });
+    if pacer.lagged() && !cli.quiet {
+        writeln!(
+            io::stderr().lock(),
+            "maelstrom: pacing lag: solver could not sustain 1x; no timesteps were skipped"
+        )
+        .map_err(|e| CliError::output(e.to_string()))?;
+    }
     if let Some(path) = &output.snapshot
         && let Err(error) = result.publish_snapshot(path)
     {

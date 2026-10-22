@@ -7,11 +7,8 @@ use super::{
     inputs,
 };
 use maelstrom::{
-    execution::ExecutionMode,
     export::{ExportRequest, Source},
-    neighbours::SearchBackend,
     render::{GraphicsSelection, Settings},
-    workflow::ExecutionOptions,
 };
 use std::{
     fs,
@@ -21,7 +18,7 @@ use std::{
     },
 };
 
-pub(super) fn launch(args: &Export) -> Result<u8, CliError> {
+pub(super) fn launch(args: &Export, storage: &super::storage::Storage) -> Result<u8, CliError> {
     let destination = args
         .output
         .as_deref()
@@ -56,7 +53,7 @@ pub(super) fn launch(args: &Export) -> Result<u8, CliError> {
     let resolved = match &args.source {
         ExportSource::Direct {
             inputs: selection, ..
-        } => Some(inputs::resolve(selection)?),
+        } => Some(inputs::resolve_in(selection, storage)?),
         _ => None,
     };
     let source = match &args.source {
@@ -72,42 +69,9 @@ pub(super) fn launch(args: &Export) -> Result<u8, CliError> {
                 .ok_or_else(|| CliError::input("missing selected result".into()))?,
         },
         ExportSource::Direct {
-            steps,
-            mode,
-            workers,
-            device,
-            block_size,
-            ..
+            steps, selection, ..
         } => {
-            if mode != "threaded-grid" && workers.is_some() {
-                return Err(CliError::usage("--workers requires threaded-grid".into()));
-            }
-            if mode != "cuda-grid" && (device.is_some() || block_size.is_some()) {
-                return Err(CliError::usage(
-                    "--device/--block-size require cuda-grid".into(),
-                ));
-            }
-            let (backend, execution) = match mode.as_str() {
-                "brute-force" => (SearchBackend::BruteForce, ExecutionMode::Serial),
-                "serial-grid" => (SearchBackend::UniformGrid, ExecutionMode::Serial),
-                "threaded-grid" => (
-                    SearchBackend::UniformGrid,
-                    ExecutionMode::Threaded {
-                        workers: workers.unwrap_or(4),
-                    },
-                ),
-                "cuda-grid" => (
-                    SearchBackend::UniformGrid,
-                    ExecutionMode::Cuda {
-                        device: device.unwrap_or(0),
-                        threads: block_size.unwrap_or(128),
-                    },
-                ),
-                _ => return Err(CliError::usage("unsupported export execution mode".into())),
-            };
-            execution
-                .validate()
-                .map_err(|e| CliError::usage(e.to_string()))?;
+            let options = super::selection::resolve(selection, &storage.preferences()?)?;
             let scene = resolved
                 .as_ref()
                 .and_then(|r| r.scene.as_ref())
@@ -115,11 +79,7 @@ pub(super) fn launch(args: &Export) -> Result<u8, CliError> {
             Source::Direct {
                 scene,
                 steps: *steps,
-                options: ExecutionOptions {
-                    backend,
-                    execution,
-                    measurement: None,
-                },
+                options,
             }
         }
     };

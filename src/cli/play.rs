@@ -3,9 +3,9 @@
 use super::{CliError, arguments::Play};
 use maelstrom::{playback, render::GraphicsSelection};
 
-pub(super) fn launch(play: &Play) -> Result<u8, CliError> {
-    let sequence =
-        playback::Sequence::open(&play.sequence).map_err(|e| CliError::input(e.to_string()))?;
+pub(super) fn launch(play: &Play, storage: &super::storage::Storage) -> Result<u8, CliError> {
+    let sequence = playback::Sequence::open(&storage.run(&play.sequence)?)
+        .map_err(|e| CliError::input(e.to_string()))?;
     playback::run(
         sequence,
         play.speed,

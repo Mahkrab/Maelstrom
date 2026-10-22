@@ -458,7 +458,22 @@ pub fn run_with_options(
     scene: &ResolvedScene,
     request: RunRequest,
     options: ExecutionOptions,
+    cancelled: impl FnMut() -> bool,
+) -> RunResult {
+    run_with_observer(scene, request, options, cancelled, |_| {})
+}
+
+/// Runs with a callback after each accepted step and its requested observations.
+/// The callback is outside solver measurements and cannot mutate accepted state.
+/// It may pace a caller without changing numerical work or the cancellation polls
+/// inside each timestep. No callback is made for a failed or zero-step attempt.
+#[must_use]
+pub fn run_with_observer(
+    scene: &ResolvedScene,
+    request: RunRequest,
+    options: ExecutionOptions,
     mut cancelled: impl FnMut() -> bool,
+    mut accepted: impl FnMut(u64),
 ) -> RunResult {
     let mut result = RunResult {
         schema_version: SCHEMA_VERSION,
@@ -558,6 +573,7 @@ pub fn run_with_options(
             if !result.observe(&solver) {
                 break;
             }
+            accepted(solver.snapshot().completed_steps());
         }
     }
     result.completed_steps = solver.snapshot().completed_steps();

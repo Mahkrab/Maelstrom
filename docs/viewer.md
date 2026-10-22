@@ -1,139 +1,92 @@
-# Viewing accepted particles
+# View a live simulation
 
-Build the optional viewer on x86_64 Linux/WSL2. It uses winit for the window and
-Vulkan through wgpu for drawing; simulation execution remains independent.
-The default Cargo build has no graphics dependencies or display requirement.
-Cargo builds with different feature selections share the same target executable
-name. If a later headless or render-only build replaces that executable, rebuild
-with `--features viewer` to restore `view` and `play`.
-`view` **starts a new simulation**; it is not historical playback. To watch a
-completed PNG export without simulation or particle rendering, use
-`maelstrom play <export-directory>` instead; see [saved playback](export.md#watching-a-saved-sequence).
+`view` starts a **fresh simulation**. To watch something already compiled, use
+[playback](export.md) instead. Install with `--features viewer`; a Vulkan driver,
+display and supported native keyboard libraries are required.
 
 ```sh
-cargo run --locked --features viewer -- view falling-block-04 --steps 480
-cargo run --locked --features viewer -- view ./scene.toml --config ./config.toml --steps 120 --mode threaded-grid --workers 4
-cargo run --locked --features cuda,viewer -- view falling-block-04 --steps 480 --mode cuda-grid --device 0 --block-size 128
+maelstrom view builtin:falling-block-04 --backend serial-grid --steps 120 --paused
+maelstrom view water --backend threaded-grid --threads 4 --steps 120
+maelstrom view water --backend cuda --device 0 --steps 120
 ```
 
-A launch starts paused at accepted step zero. The window leaves existing keyboard
-focus alone; click it before using keyboard controls. A zero-step request completes at
-zero. Select `--mode brute-force`, `serial-grid`, `threaded-grid` or `cuda-grid`;
-CUDA requires its independent feature, toolkit at build time and runtime device.
-Explicit CUDA requests fail visibly when unavailable. There is no CPU fallback.
+Use `--paused` to inspect step zero before starting. Without it, the new run starts
+advancing immediately. The simulation's fixed timestep is independent of redraw rate.
+A renderer can skip intermediate observations but cannot skip solver work or change state.
 
-Graphics defaults to hardware Vulkan adapter zero. `--graphics-adapter N` selects
-an index within that device class. `--software` explicitly selects the software
-class instead, for example Mesa llvmpipe. The selected name, driver and surface
-format are reported to stderr. Adapter enumeration can differ between machines;
-the printed identity describes the device actually used. CUDA ordinals do not
-select a graphics device. Native Windows, macOS, browsers and non-Vulkan backends
-have not been qualified.
+## Scene and camera selection
 
-WSLg supplies the Wayland display used for local interaction checks. A Vulkan
-loader and compatible driver are required. Linux keyboard support requires
-`libxkbcommon0`; X11 additionally needs `libxkbcommon-x11-0` and `libxcb-xkb1`.
-The native keyboard libraries are checked before window creation. Missing
-displays, native libraries or selected adapters produce launch errors. The
-`render` feature alone supports shared drawing without pulling in winit; the
-[offline exporter](export.md) uses that feature for windowless PNG sequences.
+Names resolve through the same [scene library](inputs.md) as `run` and `compile`.
+Execution flags and numerical override precedence are also shared. `--graphics-adapter N`
+selects a hardware Vulkan adapter; `--software` selects the software class instead.
+These indices do not select the CUDA simulation device. The reported adapter identity
+is authoritative because enumeration can differ between machines.
 
-## Choosing and controlling a run
-
-The window panel shows the draft and the selected run separately. Use Tab to
-choose a draft field, Enter to edit it, Delete to clear it, then type and press
-Enter to save. Escape abandons an edit. Scene accepts a bundled name or an
-external TOML path; Config accepts an explicit base file, or blank to keep the
-scene's selection. Relative launch and edited paths resolve against the invocation
-directory. The existing defaults/file/scene/`--set` precedence and scene-relative
-configuration references apply. Launch-time `--set` and refinement overlays
-remain in effect when editing the draft.
-
-| Control | Result |
-| --- | --- |
-| A | Validate and apply the whole draft as a new paused run |
-| 1–7 | Select a bundled falling-block size in the draft |
-| B | Cycle the draft through the four simulation modes |
-| Space | Pause or resume the selected active run |
-| N | Attempt exactly one timestep while paused |
-| R | Reset the selected original inputs, ignoring unapplied draft edits |
-| C | Cancel, retaining the last accepted state |
-| O | Toggle inspection of the labelled prior accepted outcome |
-| D | Request a density audit of the displayed accepted snapshot |
-| Left drag or arrow keys | Orbit around the camera target |
-| Right drag | Pan eye and target together |
-| Wheel or +/− | Zoom without changing world coordinates |
-| F | Explicitly fit the displayed run's initial particles |
-| H | Hide/show the diagnostic panel |
-| G | Recreate the presentation surface using the same graphics device |
-| Escape outside editing, or window close | Request cooperative worker teardown |
-
-Failed draft validation keeps the selected run. A worker construction failure
-shows a new failed generation without borrowing particles from the old one. O
-can inspect the retained prior accepted outcome, explicitly labelled PRIOR;
-controls still target the selected run. Input fields and pending resource settings
-do not describe effective resources until construction succeeds.
-
-The panel reports status, accepted/requested steps, simulated seconds, particle
-count, effective backend/resources, cumulative CFL warnings, latest CFL and any
-terminal failure. Density auditing runs on one separate thread against an owned
-snapshot; its result identifies the generation and step even after reset. It is
-outside solver work and is never triggered by redraws. Redraw FPS describes
-presentation cadence only. Solver timing and simulation throughput are not
-measured by this viewer.
-
-## Camera and failure behaviour
-
-Particles are opaque blue spheres, with radius half the configured spacing,
-in the original metres and positive-Y-up coordinates. Colours and lighting do
-not encode pressure or density. Static constraints appear only as plane outlines
-clipped to a frozen display box derived from initial particle bounds. A plane
-outside that box has no visible outline; the depiction adds no physical walls.
-The fixed sphere mesh has 16 longitude and 12 latitude divisions, with depth
-testing, one sample per pixel and no blending or temporal interpolation.
-
-The configured camera remains fixed until changed explicitly. Use F or launch
-with `--fit-camera` to frame the initial particles. Empty scenes use a one-metre
-fallback box. A fit to initial particles can clip later motion; choose a wider
-camera in a render file when the whole trajectory needs to remain visible.
-Camera calculations use f64 metres before converting view-relative
-coordinates to graphics f32; accepted particle storage stays untouched. Views
-that cannot be represented finitely are rejected and preserve the previous
-camera. Very extreme dynamic ranges can still lose display precision or clip;
-that does not alter the simulation.
-
-Select `--render-config render.toml` for strict render schema 1. Built-in defaults
-are overridden by that file, then explicit `--width`/`--height` arguments. There
-is no implicit home or working-directory configuration. Camera fields merge
-individually with defaults. For example:
+Use `--render-config ./camera.toml` for presentation settings. This minimal file
+selects a fixed eye and target; omitted settings retain presentation defaults:
 
 ```toml
 schema_version = 1
 width = 1280
 height = 720
+step_stride = 1
+
 [camera]
-eye_m = [1.2, 1.0, 1.2]
+eye_m = [1.5, 1.2, 1.5]
 target_m = [0.3, 0.4, 0.3]
+up = [0.0, 1.0, 0.0]
 vertical_fov_deg = 45.0
+near_m = 0.001
+far_m = 100.0
 ```
 
-Dimensions must be 1–8192 and within the actual device limit. Unknown fields,
-versions, invalid vectors or clipping distances fail validation. `format="png"`
-and positive `step_stride` are shared with the offline exporter; this viewer
-uses drawable dimensions and camera settings.
+Eye, target and clipping distances are in metres; the field of view is in degrees.
+The up direction must not be parallel to the view. Unknown fields and invalid/non-finite
+cameras fail without changing accepted simulation state.
+`--fit-camera` fits the initial particles once; later movement can leave that view,
+so choose a wider fixed camera to cover a complete trajectory. Empty scenes use a
+one-metre fallback box. Camera calculations use f64 before view-relative graphics f32;
+extreme ranges can still lose precision or clip.
 
-Resize recreates the depth target; zero drawable extent and occlusion suspend
-drawing. Surface loss recreates the surface, outdated/suboptimal surfaces are
-reconfigured, and acquisition timeout skips presentation. Device/validation/resource
-failures request cancellation and continue pumping events while teardown finishes.
-The worker owns all solver and CUDA resources until destruction. Close also waits
-for a requested density audit to finish. Synchronous graphics calls, solver stages
-and audits have no promised shutdown deadline. A hung driver or forced process
-termination cannot guarantee a retained outcome.
+## Controls
 
-[Application control](application.md) explains coalescing observations and command
-acknowledgements. Display may skip any intermediate snapshots; numerical work
-always executes the complete finite request with the unchanged fixed timestep.
-`THIRD-PARTY-NOTICES.txt` retains upstream notices for the locked Linux dependency
-graph, including build dependencies. Preserve these notices when distributing
-a viewer binary; other target graphs need their own review.
+Click the window to give it keyboard focus. The window does not take existing focus
+away from another application.
+
+| Control | Action |
+| --- | --- |
+| Space / N | Pause or resume / attempt one timestep while paused |
+| R / C | Reset original inputs / cancel and retain accepted state |
+| O | Inspect the labelled prior outcome; controls still address the current run |
+| D | Request an independent density audit of the displayed accepted snapshot |
+| Tab, Enter, Delete, Escape | Choose, edit, clear or abandon a draft field |
+| A | Validate/apply the complete draft as a new run |
+| 1–7 / B | Choose a bundled size / cycle explicit simulation backends in the draft |
+| Left drag or arrows | Orbit |
+| Right drag | Pan |
+| Wheel or +/- | Zoom |
+| F | Fit initial particles explicitly |
+| H / G | Toggle diagnostics / recreate the surface on the same graphics device |
+| Escape outside editing, or close | Request cooperative shutdown |
+
+The draft and selected request are separate. Invalid draft validation preserves the
+selected run. Construction failure creates a failed generation without borrowing old
+particles; O can inspect retained prior state. Relative edited paths resolve through
+the invocation/scene path rules. Launch numerical overlays remain active during edits.
+
+The panel reports status, effective resources, accepted/requested steps, simulated
+time, particle count, CFL warnings and failures. Density auditing uses a separate owned
+snapshot; it is neither solver timing nor a redraw side effect. Display FPS is only
+presentation cadence, not solver throughput.
+
+## Limits and recovery
+
+Particles are opaque spheres, with static boundaries shown as lines; there is no
+photorealistic surface reconstruction or interpolation. Graphics consumes accepted
+state only. A display/surface failure must not become a numerical acceptance decision.
+Shutdown can wait for synchronous numerical/driver work; no universal deadline is promised.
+
+The supported verification environment is x86_64 Linux/WSL2, WSLg and software Vulkan.
+Hardware Vulkan and other platforms require their own qualification. Linux commonly
+needs `libxkbcommon0`; X11 additionally needs `libxkbcommon-x11-0` and `libxcb-xkb1`.
+Run `doctor graphics` for an adapter check; that alone does not test native window events.

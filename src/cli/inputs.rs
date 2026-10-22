@@ -5,7 +5,7 @@ use std::{fs, path::Path};
 
 use maelstrom::{
     config::{
-        ConfigurationOverlay, ResolvedConfiguration, load_configuration, parse_configuration,
+        ConfigurationOverlay, ResolvedConfiguration, load_configuration,
         parse_configuration_overlay, resolve_effective_configuration,
     },
     scene::{
@@ -14,47 +14,31 @@ use maelstrom::{
     },
 };
 
-use super::{CliError, arguments::Inputs};
-
-const DEFAULTS: &str = include_str!("../../config/defaults-v4.toml");
-
-pub(super) const SCENES: &[(&str, &str)] = &[
-    (
-        "falling-block-04",
-        include_str!("../../scenes/falling-block-04.toml"),
-    ),
-    (
-        "falling-block-06",
-        include_str!("../../scenes/falling-block-06.toml"),
-    ),
-    (
-        "falling-block-08",
-        include_str!("../../scenes/falling-block-08.toml"),
-    ),
-    (
-        "falling-block-10",
-        include_str!("../../scenes/falling-block-10.toml"),
-    ),
-    (
-        "falling-block-12",
-        include_str!("../../scenes/falling-block-12.toml"),
-    ),
-    (
-        "falling-block-16",
-        include_str!("../../scenes/falling-block-16.toml"),
-    ),
-    (
-        "falling-block-20",
-        include_str!("../../scenes/falling-block-20.toml"),
-    ),
-];
+use super::{CliError, arguments::Inputs, bundled};
 
 pub(super) struct ResolvedInputs {
     pub configuration: ResolvedConfiguration,
     pub scene: Option<ResolvedScene>,
 }
 
-pub(super) fn resolve(inputs: &Inputs) -> Result<ResolvedInputs, CliError> {
+pub(super) fn resolve_in(
+    inputs: &Inputs,
+    storage: &super::storage::Storage,
+) -> Result<ResolvedInputs, CliError> {
+    let mut inputs = inputs.clone();
+    if let Some(selection) = &inputs.scene {
+        inputs.scene = Some(match storage.scene(selection)? {
+            Some(path) => path.to_string_lossy().into_owned(),
+            None => selection
+                .strip_prefix("builtin:")
+                .unwrap_or(selection)
+                .to_owned(),
+        });
+    }
+    resolve_document(&inputs)
+}
+
+fn resolve_document(inputs: &Inputs) -> Result<ResolvedInputs, CliError> {
     let mut overlay = overrides(&inputs.overrides)?;
     if let Some(factor) = inputs.refine_timestep {
         if overlay.numerical.refine_timestep.is_some() {
@@ -82,18 +66,16 @@ pub(super) fn resolve(inputs: &Inputs) -> Result<ResolvedInputs, CliError> {
             scene: None,
         });
     };
-    let named = SCENES.iter().find(|(name, _)| *name == selection);
-    let scene = if let Some((_, source)) = named {
+    let scene = if let Some(source) = bundled::scene(selection) {
         let document = parse_scene(source)
             .map_err(|error| CliError::input(format!("bundled scene {selection:?}: {error}")))?;
-        let defaults =
-            parse_configuration(DEFAULTS).map_err(|error| CliError::input(error.to_string()))?;
-        resolve_scene(
-            &document,
-            Some(configuration.as_ref().unwrap_or(&defaults)),
-            Some(&overlay),
-        )
-        .map_err(|error| CliError::input(format!("scene {selection:?}: {error}")))?
+        let resolved = if let Some(configuration) = &configuration {
+            resolve_scene_with_configuration(&document, configuration, Some(&overlay))
+        } else {
+            let selected = bundled::configuration(&document)?;
+            resolve_scene(&document, selected.as_ref(), Some(&overlay))
+        };
+        resolved.map_err(|error| CliError::input(format!("scene {selection:?}: {error}")))?
     } else if let Some(configuration) = &configuration {
         let source =
             fs::read_to_string(selection).map_err(|error| scene_read_error(selection, error))?;

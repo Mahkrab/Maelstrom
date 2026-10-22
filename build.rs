@@ -3,6 +3,9 @@
 
 use std::{env, fs, path::PathBuf, process::Command};
 
+#[path = "build_support/bundled.rs"]
+mod bundled;
+
 fn run(command: &mut Command) {
     let output = command
         .output()
@@ -16,6 +19,13 @@ fn run(command: &mut Command) {
 }
 
 fn main() {
+    for directory in ["scenes", "config", "build_support"] {
+        println!("cargo:rerun-if-changed={directory}");
+    }
+    let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory"));
+    let catalogue = bundled::generate(&root).expect("generate bundled scene catalogue");
+    let out = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo OUT_DIR"));
+    fs::write(out.join("bundled_inputs.rs"), catalogue).expect("write bundled scene catalogue");
     #[cfg(feature = "render")]
     export_build_identity();
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_CUDA");
@@ -141,8 +151,9 @@ fn export_build_identity() {
         PathBuf::from("Cargo.lock"),
         PathBuf::from("build.rs"),
     ];
-    files(std::path::Path::new("src"), &mut paths);
-    files(std::path::Path::new("native"), &mut paths);
+    for directory in ["src", "native", "build_support", "scenes", "config"] {
+        files(std::path::Path::new(directory), &mut paths);
+    }
     paths.sort();
     let mut digest = Sha256::new();
     for path in paths {

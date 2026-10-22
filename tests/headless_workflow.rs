@@ -51,6 +51,41 @@ fn request(steps: u64, checkpoints: &[u64]) -> RunRequest {
     }
 }
 
+#[test]
+fn accepted_step_observers_preserve_results_and_never_observe_failed_attempts() {
+    let input = scene("", vec![particle(0, 0.0)], vec![]);
+    let expected = run(&input, request(3, &[0, 1, 3]));
+    let mut steps = Vec::new();
+    let observed = maelstrom::workflow::run_with_observer(
+        &input,
+        request(3, &[0, 1, 3]),
+        Default::default(),
+        || false,
+        |step| steps.push(step),
+    );
+    assert_eq!(steps, [1, 2, 3]);
+    assert_eq!(observed.to_json().unwrap(), expected.to_json().unwrap());
+    steps.clear();
+    let zero = maelstrom::workflow::run_with_observer(
+        &input,
+        request(0, &[]),
+        Default::default(),
+        || false,
+        |step| steps.push(step),
+    );
+    assert_eq!(zero.status(), CompletionStatus::Completed);
+    assert!(steps.is_empty());
+    let cancelled = maelstrom::workflow::run_with_observer(
+        &input,
+        request(3, &[]),
+        Default::default(),
+        || true,
+        |step| steps.push(step),
+    );
+    assert_eq!(cancelled.status(), CompletionStatus::Cancelled);
+    assert!(steps.is_empty());
+}
+
 fn particle_bits(particles: impl IntoIterator<Item = Particle>) -> Vec<(u64, [u32; 6])> {
     particles
         .into_iter()

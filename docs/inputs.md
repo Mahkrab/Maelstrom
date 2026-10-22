@@ -1,9 +1,52 @@
-# Configuration and scene formats
+# Scenes, geometry and configuration
 
 Maelstrom accepts strict TOML inputs with `schema_version = 1`. Unknown fields and unsupported
 versions fail rather than acquiring an implicit meaning. Numerical inputs and derived calculations
 use binary32; coordinates are right-handed with positive Y upward, in metres, seconds and kilograms.
 Names and descriptions must contain non-whitespace text and no control characters.
+
+## Your scene library
+
+Start from an editable copy rather than changing installed examples:
+
+```sh
+maelstrom scenes create water --from builtin:falling-block-04
+maelstrom paths
+maelstrom inspect water --backend serial-grid
+maelstrom validate water
+```
+
+Each package is `<scenes-root>/water/scene.toml` plus `config.toml`. The scene document
+holds particle/lattice geometry and ordered static planes. Its configuration reference
+is scene-relative, so moving the package does not depend on the shell's working
+directory. Creation copies effective primary numerical values, not inspection-only
+derived diagnostics. There is no mesh or arbitrary external geometry format.
+
+Without overrides, scenes live in `$XDG_DATA_HOME/maelstrom/scenes`, defaulting to
+`~/.local/share/maelstrom/scenes`. Set absolute `MAELSTROM_SCENES_DIR` to relocate
+the library, or pass `--scenes-dir PATH` to override that variable for one command.
+Named lookup never searches random working-directory folders. An explicit
+`./scene.toml` remains independent of the library. Duplicate user/bundled names
+require `user:name` or `builtin:name`; discovery is ordered and does not create files.
+
+Compiled runs are a different library: `$XDG_DATA_HOME/maelstrom/runs`, overridden
+by `MAELSTROM_RUNS_DIR` or `--runs-dir`. See [compiled output](export.md).
+`maelstrom config show` displays application preferences from
+`$XDG_CONFIG_HOME/maelstrom/config.toml`, defaulting to `~/.config/maelstrom/config.toml`.
+The preferences schema permits only `schema_version = 1`, `backend`, `threads`,
+`device` and `block_size`. Explicit execution selection takes precedence; these
+preferences never override scene physics. For example:
+
+```toml
+schema_version = 1
+backend = "threaded-grid"
+threads = 4
+```
+
+Storage environment overrides must be absolute. Relative explicit CLI paths are
+resolved against the invocation directory. Invalid/relative XDG roots use the normal
+HOME fallback. Unknown preference fields and schema versions fail rather than changing
+the numerical model implicitly.
 
 ## Configuration resolution
 
@@ -19,6 +62,11 @@ An omitted primary field inherits the earlier layer. Resolution applies:
 An external scene's configuration path is relative to that scene's directory. `--config FILE`
 replaces the selected base document and retains the scene overlay. Bundled scenes and their base
 configuration are embedded in the executable, so named scenes also work outside the checkout.
+The build discovers the top-level `scenes/*.toml` and `config/*.toml` files in sorted order;
+scene selectors come from filenames without `.toml`. Adding or removing a shipped scene
+requires a rebuild, not a Rust registry edit. Filenames use ASCII letters, digits, hyphens
+and underscores, with stems of at most 120 characters. Each scene retains its own relative
+configuration reference. Personal scenes belong in the editable library and need no rebuild.
 Environment variables do not select numerical inputs. `inspect --format json` exposes every
 resolved value, derived quantity, field provenance and technical comparison key.
 
@@ -171,7 +219,8 @@ values. Scene keys add ordered particle identities/state, planes and randomness.
 descriptions, file paths and field provenance do not decide numerical equivalence. They remain
 available for inspection. CLI result records contain the complete effective inputs for replay.
 
-Neighbour discovery is an execution choice (`run --backend brute-force` or `uniform-grid`),
+Neighbour discovery is an execution choice (`--backend brute-force`, `serial-grid`,
+`threaded-grid` or `cuda`, with `auto` as the resource-selection policy),
 not a TOML numerical setting. It leaves configuration and physical input identities unchanged;
 backend and run identities distinguish execution. Full-result replay restores the recorded search.
 

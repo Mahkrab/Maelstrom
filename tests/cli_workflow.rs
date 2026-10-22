@@ -75,7 +75,10 @@ fn saved_playback_command_is_optional_and_explains_its_non_numerical_input() {
         );
     }
     #[cfg(not(feature = "viewer"))]
-    assert_eq!(output.status.code(), Some(2));
+    {
+        success(&output);
+        assert_eq!(cli(&["play", "frames"]).status.code(), Some(3));
+    }
 }
 
 #[cfg(feature = "viewer")]
@@ -171,9 +174,9 @@ fn help_version_and_operation_help_explain_the_workflow() {
         "validate",
         "inspect",
         "run",
-        "replay",
-        "Examples:",
-        "Precedence:",
+        "rerun",
+        "compile",
+        "doctor",
         "--quiet",
         "--verbose",
         "--format",
@@ -181,6 +184,7 @@ fn help_version_and_operation_help_explain_the_workflow() {
         assert!(help.contains(expected), "missing {expected} in {help}");
     }
     assert!(output.stderr.is_empty());
+    assert!(!help.contains("Examples:") && !help.contains("cuda-check"));
     let version = cli(&["--version"]);
     success(&version);
     assert_eq!(
@@ -203,7 +207,7 @@ fn help_version_and_operation_help_explain_the_workflow() {
         "--config",
         "--set",
         "rounded up",
-        "never implicit",
+        "--unpaced",
     ] {
         assert!(help.contains(expected));
     }
@@ -215,7 +219,24 @@ fn bundled_scenes_and_defaults_are_discoverable_outside_the_checkout() {
     success(&output);
     let scenes = document(&output);
     assert_eq!(scenes["schema_version"], 1);
-    assert_eq!(scenes["scenes"].as_array().unwrap().len(), 7);
+    let mut expected: Vec<_> = fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("scenes"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "toml")
+        })
+        .map(|path| path.file_stem().unwrap().to_str().unwrap().to_owned())
+        .collect();
+    expected.sort();
+    let discovered: Vec<_> = scenes["scenes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|scene| scene["origin"] == "builtin")
+        .map(|scene| scene["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(discovered, expected);
     for name in [
         "falling-block-04",
         "falling-block-06",
@@ -432,7 +453,7 @@ fn configured_iteration_work_is_identified_and_replays_exactly() {
     let data: Value = serde_json::from_slice(&fs::read(dir.path("eight.json")).unwrap()).unwrap();
     assert_eq!(
         data["backend"],
-        "serial-brute-force-pbf-binary32-8-jacobi-v2"
+        "serial-uniform-grid-pbf-binary32-8-jacobi-v2"
     );
     let replay = command(&dir.0)
         .args(["replay", "eight.json", "--format", "json"])
@@ -860,7 +881,7 @@ fn replay_rejects_the_previous_projection_contract_explicitly() {
     assert_eq!(previous["schema_version"], 1);
     assert_eq!(
         previous["backend"],
-        "serial-brute-force-pbf-binary32-four-jacobi-v2"
+        "serial-uniform-grid-pbf-binary32-four-jacobi-v2"
     );
     previous["backend"] = "serial-brute-force-pbf-binary32-four-jacobi-v1".into();
     dir.write("previous.json", &previous.to_string());
@@ -1149,6 +1170,7 @@ fn cancelled_cli_for(backend: &str) {
 fn measured_cli_retains_replay_identity_and_profiles_only_when_requested() {
     let args = [
         "run",
+        "--unpaced",
         "falling-block-04",
         "--steps",
         "3",
@@ -1206,7 +1228,14 @@ fn measured_cli_retains_replay_identity_and_profiles_only_when_requested() {
     }
     let invalid = cli(&["run", "falling-block-04", "--steps", "1", "--stage-profile"]);
     assert_eq!(invalid.status.code(), Some(2));
-    let text = cli(&["run", "falling-block-04", "--steps", "0", "--measure"]);
+    let text = cli(&[
+        "run",
+        "falling-block-04",
+        "--steps",
+        "0",
+        "--measure",
+        "--unpaced",
+    ]);
     success(&text);
     assert!(
         String::from_utf8(text.stdout)
@@ -1234,6 +1263,7 @@ fn explicit_discovery_selection_preserves_inputs_and_replays_every_work_count() 
         let work = format!("solver_iterations={iterations}");
         let base = [
             "run",
+            "--unpaced",
             "falling-block-04",
             "--steps",
             "2",
@@ -1245,7 +1275,9 @@ fn explicit_discovery_selection_preserves_inputs_and_replays_every_work_count() 
             "json",
             "--quiet",
         ];
-        let reference = cli(&base);
+        let mut reference_args = base.to_vec();
+        reference_args.extend(["--backend", "brute-force"]);
+        let reference = cli(&reference_args);
         success(&reference);
         let explicit = command(&dir.0)
             .args(base)
@@ -1317,7 +1349,7 @@ fn unsupported_discovery_and_replay_contracts_cannot_silently_substitute() {
         "--steps",
         "1",
         "--backend",
-        "cuda",
+        "unsupported",
     ]);
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
@@ -1387,7 +1419,7 @@ fn grid_publication_keeps_no_clobber_guarantees_and_snapshot_bits() {
     let help = cli(&["run", "--help"]);
     success(&help);
     let help = String::from_utf8(help.stdout).unwrap();
-    for expected in ["--backend", "brute-force", "uniform-grid"] {
+    for expected in ["--backend", "brute-force", "serial-grid"] {
         assert!(help.contains(expected));
     }
 }
@@ -1498,8 +1530,6 @@ fn threaded_default_uses_available_capacity_and_invalid_combinations_fail() {
             .unwrap()
     );
     let cases: &[&[&str]] = &[
-        &["--threads", "2"],
-        &["--execution", "threaded"],
         &["--backend", "uniform-grid", "--threads", "2"],
         &[
             "--backend",
@@ -1555,7 +1585,7 @@ fn threaded_default_uses_available_capacity_and_invalid_combinations_fail() {
     let help = cli(&["run", "--help"]);
     success(&help);
     let text = String::from_utf8(help.stdout).unwrap();
-    assert!(text.contains("--execution") && text.contains("--threads"));
+    assert!(!text.contains("--execution") && text.contains("--threads"));
 }
 
 #[test]
