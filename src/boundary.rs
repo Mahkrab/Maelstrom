@@ -150,6 +150,7 @@ impl Plane {
     ///
     /// Returns [`NumericalError`] under the same conditions as
     /// [`Plane::constraint`].
+    #[inline(always)]
     pub fn contains(self, point: Vec3) -> Result<bool, NumericalError> {
         Ok(self.constraint(point)? >= 0.0)
     }

@@ -218,6 +218,163 @@ fn hardware_projection_group_keeps_candidate_failure_before_plane_failure() {
 }
 
 #[test]
+#[ignore = "requires an explicitly selected CUDA hardware test run"]
+fn hardware_multiplier_errors_keep_owner_checks_before_prefix_squares() {
+    let config = crate::config::resolve_effective_configuration(None, None, None).unwrap();
+    let h = 2.0_f32.powi(-10);
+    for threads in [32, 64, 128, 256] {
+        let mut gpu = CudaSolver::new(0, threads).unwrap();
+        for (positions, neighbours, reciprocal_power, owner, quantity) in [
+            // Each substituted direction is about 1.52e38: finite individually,
+            // but their owner sum overflows. Prefix squares also overflow; they
+            // must not mask the earlier owner-direction check (28).
+            (
+                vec![
+                    Vec3::ZERO,
+                    Vec3::ZERO,
+                    Vec3::ZERO,
+                    Vec3::new(h / 2.0, 0.0, 0.0),
+                ],
+                vec![0_u32, 1, 2],
+                85,
+                3,
+                28,
+            ),
+            // Opposite directions cancel in the owner. Individual squares are
+            // about 2.73e38; their ordered prefix sum overflows (31).
+            (
+                vec![
+                    Vec3::new(-h / 2.0, 0.0, 0.0),
+                    Vec3::new(h / 2.0, 0.0, 0.0),
+                    Vec3::ZERO,
+                ],
+                vec![0_u32, 1],
+                22,
+                2,
+                31,
+            ),
+            // With self first, the same cancellation leaves the suffix's first
+            // individual squared direction to fail (30).
+            (
+                vec![
+                    Vec3::ZERO,
+                    Vec3::new(-h / 2.0, 0.0, 0.0),
+                    Vec3::new(h / 2.0, 0.0, 0.0),
+                ],
+                vec![1_u32, 2],
+                24,
+                0,
+                30,
+            ),
+        ] {
+            let count = positions.len();
+            let mut s = settings(&config, count, 0).unwrap();
+            s.radius = h;
+            s.rest_density = 2.0_f32.powi(-reciprocal_power);
+            s.relaxation = 1.0;
+            s.entries = neighbours.len() as u64;
+            let particles: Vec<_> = positions
+                .iter()
+                .enumerate()
+                .map(|(i, &position_m)| Particle {
+                    identity: i as u64,
+                    position_m,
+                    velocity_m_s: Vec3::ZERO,
+                })
+                .collect();
+            gpu.prepare(s, &particles, &[]).unwrap();
+            let offsets: Vec<u64> = (0..=count)
+                .map(|i| if i <= owner { 0 } else { s.entries })
+                .collect();
+            gpu.context.inner.upload(11, &neighbours).unwrap();
+            gpu.context.inner.upload(13, &offsets).unwrap();
+            gpu.context
+                .inner
+                .upload(2, &positions.into_iter().map(array).collect::<Vec<_>>())
+                .unwrap();
+            assert_eq!(
+                gpu.context.inner.checked_launch(s, 6, threads).unwrap(),
+                (owner as u64) << 32 | quantity
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires an explicitly selected CUDA hardware test run"]
+fn hardware_multiplier_prefix_keeps_self_order_and_rechecks_current_support() {
+    let config = crate::config::resolve_effective_configuration(None, None, None).unwrap();
+    for threads in [32, 64, 128, 256] {
+        let mut gpu = CudaSolver::new(0, threads).unwrap();
+        for count in [1, 3, 31, 32, 33, 129] {
+            let initial: Vec<_> = (0..count)
+                .map(|i| {
+                    Vec3::new(
+                        (i % 7) as f32 * 0.021,
+                        ((i / 7) % 5) as f32 * 0.019,
+                        (i / 35) as f32 * 0.017,
+                    )
+                })
+                .collect();
+            let rows =
+                crate::neighbours::brute_force(&initial, config.derived.support_radius_m).unwrap();
+            let particles: Vec<_> = initial
+                .iter()
+                .enumerate()
+                .map(|(i, &position_m)| Particle {
+                    identity: i as u64,
+                    position_m,
+                    velocity_m_s: Vec3::ZERO,
+                })
+                .collect();
+            let mut s = settings(&config, count, 0).unwrap();
+            gpu.prepare(s, &particles, &[]).unwrap();
+            gpu.context
+                .inner
+                .upload(2, &initial.iter().copied().map(array).collect::<Vec<_>>())
+                .unwrap();
+            gpu.discover(&mut s, &initial).unwrap();
+            for displaced in [false, true, false] {
+                let current: Vec<_> = initial
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &p)| {
+                        if displaced && i % 3 == 1 {
+                            p + Vec3::new(1.0, 0.0, 0.0)
+                        } else {
+                            p
+                        }
+                    })
+                    .collect();
+                let expected = crate::fluid::compute_jacobi_stage(
+                    &current,
+                    &rows,
+                    config.pbf_parameters().unwrap(),
+                )
+                .unwrap();
+                gpu.context
+                    .inner
+                    .upload(2, &current.into_iter().map(array).collect::<Vec<_>>())
+                    .unwrap();
+                gpu.operation(s, 6).unwrap();
+                for (slot, values) in [
+                    (4, expected.normalised_densities),
+                    (5, expected.constraints),
+                    (6, expected.multipliers),
+                ] {
+                    let actual: Vec<f32> = gpu.context.inner.download(slot, count).unwrap();
+                    assert_eq!(
+                        actual.into_iter().map(f32::to_bits).collect::<Vec<_>>(),
+                        values.into_iter().map(f32::to_bits).collect::<Vec<_>>(),
+                        "count {count}, block {threads}, displaced {displaced}, slot {slot}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn capacity_arithmetic_rejects_unrepresentable_workspace_without_allocating() {
     assert!(
         storage_sizes(Settings {

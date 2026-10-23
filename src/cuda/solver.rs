@@ -391,3 +391,7 @@ const QUANTITIES: [&str; 52] = [
 #[cfg(test)]
 #[path = "solver_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "correction_tests.rs"]
+mod correction_tests;
