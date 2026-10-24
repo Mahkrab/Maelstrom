@@ -488,7 +488,7 @@ fn hardware_batched_sort_matches_integer_keys_and_individual_passes() {
     }
 }
 
-fn discovered(
+pub(super) fn discovered(
     gpu: &mut CudaSolver,
     positions: &[Vec3],
     radius: f32,

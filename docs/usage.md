@@ -19,10 +19,12 @@ Use `--features viewer,cuda` to include NVIDIA simulation. For a headless CPU ex
 omit `--features`; `--features render` adds windowless compilation without a window library.
 Offline installation additionally requires cached dependencies.
 
-Viewing/compilation use Vulkan. WSLg or an X11/Wayland display is required for windows,
+Viewing/compilation use Vulkan or OpenGL ES. WSLg or an X11/Wayland display is required for windows,
 not for windowless compilation. Use `doctor graphics --software` and the corresponding
 `--software` launch option when intentionally selecting software Vulkan. CUDA simulation
-and graphics adapters are independent. See [CUDA setup](cuda.md).
+and graphics adapters are independent. Hardware Vulkan is preferred; accelerated OpenGL
+is also supported, including WSLg's D3D12 driver. See [CUDA setup](cuda.md) and
+[graphics troubleshooting](viewer.md#graphics-on-wslg).
 
 If commands are missing from an older installation, reinstall this checkout. A Cargo
 development build and the installed command are different executables; changing build

@@ -85,7 +85,7 @@ fn graphics(cli: &Cli, index: usize, software: bool) -> Result<(), CliError> {
     super::print_document(
         cli.format,
         format!("Graphics verified: {}", graphics.adapter_info.name),
-        json!({"schema_version":1,"name":graphics.adapter_info.name,"driver":graphics.adapter_info.driver,"software_requested":software,"window_checked":false}),
+        json!({"schema_version":1,"backend":format!("{:?}",graphics.adapter_info.backend),"device_type":format!("{:?}",graphics.adapter_info.device_type),"name":graphics.adapter_info.name,"driver":graphics.adapter_info.driver,"software_requested":software,"window_checked":false}),
     )
 }
 #[cfg(not(feature = "render"))]

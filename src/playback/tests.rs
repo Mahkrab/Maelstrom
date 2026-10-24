@@ -94,6 +94,37 @@ fn pixels_load_without_physical_inputs_or_the_recorded_cuda_device() {
     );
     assert_eq!(fs::read_dir(&f.root).unwrap().count(), 5);
 }
+
+#[test]
+fn large_particle_provenance_does_not_prevent_playing_existing_images() {
+    use std::io::Write;
+    let f = Fixture::new();
+    let path = f.root.join("manifest.json");
+    let mut writer = std::io::BufWriter::new(fs::File::create(&path).unwrap());
+    writer.write_all(b"{\"large_provenance\":\"").unwrap();
+    let chunk = vec![b'x'; 1024 * 1024];
+    for _ in 0..65 {
+        writer.write_all(&chunk).unwrap();
+    }
+    writer.write_all(b"\",").unwrap();
+    let original = serde_json::to_vec(&f.manifest).unwrap();
+    writer.write_all(&original[1..]).unwrap();
+    writer.flush().unwrap();
+    drop(writer);
+    assert!(fs::metadata(&path).unwrap().len() > 64 * 1024 * 1024);
+    let s = Sequence::open(&f.root).unwrap();
+    assert_eq!(s.frame_count(), 4);
+    assert_eq!(s.decode(3).unwrap(), f.rgba);
+    // Streaming must still validate the entire JSON document, including data
+    // following an otherwise valid playback index.
+    fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .unwrap()
+        .write_all(b" trailing corruption")
+        .unwrap();
+    assert!(Sequence::open(&f.root).is_err());
+}
 #[test]
 fn malformed_or_incomplete_manifests_do_not_become_playback_requests() {
     let f = Fixture::new();

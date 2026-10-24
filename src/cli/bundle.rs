@@ -5,24 +5,44 @@ use super::{
     arguments::{Cli, Compile, Runs},
     storage::{self, Storage},
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{fs, path::Path};
+use std::{fs, io::BufReader, path::Path};
+
+fn open(storage: &Storage, selection: &Path) -> Result<BufReader<fs::File>, CliError> {
+    let path = storage.run(selection)?;
+    let path = if path.is_dir() {
+        path.join("manifest.json")
+    } else {
+        path
+    };
+    let file = fs::File::open(path)
+        .map_err(|e| CliError::input(format!("selected run document: {}", e.kind())))?;
+    if !file
+        .metadata()
+        .map_err(|e| CliError::input(e.to_string()))?
+        .is_file()
+    {
+        return Err(CliError::input(
+            "selected run document must be a regular file".into(),
+        ));
+    }
+    Ok(BufReader::new(file))
+}
 
 pub(super) fn source(storage: &Storage, selection: &Path) -> Result<String, CliError> {
-    let path = storage.run(selection)?;
-    storage::read(
-        &if path.is_dir() {
-            path.join("manifest.json")
-        } else {
-            path
-        },
-        64 * 1024 * 1024,
-    )
+    use std::io::Read;
+    // Numerical reruns need the complete recorded input; unlike playback this
+    // route intentionally materialises it. Scene-document limits do not apply.
+    let mut text = String::new();
+    open(storage, selection)?
+        .read_to_string(&mut text)
+        .map_err(|e| CliError::input(format!("selected run document: {}", e.kind())))?;
+    Ok(text)
 }
 fn read(storage: &Storage, selection: &str) -> Result<Value, CliError> {
-    let text = source(storage, Path::new(selection))?;
-    let v: Value =
-        serde_json::from_str(&text).map_err(|e| CliError::input(format!("run manifest: {e}")))?;
+    let v: Value = serde_json::from_reader(open(storage, Path::new(selection))?)
+        .map_err(|e| CliError::input(format!("run manifest: {e}")))?;
     if v["schema_version"] != 1 || v["complete"] != true {
         return Err(CliError::input(
             "expected a completed schema-1 image manifest".into(),
@@ -58,13 +78,16 @@ pub(super) fn manage(cli: &Cli, storage: &Storage, command: &Runs) -> Result<u8,
                     .try_exists()
                     .map_err(|e| CliError::input(e.to_string()))?
                 {
-                    match storage::read(&path.join("manifest.json"), 64 * 1024 * 1024).and_then(
-                        |s| {
-                            serde_json::from_str::<Value>(&s)
-                                .map_err(|e| CliError::input(e.to_string()))
-                        },
-                    ) {
-                        Ok(v) if v["schema_version"] == 1 && v["complete"] == true => {
+                    #[derive(Deserialize)]
+                    struct Completion {
+                        schema_version: u32,
+                        complete: bool,
+                    }
+                    match open(storage, &path).and_then(|reader| {
+                        serde_json::from_reader::<_, Completion>(reader)
+                            .map_err(|e| CliError::input(e.to_string()))
+                    }) {
+                        Ok(v) if v.schema_version == 1 && v.complete => {
                             (true, "completed; frame integrity not checked")
                         }
                         _ => (false, "invalid manifest"),
@@ -136,11 +159,8 @@ pub(super) fn manage(cli: &Cli, storage: &Storage, command: &Runs) -> Result<u8,
 }
 #[cfg(feature = "render")]
 fn validate(storage: &Storage, run: &str) -> Result<(), CliError> {
-    let manifest = read(storage, run)?;
-    maelstrom::workflow::replay_options(
-        &serde_json::to_string(&manifest).map_err(|e| CliError::input(e.to_string()))?,
-    )
-    .map_err(|e| CliError::input(e.to_string()))?;
+    maelstrom::workflow::replay_options_from_reader(open(storage, Path::new(run))?)
+        .map_err(|e| CliError::input(e.to_string()))?;
     let sequence = maelstrom::playback::Sequence::open(&storage.run(Path::new(run))?)
         .map_err(|e| CliError::input(e.to_string()))?;
     for index in 0..sequence.frame_count() {

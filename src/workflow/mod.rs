@@ -620,6 +620,16 @@ pub fn replay_execution(
     Ok((scene, request, options.backend))
 }
 
+#[derive(Deserialize)]
+struct Replay {
+    schema_version: u32,
+    backend: String,
+    #[serde(default)]
+    execution: ExecutionMode,
+    request: RunRequest,
+    input: Option<RecordedInput>,
+}
+
 /// Restores discovery and exact worker settings alongside physical inputs.
 /// Historical records without execution settings remain serial. Threaded records
 /// require valid explicit settings and their matching backend contract. Replay
@@ -627,16 +637,23 @@ pub fn replay_execution(
 pub fn replay_options(
     json: &str,
 ) -> Result<(ResolvedScene, RunRequest, ExecutionOptions), RecordError> {
-    #[derive(Deserialize)]
-    struct Replay {
-        schema_version: u32,
-        backend: String,
-        #[serde(default)]
-        execution: ExecutionMode,
-        request: RunRequest,
-        input: Option<RecordedInput>,
-    }
-    let replay: Replay = serde_json::from_str(json)?;
+    resolve_replay(serde_json::from_str(json)?)
+}
+
+/// Reads and validates recorded numerical inputs without retaining unrelated
+/// image/provenance metadata. No solver or recorded device is acquired.
+///
+/// # Errors
+/// Returns an error for malformed JSON, incompatible versions or invalid inputs.
+pub fn replay_options_from_reader(
+    reader: impl std::io::Read,
+) -> Result<(ResolvedScene, RunRequest, ExecutionOptions), RecordError> {
+    resolve_replay(serde_json::from_reader(reader)?)
+}
+
+fn resolve_replay(
+    replay: Replay,
+) -> Result<(ResolvedScene, RunRequest, ExecutionOptions), RecordError> {
     record::version(replay.schema_version)?;
     let iterations = replay
         .input

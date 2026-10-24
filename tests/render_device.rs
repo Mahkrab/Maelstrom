@@ -1,4 +1,4 @@
-//! Real Vulkan drawing is an explicitly selected integration check. Pixel probes
+//! Real device drawing is an explicitly selected integration check. Pixel probes
 //! use an asymmetric fixture so a mirrored or vertically inverted view fails.
 #![cfg(feature = "render")]
 use maelstrom::{
@@ -11,18 +11,40 @@ use std::{sync::mpsc, time::Duration};
 #[test]
 #[ignore = "requires an explicitly available software Vulkan adapter"]
 fn software_vulkan_draws_known_geometry_depth_and_retains_input_bits() {
+    check_drawing(true);
+}
+
+#[test]
+#[ignore = "requires an explicitly available hardware graphics adapter"]
+fn hardware_draws_known_geometry_depth_and_retains_input_bits() {
+    check_drawing(false);
+}
+
+#[test]
+#[ignore = "requires an explicitly available hardware graphics adapter"]
+fn independent_hardware_render_threads_close_cleanly() {
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| check_drawing(false));
+        let second = scope.spawn(|| check_drawing(false));
+        first.join().unwrap();
+        second.join().unwrap();
+    });
+}
+
+fn check_drawing(software: bool) {
     let instance = Graphics::instance();
     let g = pollster::block_on(Graphics::new(
         &instance,
-        GraphicsSelection {
-            index: 0,
-            software: true,
-        },
+        GraphicsSelection { index: 0, software },
         None,
         wgpu::TextureFormat::Rgba8UnormSrgb,
     ))
     .unwrap();
-    eprintln!("Vulkan integration: {:?}", g.adapter_info);
+    eprintln!("Graphics integration: {:?}", g.adapter_info);
+    assert_eq!(
+        g.adapter_info.device_type == wgpu::DeviceType::Cpu,
+        software
+    );
     let camera = Camera {
         eye_m: [0.0, 0.0, 2.0],
         target_m: [0.0; 3],

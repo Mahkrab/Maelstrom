@@ -61,18 +61,24 @@ __device__ void discover_row(SolverBuffers b, SolverSettings s, unsigned int i,
     std::uint64_t stop=fill ? b.offsets[i+1] : 0;
     if (fill && (start>stop || stop>s.entries)) { c.error=52; return; }
     Cell origin=cell(b.position[i],s.width,i);
-    for (int x=-1;x<=1;++x) for (int y=-1;y<=1;++y) for (int z=-1;z<=1;++z) {
-        Cell target{origin.x+x,origin.y+y,origin.z+z,0,0};
+    for (int x=-1;x<=1;++x) for (int y=-1;y<=1;++y) {
+        // Each z-cell run keeps its own loop. The sorted cursor can advance
+        // between all three without repeating the column's lower-bound search.
+        Cell target{origin.x+x,origin.y+y,origin.z-1,0,0};
         unsigned int lo=0, hi=s.count;
         while (lo<hi) { auto mid=lo+(hi-lo)/2; if (less(b.cells[mid],target)) lo=mid+1; else hi=mid; }
-        for (auto k=lo;k<s.count && same(b.cells[k],target);++k) {
-            auto j=b.cells[k].index;
-            if (i!=j && separation(b.position[i],b.position[j],c)<s.radius) {
-                if (fill) {
-                    if (cursor==stop) { c.error=52; return; }
-                    b.neighbours[cursor]=j;
+        auto k=lo;
+        for (int z=-1;z<=1;++z) {
+            target.z=origin.z+z;
+            for (;k<s.count && same(b.cells[k],target);++k) {
+                auto j=b.cells[k].index;
+                if (i!=j && separation(b.position[i],b.position[j],c)<s.radius) {
+                    if (fill) {
+                        if (cursor==stop) { c.error=52; return; }
+                        b.neighbours[cursor]=j;
+                    }
+                    ++cursor;
                 }
-                ++cursor;
             }
         }
     }

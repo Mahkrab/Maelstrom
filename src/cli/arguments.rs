@@ -127,6 +127,7 @@ pub(super) enum Doctor {
     Graphics {
         #[arg(long, default_value_t = 0)]
         graphics_adapter: usize,
+        /// Require CPU graphics; independent of the simulation backend
         #[arg(long)]
         software: bool,
     },
@@ -250,6 +251,7 @@ pub(super) struct Compile {
     pub frame_stride: Option<u64>,
     #[arg(long, default_value_t = 0)]
     pub graphics_adapter: usize,
+    /// Require CPU graphics; independent of the simulation backend
     #[arg(long)]
     pub software: bool,
     #[arg(long)]
@@ -267,6 +269,7 @@ pub(super) struct Play {
     pub repeat: bool,
     #[arg(long, default_value_t = 0)]
     pub graphics_adapter: usize,
+    /// Require CPU graphics; independent of the simulation backend
     #[arg(long)]
     pub software: bool,
 }
@@ -288,6 +291,7 @@ pub(super) struct View {
     pub height: Option<u32>,
     #[arg(long, default_value_t = 0)]
     pub graphics_adapter: usize,
+    /// Require CPU graphics; independent of the simulation backend
     #[arg(long)]
     pub software: bool,
     #[arg(long)]
@@ -310,6 +314,7 @@ pub(super) struct Export {
     pub step_stride: Option<u64>,
     #[arg(long, global = true, default_value_t = 0)]
     pub graphics_adapter: usize,
+    /// Require CPU graphics; independent of the simulation backend
     #[arg(long, global = true)]
     pub software: bool,
     #[arg(long, global = true)]

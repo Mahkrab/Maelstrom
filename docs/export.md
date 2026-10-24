@@ -15,7 +15,7 @@ maelstrom play <run-id>
 ```
 
 Compilation runs a fresh simulation, samples accepted steps and renders them without a
-window. Vulkan and a compatible graphics driver are still required. `--software`
+window. Vulkan or OpenGL ES and a compatible graphics driver are still required. `--software`
 intentionally selects software Vulkan; it is not a solver backend.
 
 Without `--output`, a new ID is created in the run library printed by `maelstrom paths`.
@@ -79,9 +79,13 @@ The manifest alone is sufficient for playback and numerical reruns.
 
 Reproducibility means identical decoded pixels for the qualified binary, adapter/driver,
 settings and accepted observations. Different drivers/devices need not produce identical
-pixels. Encoded PNG bytes and decoded pixels are hashed separately. The player bounds
-manifests to 64 MiB, PNGs to 300 MiB and dimensions to 8192 per side; the export frame-count
-ceiling is not a guarantee that every possible manifest fits the player.
+pixels. Encoded PNG bytes and decoded pixels are hashed separately. Playback streams
+the manifest, retaining its frame index and skipping numerical provenance. Large recorded
+particle inputs do not impose a manifest-size cutoff or require recompilation. The index
+is limited to one million frames, PNGs to 300 MiB and dimensions to 8192 per side.
+`runs list` also streams metadata; `runs validate` additionally reconstructs the recorded
+input to check it, so its memory use grows with particle count. `runs show` and numerical
+reruns load the selected document and require memory for that input.
 
 ## Failures and costs
 
@@ -94,3 +98,15 @@ Compilation uses a lossless synchronous frame boundary, unlike the live viewer's
 coalesced observations. Numerical outcome and image publication are distinct.
 Solver work, graphics/readback and PNG encoding have separate manifest timings;
 total wall time includes additional work and is not an interchangeable solver benchmark.
+
+The default stride is 1: every accepted timestep produces an image, including when
+the timestep has been refined. For example, `--steps 480 --frame-stride 4` stores
+121 images while still computing all 480 steps. Choose the stride for the desired
+playback sampling, independently of the solver timestep. Lower image dimensions also
+reduce rendering, readback and encoding costs.
+
+`--software` renders particles on the CPU even when the solver uses CUDA. At large
+particle counts, the GPU can finish a solver step then wait while the CPU renders its
+image. Check `doctor graphics` before compiling: a hardware graphics adapter avoids
+that software rendering cost. PNG encoding, readback and file publication still occur;
+hardware compilation is not expected to match a solver-only `run` timing.

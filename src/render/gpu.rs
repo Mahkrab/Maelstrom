@@ -1,4 +1,4 @@
-//! Vulkan resources are presentation-owned. The same scene pass accepts a surface
+//! Graphics resources are presentation-owned. The same scene pass accepts a surface
 //! view or a caller-owned texture view; window creation stays outside rendering.
 
 use super::{
@@ -6,10 +6,15 @@ use super::{
     camera::{dot, position, sub},
 };
 use crate::scene::Particle;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use wgpu::util::DeviceExt;
 
-/// Explicit selection among Vulkan adapters of the requested device class.
+// Mesa's D3D12 driver registers thread-local cleanup callbacks. Keep its loader
+// alive until process exit so a rendering thread cannot unload those callbacks
+// before its own thread-local destructors run. Devices remain independently owned.
+static GRAPHICS_LOADER: OnceLock<wgpu::Instance> = OnceLock::new();
+
+/// Explicit selection among graphics adapters of the requested device class.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GraphicsSelection {
     /// Zero-based index within hardware or software adapters, enumerated at launch.
@@ -40,7 +45,7 @@ pub struct Graphics {
     pub device: wgpu::Device,
     /// Graphics submission queue, separate from simulation execution.
     pub queue: wgpu::Queue,
-    /// Selected Vulkan adapter and driver context.
+    /// Selected graphics adapter and driver context.
     pub adapter_info: wgpu::AdapterInfo,
     /// Selected adapter, retained for surface capability queries.
     pub adapter: wgpu::Adapter,
@@ -54,34 +59,55 @@ pub struct Graphics {
     failure: Arc<Mutex<Option<String>>>,
 }
 impl Graphics {
-    /// Creates a Vulkan-only instance without environment-selected backends.
+    /// Enables Vulkan and OpenGL ES, including WSLg's accelerated D3D12 driver.
     pub fn instance() -> wgpu::Instance {
-        wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN,
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        })
+        Self::instance_with_descriptor(wgpu::InstanceDescriptor::new_without_display_handle())
+    }
+    pub(crate) fn instance_with_descriptor(descriptor: wgpu::InstanceDescriptor) -> wgpu::Instance {
+        let create = |descriptor| {
+            wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,
+                ..descriptor
+            })
+        };
+        GRAPHICS_LOADER
+            .get_or_init(|| create(wgpu::InstanceDescriptor::new_without_display_handle()));
+        // Each caller needs its own EGL context; sharing the retained loader's
+        // context between rendering threads can fail with EGL_BAD_ACCESS.
+        create(descriptor)
     }
     /// Acquires exactly the selected adapter and compiles shared scene pipelines.
-    /// An incompatible surface or device is an error, with no backend fallback.
+    /// Software rendering is never an implicit fallback from hardware selection.
     pub async fn new(
         instance: &wgpu::Instance,
         selection: GraphicsSelection,
         surface: Option<&wgpu::Surface<'_>>,
         format: wgpu::TextureFormat,
     ) -> Result<Self, RenderError> {
-        let adapter = Self::select_adapter(instance, selection).await?;
+        let adapter = Self::select_adapter(instance, selection, surface).await?;
         Self::from_adapter(adapter, surface, format).await
     }
     pub(crate) async fn select_adapter(
         instance: &wgpu::Instance,
         selection: GraphicsSelection,
+        surface: Option<&wgpu::Surface<'_>>,
     ) -> Result<wgpu::Adapter, RenderError> {
-        let adapters = instance.enumerate_adapters(wgpu::Backends::VULKAN).await;
-        let adapter=adapters.into_iter().filter(|a| (a.get_info().device_type==wgpu::DeviceType::Cpu)==selection.software).nth(selection.index)
-            .ok_or_else(|| RenderError(format!(
-                "Vulkan {} adapter {} unavailable; software rendering requires --software explicitly",
+        let mut adapters = instance
+            .enumerate_adapters(wgpu::Backends::VULKAN | wgpu::Backends::GL)
+            .await;
+        // Prefer native Vulkan when both APIs expose hardware. A usable WSLg
+        // OpenGL adapter still takes precedence over CPU Vulkan rendering.
+        adapters.sort_by_key(|a| a.get_info().backend != wgpu::Backend::Vulkan);
+        let adapter = adapters.into_iter()
+            .filter(|a| (a.get_info().device_type == wgpu::DeviceType::Cpu) == selection.software)
+            .filter(|a| surface.is_none_or(|s| a.is_surface_supported(s)))
+            .nth(selection.index)
+            .ok_or_else(|| {
+                RenderError(format!(
+                "Vulkan/OpenGL {} adapter {} unavailable; software rendering requires --software explicitly",
                 if selection.software { "software" } else { "hardware" }, selection.index
-            )))?;
+                ))
+            })?;
         Ok(adapter)
     }
     pub(crate) async fn from_adapter(
@@ -96,13 +122,15 @@ impl Graphics {
             && !adapter.is_surface_supported(surface)
         {
             return Err(RenderError(
-                "selected Vulkan adapter does not support this window surface".into(),
+                "selected graphics adapter does not support this window surface".into(),
             ));
         }
         let adapter_info = adapter.get_info();
         let limits = wgpu::Limits {
             max_texture_dimension_2d: 8192.min(adapter.limits().max_texture_dimension_2d),
-            ..wgpu::Limits::default()
+            // Drawing needs no compute resources. Requiring their default
+            // limits would reject otherwise usable OpenGL ES 3.0 adapters.
+            ..wgpu::Limits::downlevel_webgl2_defaults()
         };
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {

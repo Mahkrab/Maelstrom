@@ -13,7 +13,7 @@ use std::{
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, WindowEvent},
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow},
     keyboard::{Key, NamedKey},
     window::{Window, WindowId},
 };
@@ -43,8 +43,7 @@ pub fn run(
     let first = sequence.decode(0)?;
     #[cfg(target_os = "linux")]
     crate::viewer::check_keyboard_libraries()?;
-    let event_loop =
-        EventLoop::new().map_err(|e| window_error("playback event loop unavailable", e))?;
+    let event_loop = crate::viewer::create_event_loop()?;
     eprintln!(
         "maelstrom playback: saved images only; no simulation. Space play/pause; Left/Right seek; Home/End endpoints; R restart; +/- speed; Escape close"
     );
@@ -190,7 +189,11 @@ impl ApplicationHandler for Player {
                     )
                     .map_err(|e| window_error("playback window unavailable", e))?,
             );
-            let display = Display::new(window.clone(), self.selection)?;
+            let display = Display::new(
+                window.clone(),
+                self.selection,
+                event_loop.owned_display_handle(),
+            )?;
             let image = Image::new(
                 &display.graphics,
                 display.config.format,

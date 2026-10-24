@@ -2,11 +2,14 @@
 //! checked against both recorded hashes and decoded only when requested.
 
 use crate::{export::Frame, render::RenderError};
-use serde::Deserialize;
+use serde::{
+    Deserialize, Deserializer,
+    de::{self, SeqAccess, Visitor},
+};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::{Cursor, Read},
+    io::{BufReader, Cursor, Read},
     path::{Path, PathBuf},
 };
 
@@ -17,6 +20,7 @@ struct Manifest {
     frame_count: usize,
     accepted_steps: String,
     step_stride: String,
+    #[serde(deserialize_with = "frames")]
     frames: Vec<Frame>,
     render: Dimensions,
 }
@@ -25,6 +29,39 @@ struct Dimensions {
     width: u32,
     height: u32,
     format: String,
+}
+
+fn frames<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Frame>, D::Error> {
+    struct Frames;
+    impl<'de> Visitor<'de> for Frames {
+        type Value = Vec<Frame>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("at most 1000000 frame records")
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut frames = Vec::new();
+            while let Some(frame) = seq.next_element::<Frame>()? {
+                if frames.len() == 1_000_000 {
+                    return Err(de::Error::custom("sequence exceeds 1000000 frames"));
+                }
+                // These fields have fixed-format meanings. Bound retained text
+                // before growing the index, including for malformed manifests.
+                if frame.step.len() > 20
+                    || frame.file.len() > 18
+                    || frame.png_sha256.len() != 71
+                    || frame.rgba_sha256.len() != 71
+                    || frame.snapshot_sha256.len() != 71
+                {
+                    return Err(de::Error::custom("invalid sequence frame text length"));
+                }
+                frames.push(frame);
+            }
+            Ok(frames)
+        }
+    }
+    deserializer.deserialize_seq(Frames)
 }
 
 /// A completed, ordered PNG export. Physical provenance is retained on disk,
@@ -77,7 +114,9 @@ fn read(path: &Path, limit: u64, label: &str) -> Result<Vec<u8>, RenderError> {
 impl Sequence {
     /// Opens a completed export directory or `manifest.json`. Progress files,
     /// unsupported schemas, unsafe names and inconsistent schedules are rejected
-    /// before a window opens. The manifest limit is 64 MiB.
+    /// before a window opens. Reads the frame index from a stream, skipping
+    /// numerical provenance without retaining it. Up to one million frames are
+    /// supported, independently of the size of the recorded particle input.
     pub fn open(path: &Path) -> Result<Self, RenderError> {
         let manifest = if path.is_dir() {
             path.join("manifest.json")
@@ -89,9 +128,15 @@ impl Sequence {
                 "play requires an export directory or manifest.json, not a result or progress file",
             ));
         }
-        let bytes = read(&manifest, 64 * 1024 * 1024, "sequence manifest")?;
-        let m: Manifest =
-            serde_json::from_slice(&bytes).map_err(|e| error(format!("sequence manifest: {e}")))?;
+        let metadata = fs::symlink_metadata(&manifest)
+            .map_err(|e| error(format!("sequence manifest: {}", e.kind())))?;
+        if !metadata.file_type().is_file() {
+            return Err(error("sequence manifest: expected a regular file"));
+        }
+        let file = fs::File::open(&manifest)
+            .map_err(|e| error(format!("sequence manifest: {}", e.kind())))?;
+        let m: Manifest = serde_json::from_reader(BufReader::new(file))
+            .map_err(|e| error(format!("sequence manifest: {e}")))?;
         if m.schema_version != 1 || !m.complete {
             return Err(error(
                 "play requires a completed sequence with manifest schema 1",

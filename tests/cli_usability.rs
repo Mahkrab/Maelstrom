@@ -415,6 +415,79 @@ fn missing_graphics_is_actionable_and_does_not_create_output() {
 }
 #[cfg(feature = "render")]
 #[test]
+fn large_run_documents_are_listed_validated_and_shown_without_a_size_cutoff() {
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+    let lib = Library::new();
+    let mut manifest = lib.json(&[
+        "run",
+        "falling-block-04",
+        "--backend",
+        "serial-grid",
+        "--unpaced",
+        "--steps",
+        "0",
+    ]);
+    let root = lib.0.join("data/maelstrom/runs/large");
+    fs::create_dir_all(&root).unwrap();
+    let pixels = [0, 0, 0, 255];
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, 1, 1);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&pixels)
+            .unwrap();
+    }
+    fs::write(root.join("frame-00000000.png"), &png).unwrap();
+    let hash = |bytes: &[u8]| {
+        format!(
+            "sha256:{}",
+            Sha256::digest(bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        )
+    };
+    manifest["complete"] = serde_json::json!(true);
+    manifest["accepted_steps"] = serde_json::json!("0");
+    manifest["step_stride"] = serde_json::json!("1");
+    manifest["frame_count"] = serde_json::json!(1);
+    manifest["render"] = serde_json::json!({"width":1,"height":1,"format":"png"});
+    manifest["frames"] = serde_json::json!([{
+        "index":0,"file":"frame-00000000.png","step":"0","simulated_seconds":0.0,
+        "png_sha256":hash(&png),"rgba_sha256":hash(&pixels),"snapshot_sha256":hash(b"test observation")
+    }]);
+    let mut file = std::io::BufWriter::new(fs::File::create(root.join("manifest.json")).unwrap());
+    let padding = vec![b' '; 1024 * 1024];
+    for _ in 0..65 {
+        file.write_all(&padding).unwrap();
+    }
+    serde_json::to_writer(&mut file, &manifest).unwrap();
+    file.flush().unwrap();
+    drop(file);
+    assert_eq!(lib.json(&["runs", "list"])["runs"][0]["complete"], true);
+    assert_eq!(lib.json(&["runs", "validate", "large"])["valid"], true);
+    assert_eq!(lib.json(&["runs", "show", "large"])["frame_count"], 1);
+    assert_eq!(lib.json(&["rerun", "large"])["completed_steps"], "0");
+    let manifest_path = root.join("manifest.json");
+    let length = fs::metadata(&manifest_path).unwrap().len();
+    assert!(length > 64 * 1024 * 1024);
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 2);
+    // Corruption still fails; successful loading must not regenerate images.
+    fs::write(root.join("frame-00000000.png"), b"changed").unwrap();
+    assert_eq!(
+        lib.run(&["runs", "validate", "large"]).status.code(),
+        Some(3)
+    );
+    assert_eq!(fs::metadata(manifest_path).unwrap().len(), length);
+}
+
+#[cfg(feature = "render")]
+#[test]
 #[ignore = "requires a Vulkan software adapter"]
 fn compiled_runs_relocate_validate_and_rerun_without_original_scenes() {
     let lib = Library::new();

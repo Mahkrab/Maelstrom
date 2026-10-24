@@ -395,3 +395,7 @@ mod tests;
 #[cfg(test)]
 #[path = "correction_tests.rs"]
 mod correction_tests;
+
+#[cfg(test)]
+#[path = "search_tests.rs"]
+mod search_tests;

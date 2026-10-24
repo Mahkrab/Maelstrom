@@ -4,6 +4,8 @@
 
 mod model;
 mod overlay;
+mod windowing;
+pub(crate) use windowing::create as create_event_loop;
 #[cfg(test)]
 mod tests;
 use crate::{
@@ -19,12 +21,12 @@ use std::{
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow},
     keyboard::{Key, NamedKey},
     window::{Window, WindowId},
 };
 
-/// Launches a Vulkan viewer on the calling main thread. The resolver reuses the
+/// Launches a viewer on the calling main thread. The resolver reuses the
 /// owning application's physical-input loading and validation rules.
 pub fn run(
     draft: Draft,
@@ -36,8 +38,7 @@ pub fn run(
     settings.validate()?;
     #[cfg(target_os = "linux")]
     check_keyboard_libraries()?;
-    let event_loop =
-        EventLoop::new().map_err(|e| window_error("window event loop unavailable", e))?;
+    let event_loop = create_event_loop()?;
     let mut model = Model::new(draft, settings.camera.clone(), resolver)?;
     if let Err(e) = model.apply() {
         model.message = e.to_string();
@@ -79,11 +80,13 @@ pub(crate) fn check_keyboard_libraries() -> Result<(), RenderError> {
         ));
     }
     let nonempty = |name| std::env::var(name).is_ok_and(|s| !s.is_empty());
-    if !nonempty("WAYLAND_DISPLAY")
-        && !nonempty("WAYLAND_SOCKET")
-        && nonempty("DISPLAY")
-        && xkbcommon_dl::x11::xkbcommon_x11_option().is_none()
-    {
+    let backend = windowing::Backend::read()?;
+    let x11 = backend == windowing::Backend::X11
+        || (backend == windowing::Backend::Auto
+            && !nonempty("WAYLAND_DISPLAY")
+            && !nonempty("WAYLAND_SOCKET")
+            && nonempty("DISPLAY"));
+    if x11 && xkbcommon_dl::x11::xkbcommon_x11_option().is_none() {
         return Err(RenderError("X11 keyboard support requires libxkbcommon-x11-0 and libxcb-xkb1; use Wayland when available".into()));
     }
     Ok(())
@@ -102,14 +105,23 @@ impl Display {
     pub(crate) fn new(
         window: Arc<Window>,
         selection: GraphicsSelection,
+        display_handle: winit::event_loop::OwnedDisplayHandle,
     ) -> Result<Self, RenderError> {
-        let instance = Graphics::instance();
+        // EGL presentation must use the window's compositor connection rather
+        // than the separate surfaceless connection used by offline rendering.
+        let instance = Graphics::instance_with_descriptor(
+            wgpu::InstanceDescriptor::new_with_display_handle(Box::new(display_handle)),
+        );
         let surface = instance
             .create_surface(window.clone())
             .map_err(|e| RenderError(format!("window surface: {e}")))?;
         // Select before inspecting formats; the actual pipeline uses the selected
         // surface's sRGB format, not a guessed channel order.
-        let adapter = pollster::block_on(Graphics::select_adapter(&instance, selection))?;
+        let adapter = pollster::block_on(Graphics::select_adapter(
+            &instance,
+            selection,
+            Some(&surface),
+        ))?;
         let caps = surface.get_capabilities(&adapter);
         let format = caps
             .formats
@@ -119,7 +131,8 @@ impl Display {
             .ok_or_else(|| RenderError("selected surface has no supported sRGB format".into()))?;
         let graphics = pollster::block_on(Graphics::from_adapter(adapter, Some(&surface), format))?;
         eprintln!(
-            "maelstrom graphics: Vulkan {:?}; {}; driver {} {}; surface {:?}",
+            "maelstrom graphics: {:?} {:?}; {}; driver {} {}; surface {:?}",
+            graphics.adapter_info.backend,
             graphics.adapter_info.device_type,
             graphics.adapter_info.name,
             graphics.adapter_info.driver,
@@ -585,7 +598,11 @@ impl ApplicationHandler for Viewer {
         if self.display.is_none()
             && let Some(window) = &self.window
         {
-            match Display::new(window.clone(), self.selection) {
+            match Display::new(
+                window.clone(),
+                self.selection,
+                event_loop.owned_display_handle(),
+            ) {
                 Ok(display) => self.display = Some(display),
                 Err(e) => self.close(Some(e)),
             }
