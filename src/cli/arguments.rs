@@ -79,6 +79,10 @@ pub(super) enum Command {
         inputs: Inputs,
         #[command(flatten)]
         selection: Selection,
+        #[command(flatten)]
+        presentation: PresentationOptions,
+        #[command(flatten)]
+        limit: Limit,
     },
     /// Execute headlessly at 1x simulated time, or use --unpaced
     Run(Run),
@@ -197,14 +201,10 @@ pub(super) struct Run {
     #[command(flatten)]
     pub output: Output,
 }
-#[derive(Args)]
+#[derive(Args, Default)]
 pub(super) struct Limit {
     /// Exact fixed timestep count; zero observes initial state
-    #[arg(
-        long,
-        required_unless_present = "duration",
-        conflicts_with = "duration"
-    )]
+    #[arg(long, conflicts_with = "duration")]
     pub steps: Option<u64>,
     /// Simulated seconds, rounded up to complete fixed timesteps
     #[arg(long, value_name = "SECONDS")]
@@ -256,6 +256,8 @@ pub(super) struct Compile {
     pub software: bool,
     #[arg(long)]
     pub fit_camera: bool,
+    #[arg(long, conflicts_with = "fit_camera")]
+    pub no_fit_camera: bool,
 }
 #[derive(Args)]
 pub(super) struct Play {
@@ -296,6 +298,27 @@ pub(super) struct View {
     pub software: bool,
     #[arg(long)]
     pub fit_camera: bool,
+    #[arg(long, conflicts_with = "fit_camera")]
+    pub no_fit_camera: bool,
+    /// Destination for the explicit save-camera action; defaults to the scene render.toml
+    #[arg(long)]
+    pub camera_output: Option<PathBuf>,
+}
+
+#[derive(Args, Default)]
+pub(super) struct PresentationOptions {
+    #[arg(long)]
+    pub render_config: Option<PathBuf>,
+    #[arg(long)]
+    pub width: Option<u32>,
+    #[arg(long)]
+    pub height: Option<u32>,
+    #[arg(long)]
+    pub frame_stride: Option<u64>,
+    #[arg(long)]
+    pub fit_camera: bool,
+    #[arg(long, conflicts_with = "fit_camera")]
+    pub no_fit_camera: bool,
 }
 #[cfg(feature = "render")]
 #[derive(Args)]
@@ -319,6 +342,8 @@ pub(super) struct Export {
     pub software: bool,
     #[arg(long, global = true)]
     pub fit_camera: bool,
+    #[arg(long, global = true, conflicts_with = "fit_camera")]
+    pub no_fit_camera: bool,
 }
 #[cfg(feature = "render")]
 #[derive(Subcommand)]

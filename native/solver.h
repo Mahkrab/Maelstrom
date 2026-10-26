@@ -15,6 +15,7 @@ struct SolverSettings {
     double width;
     std::uint32_t stride, span;
     std::uint64_t entries;
+    float xsph, vorticity;
 };
 struct SolverBuffers {
     Vector *old_position, *old_velocity, *position, *velocity;
@@ -29,6 +30,6 @@ struct SolverBuffers {
     std::uint32_t first_operation;
 };
 static_assert(sizeof(Vector) == 12 && sizeof(DevicePlane) == 16 && sizeof(Cell) == 32);
-static_assert(sizeof(SolverSettings) == 88 && offsetof(SolverSettings, width) == 64);
+static_assert(sizeof(SolverSettings) == 96 && offsetof(SolverSettings, width) == 64);
 static_assert(sizeof(SolverBuffers) == 128 && offsetof(SolverBuffers,diagnostic) == 112 &&
               offsetof(SolverBuffers,first_operation) == 120);

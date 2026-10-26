@@ -51,6 +51,118 @@ fn model() -> Model {
 fn acknowledge(m: &mut Model) -> RunStatus {
     m.receipts.pop().unwrap().wait().unwrap()
 }
+
+#[test]
+fn camera_save_uses_displayed_selection_and_does_not_change_accepted_state() {
+    use crate::presentation::{CameraSaveTarget, Presentation};
+    let directory =
+        std::env::temp_dir().join(format!("maelstrom-model-camera-{}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let path = directory.join("render.toml");
+    let target = CameraSaveTarget::new(&path).unwrap();
+    let mut m = model();
+    m.presentation_resolver = Some(Box::new(move |_| {
+        Ok(ViewPresentation {
+            presentation: Presentation::default(),
+            camera_save: Some(target.clone()),
+        })
+    }));
+    m.apply().unwrap();
+    assert_eq!(acknowledge(&mut m), RunStatus::Paused);
+    let snapshot = m
+        .selected
+        .as_ref()
+        .unwrap()
+        .handle
+        .observe()
+        .snapshot
+        .unwrap();
+    let before = bits(&snapshot);
+    let generation = m.selected.as_ref().unwrap().handle.observe().generation;
+    m.camera.orbit(0.5, 0.1).unwrap();
+    let saved = m.camera.clone();
+    m.draft.scene = "unapplied scene must not redirect camera save".into();
+    m.save_camera(1.).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !m.message.starts_with("Saved camera") {
+        assert!(std::time::Instant::now() < deadline, "{}", m.message);
+        m.poll();
+        std::thread::yield_now();
+    }
+    let actual = Presentation::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(actual.settings.camera, saved);
+    m.camera.pan(0.1, 0.1).unwrap();
+    m.restore_camera().unwrap();
+    assert_eq!(m.camera, saved);
+    assert_eq!(
+        m.selected.as_ref().unwrap().handle.observe().generation,
+        generation
+    );
+    assert_eq!(
+        bits(
+            &m.selected
+                .as_ref()
+                .unwrap()
+                .handle
+                .observe()
+                .snapshot
+                .unwrap()
+        ),
+        before
+    );
+    // Reset restarts the physics but keeps the user's current view.
+    m.camera.zoom(0.9).unwrap();
+    let current = m.camera.clone();
+    m.reset().unwrap();
+    assert_eq!(m.camera, current);
+    acknowledge(&mut m);
+    m.join().unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn presentation_resolution_failure_retains_generation_camera_and_snapshot() {
+    let mut m = model();
+    m.apply().unwrap();
+    acknowledge(&mut m);
+    let generation = m.selected.as_ref().unwrap().handle.observe().generation;
+    let before = bits(
+        &m.selected
+            .as_ref()
+            .unwrap()
+            .handle
+            .observe()
+            .snapshot
+            .unwrap(),
+    );
+    let camera = m.camera.clone();
+    m.presentation_resolver = Some(Box::new(|_| Err("invalid render document".into())));
+    assert!(m.apply().is_err());
+    assert_eq!(m.camera, camera);
+    assert_eq!(
+        m.selected.as_ref().unwrap().handle.observe().generation,
+        generation
+    );
+    assert_eq!(
+        bits(
+            &m.selected
+                .as_ref()
+                .unwrap()
+                .handle
+                .observe()
+                .snapshot
+                .unwrap()
+        ),
+        before
+    );
+    assert!(
+        m.save_camera(1.)
+            .unwrap_err()
+            .to_string()
+            .contains("editable scene")
+    );
+    m.join().unwrap();
+}
 fn bits(s: &Snapshot) -> Vec<(u64, [u32; 6])> {
     s.particles()
         .iter()

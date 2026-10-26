@@ -223,6 +223,24 @@ impl RecordedInput {
                 provenance: config
                     .sources
                     .iter()
+                    .filter(|(key, source)| {
+                        **key != "xsph_viscosity_coefficient"
+                            || config.numerical.xsph_viscosity_enabled
+                            || config.numerical.xsph_viscosity_coefficient.to_bits()
+                                != crate::config::DEFAULT_XSPH_VISCOSITY_COEFFICIENT.to_bits()
+                            || **source != FieldSource::BuiltInDefault
+                    })
+                    .filter(|(key, source)| {
+                        **key != "vorticity_confinement_strength_m_s"
+                            || config.numerical.vorticity_confinement_enabled
+                            || config
+                                .numerical
+                                .vorticity_confinement_strength_m_s
+                                .to_bits()
+                                != crate::config::DEFAULT_VORTICITY_CONFINEMENT_STRENGTH_M_S
+                                    .to_bits()
+                            || **source != FieldSource::BuiltInDefault
+                    })
                     .map(|(&key, &value)| (key.to_owned(), value))
                     .collect(),
                 comparison_key: config.comparison_key(),
@@ -257,13 +275,51 @@ impl RecordedInput {
     pub fn resolve(&self) -> Result<ResolvedScene, RecordError> {
         version(self.schema_version)?;
         scene_version(self.scene_schema_version)?;
+        if self.scene_schema_version != self.configuration.schema_version {
+            return Err(RecordError::Invalid(
+                "scene and configuration versions must match".into(),
+            ));
+        }
         validate_particles(&self.particles)?;
         // The registry supplies only static field names; every value and its
         // original source come from the record, not today's default settings.
         let mut registry = resolve_effective_configuration(None, None, None)
             .map_err(StepError::from)?
             .sources;
+        registry.remove("vorticity_confinement_strength_m_s");
+        if self.configuration.numerical.vorticity_confinement_enabled
+            || self
+                .configuration
+                .numerical
+                .vorticity_confinement_strength_m_s
+                .to_bits()
+                != crate::config::DEFAULT_VORTICITY_CONFINEMENT_STRENGTH_M_S.to_bits()
+            || self
+                .configuration
+                .provenance
+                .contains_key("vorticity_confinement_strength_m_s")
+        {
+            registry.insert(
+                "vorticity_confinement_strength_m_s",
+                FieldSource::BuiltInDefault,
+            );
+        }
         registry.remove("correction_scale");
+        registry.remove("xsph_viscosity_coefficient");
+        if self.configuration.numerical.xsph_viscosity_enabled
+            || self
+                .configuration
+                .numerical
+                .xsph_viscosity_coefficient
+                .to_bits()
+                != crate::config::DEFAULT_XSPH_VISCOSITY_COEFFICIENT.to_bits()
+            || self
+                .configuration
+                .provenance
+                .contains_key("xsph_viscosity_coefficient")
+        {
+            registry.insert("xsph_viscosity_coefficient", FieldSource::BuiltInDefault);
+        }
         if self.configuration.numerical.correction_scale != 1.0
             || self
                 .configuration
@@ -287,6 +343,14 @@ impl RecordedInput {
             sources.insert(*key, *source);
         }
         let config = &self.configuration;
+        // Historical disabled records omit this inactive setting. Expose its
+        // built-in origin in today's resolved model without changing the record.
+        sources
+            .entry("xsph_viscosity_coefficient")
+            .or_insert(FieldSource::BuiltInDefault);
+        sources
+            .entry("vorticity_confinement_strength_m_s")
+            .or_insert(FieldSource::BuiltInDefault);
         let configuration = ResolvedConfiguration {
             schema_version: config.schema_version,
             name: config.name.clone(),
@@ -294,6 +358,7 @@ impl RecordedInput {
             numerical: config.numerical.clone(),
             derived: config.derived,
             sources,
+            refinement: None,
         };
         configuration.validate().map_err(StepError::from)?;
         if configuration.comparison_key() != config.comparison_key {
@@ -343,7 +408,7 @@ pub(super) fn version(value: u32) -> Result<(), RecordError> {
 }
 
 pub(super) fn scene_version(value: u32) -> Result<(), RecordError> {
-    if value == crate::config::CONFIG_SCHEMA_VERSION {
+    if matches!(value, 1 | 2) {
         Ok(())
     } else {
         Err(RecordError::Invalid(format!(

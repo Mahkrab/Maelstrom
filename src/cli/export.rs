@@ -8,7 +8,7 @@ use super::{
 };
 use maelstrom::{
     export::{ExportRequest, Source},
-    render::{GraphicsSelection, Settings},
+    render::GraphicsSelection,
 };
 use std::{
     fs,
@@ -23,26 +23,6 @@ pub(super) fn launch(args: &Export, storage: &super::storage::Storage) -> Result
         .output
         .as_deref()
         .ok_or_else(|| CliError::usage("export requires --output DIR".into()))?;
-    let mut settings = match &args.render_config {
-        Some(path) => Settings::parse(
-            &fs::read_to_string(path)
-                .map_err(|e| CliError::input(format!("selected render file: {}", e.kind())))?,
-        )
-        .map_err(|e| CliError::input(e.to_string()))?,
-        None => Settings::default(),
-    };
-    if let Some(v) = args.width {
-        settings.width = v;
-    }
-    if let Some(v) = args.height {
-        settings.height = v;
-    }
-    if let Some(v) = args.step_stride {
-        settings.step_stride = v;
-    }
-    settings
-        .validate()
-        .map_err(|e| CliError::input(e.to_string()))?;
     let content = match &args.source {
         ExportSource::Saved { file, .. } | ExportSource::Rerun { file } => Some(
             fs::read_to_string(file)
@@ -56,6 +36,19 @@ pub(super) fn launch(args: &Export, storage: &super::storage::Storage) -> Result
         } => Some(inputs::resolve_in(selection, storage)?),
         _ => None,
     };
+    let selected = super::presentation::resolve(
+        resolved.as_ref(),
+        &super::arguments::PresentationOptions {
+            render_config: args.render_config.clone(),
+            width: args.width,
+            height: args.height,
+            frame_stride: args.step_stride,
+            fit_camera: args.fit_camera,
+            no_fit_camera: args.no_fit_camera,
+        },
+    )?;
+    let fit_camera = selected.effective.camera_mode == maelstrom::presentation::CameraMode::Fit;
+    let settings = selected.effective.settings;
     let source = match &args.source {
         ExportSource::Saved { last_step, .. } => Source::Saved {
             json: content
@@ -95,7 +88,7 @@ pub(super) fn launch(args: &Export, storage: &super::storage::Storage) -> Result
                 index: args.graphics_adapter,
                 software: args.software,
             },
-            fit_camera: args.fit_camera,
+            fit_camera,
             destination,
         },
         || cancel.load(Ordering::Relaxed),

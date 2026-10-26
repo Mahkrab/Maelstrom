@@ -95,16 +95,19 @@ pub(super) fn validate_model(model: &NumericalModel) -> Result<(), ConfigError> 
         "artificial_pressure_exponent",
         model.artificial_pressure_exponent,
     )?;
-    if model.xsph_viscosity_enabled {
+    let coefficient = model.xsph_viscosity_coefficient;
+    if !coefficient.is_finite() || !(0.0..=1.0).contains(&coefficient) {
         return Err(ConfigError::InvalidField {
-            field: "xsph_viscosity_enabled",
-            reason: "true is not supported by the current numerical contract".to_owned(),
+            field: "xsph_viscosity_coefficient",
+            reason: "must be finite and in 0..=1".to_owned(),
         });
     }
-    if model.vorticity_confinement_enabled {
+    if !model.vorticity_confinement_strength_m_s.is_finite()
+        || model.vorticity_confinement_strength_m_s < 0.0
+    {
         return Err(ConfigError::InvalidField {
-            field: "vorticity_confinement_enabled",
-            reason: "true is not supported by the current numerical contract".to_owned(),
+            field: "vorticity_confinement_strength_m_s",
+            reason: "must be finite and non-negative".to_owned(),
         });
     }
     Ok(())

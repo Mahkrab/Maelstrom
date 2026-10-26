@@ -154,7 +154,7 @@ static void sort_batches() {
         settings.padded=3;
         assert(maelstrom_cuda_solver(&r,settings,13,threads).stage==7 && !r.poisoned);
         settings.padded=1;
-        assert(maelstrom_cuda_solver(&r,settings,14,threads).stage==7 && !r.poisoned);
+        assert(maelstrom_cuda_solver(&r,settings,18,threads).stage==7 && !r.poisoned);
     }
     for (auto failure : {9,10,13,16}) {
         observed={};
@@ -261,7 +261,7 @@ static void checked_solver() {
         assert(maelstrom_cuda_begin_attempt(&r).code==0);
         assert(observed.resets==1);
         std::uint64_t result=17;
-        for (auto operation : {2U,3U,13U,14U})
+        for (auto operation : {2U,3U,13U,18U})
             assert(maelstrom_cuda_checked_solver(&r,settings,operation,128,&result).stage==7);
         assert(maelstrom_cuda_checked_solver(&r,settings,0,128,nullptr).stage==7);
         assert(maelstrom_cuda_checked_solver(&r,settings,0,33,&result).stage==7);

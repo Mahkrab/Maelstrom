@@ -42,8 +42,10 @@ commands are `cargo build --release --locked` and `cargo test --locked`.
 | Recompute recorded input | `rerun <result-or-run>` | Yes, from step zero |
 | Render stored numerical observations | `export saved <result.json>` | No |
 
-`validate` checks inputs without stepping; `inspect` shows effective numerical inputs,
-provenance and selected execution. A numerical JSON result is not a playable image sequence.
+`validate` checks inputs without stepping; `inspect` shows effective numerical, run and presentation
+inputs, provenance and selected execution. Schema-2 scenes can save a `[run]` limit, allowing
+`run water`, `view water` and `compile water` without repeating duration or step flags. Explicit
+limits replace the saved selection. A numerical JSON result is not a playable image sequence.
 
 ## Execution selection
 
@@ -75,7 +77,8 @@ maelstrom inspect builtin:falling-block-04 --backend cuda --format json
 
 ## Limits, pacing and results
 
-Fresh execution requires exactly one of `--steps N` or `--duration SECONDS`. Duration
+Fresh execution uses the saved scene limit unless `--steps N` or `--duration SECONDS` replaces it.
+Without a saved limit, supply one of those flags. Duration
 means simulated time, rounded up to whole fixed timesteps, not an execution timeout.
 Zero steps is valid. Headless `run` targets 1x simulation time unless `--unpaced` is
 selected. It never changes timestep size, iterations or accepted state to catch up.

@@ -202,8 +202,9 @@ fn export_using(
     if request.fit_camera {
         settings
             .camera
-            .fit(
+            .fit_scene(
                 &scene.particles,
+                &scene.planes,
                 spacing / 2.0,
                 f64::from(settings.width) / f64::from(settings.height),
             )
@@ -244,6 +245,7 @@ fn export_using(
             settings: &settings,
             boundaries: &boundaries,
             spacing,
+            mass_kg: scene.configuration.derived.particle_mass_kg,
             dt,
             destination: request.destination,
             render_seconds: 0.0,
@@ -338,7 +340,7 @@ fn export_using(
             "backend":RunMetadata::new(&input,last_step,options.backend,options.execution).backend,"execution":options.execution,"request":{"steps":last_step.to_string(),"checkpoints":schedule.steps.iter().map(u64::to_string).collect::<Vec<_>>()},"input":input,"effective_execution":options.execution,"discovery":format!("{:?}",options.backend),"run_metadata":metadata,"original":recorded.as_ref().map(|r|&r.provenance),
             "accepted_steps":last_step.to_string(),"status":if mode=="saved" {"saved_observations_rendered"} else if diagnostics.iter().any(|d|d.warning) {"completed_with_warnings"} else {"completed"},"frame_count":frames.len(),"step_stride":settings.step_stride.to_string(),"frames":frames,"render":settings,
             "boundary_display_box":{"lower_m":boundaries.lower_m,"upper_m":boundaries.upper_m},
-            "renderer":{"revision":"opaque-spheres-lines-v1","shader_sha256":hash(include_bytes!("../render/particles.wgsl")),"format":"Rgba8UnormSrgb","samples":1,"overlays":false},
+            "renderer":{"revision":"opaque-spheres-lines-v2","shader_sha256":hash(include_bytes!("../render/particles.wgsl")),"format":"Rgba8UnormSrgb","samples":1,"overlays":false},
             "graphics":{"backend":format!("{:?}",graphics.adapter_info.backend),"name":graphics.adapter_info.name,"device_type":format!("{:?}",graphics.adapter_info.device_type),"vendor":graphics.adapter_info.vendor,"device":graphics.adapter_info.device,"driver":graphics.adapter_info.driver,"driver_info":graphics.adapter_info.driver_info,"selection_index":request.graphics.index,"software_requested":request.graphics.software},
             "encoder":{"crate":"png","version":"0.18.1","colour":"RGBA8 sRGB","compression":"Balanced","filter":"Adaptive"},
             "timing_seconds":{"solver_steps":step_seconds,"graphics_readback":writer.render_seconds,"encoding":writer.encode_seconds},"accepted_diagnostics":diagnostics,

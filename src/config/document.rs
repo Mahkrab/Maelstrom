@@ -7,7 +7,7 @@ use std::{fs, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-use super::{CONFIG_SCHEMA_VERSION, ConfigError};
+use super::{CURRENT_INPUT_SCHEMA_VERSION, ConfigError};
 
 /// Partial numerical settings applied over a lower layer.
 ///
@@ -69,8 +69,12 @@ pub struct NumericalOverrides {
     pub particle_order_policy: Option<String>,
     /// Switch for XSPH viscosity
     pub xsph_viscosity_enabled: Option<bool>,
+    /// Dimensionless rest-volume XSPH strength in 0..=1.
+    pub xsph_viscosity_coefficient: Option<f32>,
     /// Switch for vorticity confinement.
     pub vorticity_confinement_enabled: Option<bool>,
+    /// Non-negative confinement strength in metres per second.
+    pub vorticity_confinement_strength_m_s: Option<f32>,
 }
 
 /// Exact checks on values calculated during configuration resolution.
@@ -169,12 +173,12 @@ pub fn parse_configuration_overlay(input: &str) -> Result<ConfigurationOverlay, 
 }
 
 pub(crate) fn validate_schema(found: u32, document: &'static str) -> Result<(), ConfigError> {
-    if found == CONFIG_SCHEMA_VERSION {
+    if matches!(found, 1 | 2) {
         Ok(())
     } else {
         Err(ConfigError::UnsupportedSchema {
             document,
-            supported: CONFIG_SCHEMA_VERSION,
+            supported: CURRENT_INPUT_SCHEMA_VERSION,
             found,
         })
     }

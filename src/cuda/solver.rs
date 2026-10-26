@@ -37,9 +37,11 @@ pub(super) struct Settings {
     stride: u32,
     span: u32,
     entries: u64,
+    xsph: f32,
+    vorticity: f32,
 }
 const _: () = {
-    assert!(size_of::<Settings>() == 88 && align_of::<Settings>() == 8);
+    assert!(size_of::<Settings>() == 96 && align_of::<Settings>() == 8);
     assert!(std::mem::offset_of!(Settings, width) == 64);
 };
 
@@ -87,6 +89,16 @@ fn settings(
         exponent: parameters.artificial_pressure().exponent(),
         correction_scale: model.correction_scale,
         mass: derived.particle_mass_kg,
+        xsph: if model.xsph_viscosity_enabled {
+            model.xsph_viscosity_coefficient
+        } else {
+            0.0
+        },
+        vorticity: if model.vorticity_confinement_enabled {
+            model.vorticity_confinement_strength_m_s
+        } else {
+            0.0
+        },
         acceleration: array(model.external_acceleration_m_s2),
         ..Default::default()
     })
@@ -158,7 +170,7 @@ fn diagnostic_error(record: u64, particles: u32) -> Result<(), StepError> {
     }
     let particle = (record >> 32) as usize;
     let quantity = record as u32;
-    if particle >= particles as usize || quantity == 0 || quantity > 52 {
+    if particle >= particles as usize || quantity == 0 || quantity > 70 {
         return Err(CudaError::Diagnostic { particle, quantity }.into());
     }
     if quantity == 52 {
@@ -320,6 +332,20 @@ impl CudaSolver {
             clock.mark(Stage::Projection);
         }
         self.operation(s, 11)?;
+        if s.vorticity != 0.0 {
+            check_cancellation(cancelled)?;
+            self.operation(s, 16)?;
+            check_cancellation(cancelled)?;
+            self.operation(s, 17)?;
+            check_cancellation(cancelled)?;
+            self.operation(s, 15)?;
+        }
+        if s.xsph != 0.0 {
+            check_cancellation(cancelled)?;
+            self.operation(s, 14)?;
+            check_cancellation(cancelled)?;
+            self.operation(s, 15)?;
+        }
         let positions: Vec<[f32; 3]> = self.context.inner.download(2, particles.len())?;
         let velocities: Vec<[f32; 3]> = self.context.inner.download(3, particles.len())?;
         let output = host_values(particles.iter().zip(positions).zip(velocities).map(
@@ -333,7 +359,7 @@ impl CudaSolver {
     }
 }
 
-const QUANTITIES: [&str; 52] = [
+const QUANTITIES: [&str; 71] = [
     "unused",
     "neighbour search displacement",
     "squared vector length",
@@ -386,6 +412,25 @@ const QUANTITIES: [&str; 52] = [
     "reconstructed displacement",
     "reciprocal timestep",
     "reconstructed velocity",
+    "neighbour storage",
+    "XSPH velocity difference",
+    "XSPH kernel weight",
+    "XSPH pair contribution",
+    "XSPH ordered sum",
+    "XSPH velocity correction",
+    "XSPH smoothed velocity",
+    "vorticity kernel gradient",
+    "vorticity velocity difference",
+    "vorticity curl contribution",
+    "vorticity ordered curl",
+    "vorticity magnitude difference",
+    "vorticity gradient contribution",
+    "vorticity magnitude gradient",
+    "vorticity direction",
+    "vorticity rotation",
+    "vorticity acceleration",
+    "vorticity velocity correction",
+    "confined velocity",
 ];
 
 #[cfg(test)]
@@ -399,3 +444,7 @@ mod correction_tests;
 #[cfg(test)]
 #[path = "search_tests.rs"]
 mod search_tests;
+
+#[cfg(test)]
+#[path = "vorticity_tests.rs"]
+mod vorticity_tests;

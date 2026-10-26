@@ -112,15 +112,18 @@ fn every_external_scene_uses_the_ordinary_versioned_loader() {
                 order,
                 initial_velocity_m_s,
             } => {
-                assert_eq!(first_identity, 0);
+                assert_eq!(first_identity, Some(0));
                 assert_eq!(origin_m, [0.2, 0.4, 0.2]);
                 assert_eq!(counts, [case.axis_count; 3]);
-                assert_eq!(spacing_m.to_bits(), 0.05_f32.to_bits());
+                assert_eq!(
+                    spacing_m.expect("legacy lattice spacing").to_bits(),
+                    0.05_f32.to_bits()
+                );
                 assert_eq!(endpoint_rule, LatticeEndpointRule::CountedHalfOpen);
                 assert_eq!(order, LatticeOrder::XThenYThenZ);
                 assert_eq!(initial_velocity_m_s, [0.0, 0.0, 0.0]);
             }
-            ParticleSource::Explicit { .. } => {
+            ParticleSource::Explicit { .. } | ParticleSource::Groups { .. } => {
                 panic!("selected scene must remain a counted lattice")
             }
         }
@@ -170,8 +173,16 @@ fn every_external_scene_uses_the_ordinary_versioned_loader() {
             scene
                 .configuration
                 .sources
-                .values()
-                .all(|source| *source == FieldSource::ConfigurationFile)
+                .iter()
+                .all(|(field, source)| *source
+                    == if matches!(
+                        *field,
+                        "xsph_viscosity_coefficient" | "vorticity_confinement_strength_m_s"
+                    ) {
+                        FieldSource::BuiltInDefault
+                    } else {
+                        FieldSource::ConfigurationFile
+                    })
         );
         match &expected_configuration_key {
             Some(expected) => assert_eq!(scene.configuration.comparison_key(), *expected),

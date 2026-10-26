@@ -46,6 +46,8 @@ fn base_document(particles: ParticleSource) -> SceneDocument {
             overrides: None,
         },
         particles,
+        run: None,
+        container: None,
         planes: Vec::new(),
     }
 }
@@ -64,10 +66,10 @@ fn explicit_document(items: Vec<ParticleDocument>) -> SceneDocument {
 
 fn lattice_document(origin_m: [f32; 3], counts: [u32; 3]) -> SceneDocument {
     base_document(ParticleSource::Lattice {
-        first_identity: 10,
+        first_identity: Some(10),
         origin_m,
         counts,
-        spacing_m: 0.05,
+        spacing_m: Some(0.05),
         endpoint_rule: LatticeEndpointRule::CountedHalfOpen,
         order: LatticeOrder::XThenYThenZ,
         initial_velocity_m_s: [1.0, 2.0, 3.0],
@@ -292,7 +294,7 @@ fn invalid_lattice_geometry_and_impractical_counts_are_rejected() {
     }
     let mut spacing = lattice_document([0.0, 0.0, 0.0], [1, 1, 1]);
     if let ParticleSource::Lattice { spacing_m, .. } = &mut spacing.particles {
-        *spacing_m = 0.04;
+        *spacing_m = Some(0.04);
     }
     assert!(matches!(
         resolve_scene(&spacing, None, None),
@@ -308,7 +310,7 @@ fn invalid_lattice_geometry_and_impractical_counts_are_rejected() {
     ));
     let mut identity_overflow = lattice_document([0.0, 0.0, 0.0], [2, 1, 1]);
     if let ParticleSource::Lattice { first_identity, .. } = &mut identity_overflow.particles {
-        *first_identity = u64::MAX;
+        *first_identity = Some(u64::MAX);
     }
     assert!(matches!(
         resolve_scene(&identity_overflow, None, None),
@@ -351,7 +353,7 @@ fn focused_test_inputs_have_distinct_exact_construction() {
         ..
     } = &mut interior.particles
     {
-        *first_identity = 0;
+        *first_identity = Some(0);
         *initial_velocity_m_s = [0.0, 0.0, 0.0];
     }
     let empty = explicit_document(Vec::new());
@@ -410,7 +412,7 @@ fn focused_test_inputs_have_distinct_exact_construction() {
 
 #[test]
 fn scene_schema_unknown_fields_missing_values_and_randomness_are_rejected() {
-    let unsupported = EXTERNAL_SCENE_TOML.replacen("schema_version = 1", "schema_version = 2", 1);
+    let unsupported = EXTERNAL_SCENE_TOML.replacen("schema_version = 1", "schema_version = 3", 1);
     assert!(parse_scene(&unsupported).is_err());
     let unknown = EXTERNAL_SCENE_TOML.replacen(
         "randomness = \"none\"",

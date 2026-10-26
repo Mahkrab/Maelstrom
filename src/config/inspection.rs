@@ -105,10 +105,21 @@ impl ResolvedConfiguration {
             "xsph_viscosity_enabled",
             &numerical.xsph_viscosity_enabled.to_string(),
         );
+        push_float(
+            &mut output,
+            "xsph_viscosity_coefficient",
+            numerical.xsph_viscosity_coefficient,
+        );
         push_line(
             &mut output,
             "vorticity_confinement_enabled",
             &numerical.vorticity_confinement_enabled.to_string(),
+        );
+
+        push_float(
+            &mut output,
+            "vorticity_confinement_strength_m_s",
+            numerical.vorticity_confinement_strength_m_s,
         );
 
         output.push_str("\n[derived]\n");
@@ -196,6 +207,24 @@ impl ResolvedConfiguration {
             key.push_str(&format!(
                 "|correction-scale:{:08x}",
                 n.correction_scale.to_bits()
+            ));
+        }
+        if n.xsph_viscosity_enabled
+            || n.xsph_viscosity_coefficient.to_bits()
+                != super::resolved::default_xsph_coefficient().to_bits()
+        {
+            key.push_str(&format!(
+                "|xsph-rest-volume-poly6-v1:{:08x}",
+                n.xsph_viscosity_coefficient.to_bits()
+            ));
+        }
+        if n.vorticity_confinement_enabled
+            || n.vorticity_confinement_strength_m_s.to_bits()
+                != super::DEFAULT_VORTICITY_CONFINEMENT_STRENGTH_M_S.to_bits()
+        {
+            key.push_str(&format!(
+                "|vorticity-rest-volume-spiky-v1:{:08x}",
+                n.vorticity_confinement_strength_m_s.to_bits()
             ));
         }
         key

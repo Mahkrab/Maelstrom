@@ -18,6 +18,13 @@ Compilation runs a fresh simulation, samples accepted steps and renders them wit
 window. Vulkan or OpenGL ES and a compatible graphics driver are still required. `--software`
 intentionally selects software Vulkan; it is not a solver backend.
 
+A schema-2 scene's saved `[run]` limit is used when neither `--steps` nor `--duration` is supplied.
+Compilation automatically reads `render.toml` beside the selected scene. Its dimensions and stride
+are defaults for that launch; explicit flags override them. `--render-config FILE` replaces the
+scene-local presentation document. Without a selected fixed camera, fitting is automatic: finite
+domain bounds take precedence over initial particle bounds. Empty unbounded scenes use the built-in
+fixed camera. A camera saved with S in the viewer is reused on the next compilation.
+
 Without `--output`, a new ID is created in the run library printed by `maelstrom paths`.
 Set `MAELSTROM_RUNS_DIR` or `--runs-dir` to relocate that library. An explicit
 `--output ./frames` uses that new directory instead; its parent must exist.
@@ -69,7 +76,11 @@ for fresh scenes and `export saved` when the necessary observations already exis
 Use `--frame-stride N` to select accepted step indices, always including initial and
 final state. It must be positive; schedules are bounded to one million frames.
 `--width`, `--height` and `--render-config` control presentation, not physics.
-The [viewer guide](viewer.md) describes camera files and graphics selection.
+The [viewer guide](viewer.md) describes camera files, fixed colours and blue-to-red kinetic-energy
+colouring. Compilation uses the same accepted-velocity and mass calculation as live viewing.
+The manifest records the effective palette and fixed energy interval; custom or energy colours use
+normalised render schema 2 inside the unchanged image-bundle schema 1. Legacy default-colour records
+retain render schema 1, and existing image bundles remain playable. Graphics selection is separate.
 
 Images are opaque RGBA8 PNGs, with stable ordering and names such as
 `frame-00000000.png`. The manifest records resolved inputs, request and effective

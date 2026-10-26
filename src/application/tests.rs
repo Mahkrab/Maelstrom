@@ -16,6 +16,48 @@ fn spec() -> RunSpec {
     }
 }
 
+#[test]
+fn supported_scene_versions_construct_and_unknown_versions_fail_explicitly() {
+    let mut controller = Controller::new().unwrap();
+    for path in ["scenes/falling-block-04.toml", "scenes/two-blocks.toml"] {
+        let scene = crate::scene::load_resolved_scene(Path::new(path), None).unwrap();
+        let mut expected = crate::simulation::Simulation::from_scene_with_execution(
+            &scene,
+            SearchBackend::UniformGrid,
+            ExecutionMode::Serial,
+        )
+        .unwrap();
+        let request = RunSpec { scene, ..spec() };
+        let (handle, receipt) = controller.start(request).unwrap();
+        assert_eq!(receipt.wait().unwrap(), RunStatus::Paused);
+        let before = handle.observe().snapshot.unwrap();
+        assert_eq!(before.particles(), expected.snapshot().particles());
+        assert_eq!(expected.step().unwrap().completed_steps, 1);
+        assert_eq!(
+            controller
+                .control(&handle, Action::SingleStep)
+                .unwrap()
+                .wait()
+                .unwrap(),
+            RunStatus::Paused
+        );
+        assert_eq!(
+            handle.observe().snapshot.unwrap().particles(),
+            expected.snapshot().particles()
+        );
+    }
+    for schema in [0, 3, u32::MAX] {
+        let mut request = spec();
+        request.scene.schema_version = schema;
+        let (handle, receipt) = controller.start(request).unwrap();
+        assert_eq!(receipt.wait().unwrap(), RunStatus::Failed);
+        let observation = handle.observe();
+        assert!(observation.snapshot.is_none());
+        assert_eq!(observation.failure.unwrap().kind, FailureKind::Construction);
+    }
+    controller.join().unwrap();
+}
+
 fn gated() -> (Controller, mpsc::Sender<()>) {
     let (sender, receiver) = mpsc::sync_channel(COMMAND_CAPACITY);
     let (release, gate) = mpsc::channel();

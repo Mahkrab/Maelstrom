@@ -2,6 +2,7 @@
 //! reach the worker; retained outcomes are explicitly labelled when inspected.
 
 use crate::application::{Action, Controller, Receipt, RunHandle, RunSpec, RunStatus};
+use crate::presentation::{CameraMode, CameraSaveTarget, Presentation};
 use crate::render::{BoundaryLines, Camera, RenderError};
 
 /// Editable fields for the next run. Applying them always starts from step zero.
@@ -51,9 +52,28 @@ pub(crate) struct Selected {
     pub handle: RunHandle,
     pub spec: RunSpec,
     pub boundaries: BoundaryLines,
+    pub presentation: Option<ViewPresentation>,
+    pub initial_camera: Camera,
 }
 /// Resolves a draft through the application's existing physical-input precedence.
 pub type Resolver = Box<dyn Fn(&Draft) -> Result<RunSpec, String>>;
+
+/// Scene-owned visual settings and the explicit camera-save destination.
+#[derive(Clone, Debug)]
+pub struct ViewPresentation {
+    /// Validated settings for the selected scene, including temporary CLI overrides.
+    pub presentation: Presentation,
+    /// Destination captured for this selection; bundled scenes have no writable target.
+    pub camera_save: Option<CameraSaveTarget>,
+}
+/// Resolves visual settings independently of the physical request and worker resources.
+pub type PresentationResolver = Box<dyn Fn(&Draft) -> Result<ViewPresentation, String>>;
+
+struct SaveJob {
+    generation: u64,
+    camera: Camera,
+    thread: std::thread::JoinHandle<Result<(), crate::presentation::CameraSaveError>>,
+}
 
 /// Non-blocking presentation state; window events only admit commands and poll receipts.
 pub(crate) struct Model {
@@ -69,6 +89,8 @@ pub(crate) struct Model {
     pub(crate) show_retained: bool,
     pub(super) receipts: Vec<Receipt>,
     pub(super) resolver: Resolver,
+    pub(super) presentation_resolver: Option<PresentationResolver>,
+    save: Option<SaveJob>,
     audit: Option<std::thread::JoinHandle<String>>,
     /// Latest requested density audit, labelled by generation and accepted step.
     pub audit_message: String,
@@ -87,6 +109,8 @@ impl Model {
             show_retained: false,
             receipts: Vec::new(),
             resolver,
+            presentation_resolver: None,
+            save: None,
             audit: None,
             audit_message: "Density audit: D to request (outside solver work)".into(),
         })
@@ -94,9 +118,36 @@ impl Model {
     /// Validates a complete draft before admitting a replacement generation.
     pub fn apply(&mut self) -> Result<(), RenderError> {
         let spec = (self.resolver)(&self.draft).map_err(RenderError)?;
-        self.start(spec)
+        let presentation = self
+            .presentation_resolver
+            .as_ref()
+            .map(|resolve| resolve(&self.draft))
+            .transpose()
+            .map_err(RenderError)?;
+        let mut camera = self.camera.clone();
+        if let Some(view) = &presentation {
+            let settings = &view.presentation.settings;
+            settings.validate()?;
+            camera = settings.camera.clone();
+            if view.presentation.camera_mode == CameraMode::Fit {
+                camera.fit_scene(
+                    &spec.scene.particles,
+                    &spec.scene.planes,
+                    f64::from(spec.scene.configuration.numerical.particle_spacing_m) / 2.0,
+                    f64::from(settings.width) / f64::from(settings.height),
+                )?;
+            }
+        }
+        self.start(spec, presentation, camera.clone())?;
+        self.camera = camera;
+        Ok(())
     }
-    fn start(&mut self, spec: RunSpec) -> Result<(), RenderError> {
+    fn start(
+        &mut self,
+        spec: RunSpec,
+        presentation: Option<ViewPresentation>,
+        initial_camera: Camera,
+    ) -> Result<(), RenderError> {
         self.poll();
         let spacing = f64::from(spec.scene.configuration.numerical.particle_spacing_m);
         let boundaries = BoundaryLines::new(&spec.scene.particles, &spec.scene.planes, spacing)?;
@@ -114,6 +165,8 @@ impl Model {
             handle,
             spec,
             boundaries,
+            presentation,
+            initial_camera,
         });
         self.receipts.push(receipt);
         self.show_retained = false;
@@ -129,7 +182,15 @@ impl Model {
             .spec
             .clone();
         spec.initially_paused = true;
-        self.start(spec)
+        let selected = self
+            .selected
+            .as_ref()
+            .ok_or_else(|| RenderError("no selected run".into()))?;
+        self.start(
+            spec,
+            selected.presentation.clone(),
+            selected.initial_camera.clone(),
+        )
     }
     /// Admits an action without waiting for a synchronous numerical stage.
     pub fn action(&mut self, action: Action) -> Result<(), RenderError> {
@@ -193,6 +254,28 @@ impl Model {
                 false
             }
         });
+        if self
+            .save
+            .as_ref()
+            .is_some_and(|job| job.thread.is_finished())
+            && let Some(job) = self.save.take()
+        {
+            self.message = match job.thread.join() {
+                Ok(Ok(())) => {
+                    for selected in [&mut self.selected, &mut self.retained]
+                        .into_iter()
+                        .flatten()
+                    {
+                        if selected.handle.observe().generation == job.generation {
+                            selected.initial_camera = job.camera.clone();
+                        }
+                    }
+                    format!("Saved camera for generation {}", job.generation)
+                }
+                Ok(Err(error)) => error.to_string(),
+                Err(_) => "Camera-save worker failed".into(),
+            };
+        }
     }
     /// Audits one owned accepted snapshot on a separate thread. Only one audit
     /// may be in flight, and its result keeps the original generation and step.
@@ -236,17 +319,65 @@ impl Model {
             self.selected.as_ref()
         }
     }
-    /// Fits the explicitly displayed run's initial geometry, never a moving snapshot.
+    /// Fits the displayed domain, or its current accepted particles when unbounded.
     pub fn fit(&mut self, aspect: f64) -> Result<(), RenderError> {
         if let Some(s) = self.displayed() {
             let mut camera = self.camera.clone();
-            camera.fit(
-                &s.spec.scene.particles,
+            let observation = s.handle.observe();
+            let particles = observation
+                .snapshot
+                .as_ref()
+                .map_or(s.spec.scene.particles.as_slice(), |p| p.particles());
+            camera.fit_scene(
+                particles,
+                &s.spec.scene.planes,
                 f64::from(s.spec.scene.configuration.numerical.particle_spacing_m) / 2.0,
                 aspect,
             )?;
             self.camera = camera;
         }
+        Ok(())
+    }
+    /// Restores the displayed generation's last loaded or successfully saved camera.
+    pub fn restore_camera(&mut self) -> Result<(), RenderError> {
+        self.camera = self
+            .displayed()
+            .ok_or_else(|| RenderError("no displayed run".into()))?
+            .initial_camera
+            .clone();
+        Ok(())
+    }
+    /// Queues a camera-only save without blocking the window or solver worker.
+    pub fn save_camera(&mut self, aspect: f64) -> Result<(), RenderError> {
+        if self.save.is_some() {
+            return Err(RenderError("camera save already in progress".into()));
+        }
+        self.camera.validate(aspect)?;
+        let selected = self
+            .displayed()
+            .ok_or_else(|| RenderError("no displayed run".into()))?;
+        let target = selected
+            .presentation
+            .as_ref()
+            .and_then(|p| p.camera_save.clone())
+            .ok_or_else(|| {
+                RenderError(
+                    "camera saving requires an editable scene; use scenes create first".into(),
+                )
+            })?;
+        let generation = selected.handle.observe().generation;
+        let camera = self.camera.clone();
+        let saved = camera.clone();
+        let thread = std::thread::Builder::new()
+            .name("camera save".into())
+            .spawn(move || target.save(&saved, aspect))
+            .map_err(|e| RenderError(format!("camera-save worker: {}", e.kind())))?;
+        self.save = Some(SaveJob {
+            generation,
+            camera,
+            thread,
+        });
+        self.message = format!("Saving camera for generation {generation}");
         Ok(())
     }
     /// Requests teardown; the event loop must keep polling until the worker finishes.
@@ -260,6 +391,10 @@ impl Model {
                 .audit
                 .as_ref()
                 .is_none_or(std::thread::JoinHandle::is_finished)
+            && self
+                .save
+                .as_ref()
+                .is_none_or(|job| job.thread.is_finished())
     }
     /// Joins the worker after it has stopped, preserving retained observations.
     pub fn join(mut self) -> Result<(), RenderError> {
@@ -269,11 +404,16 @@ impl Model {
             .join()
             .map_err(|e| RenderError(e.to_string()));
         let audit = self.audit.take().map(|audit| audit.join());
+        let save = self.save.take().map(|job| job.thread.join());
         worker?;
         if audit.is_some_and(|result| result.is_err()) {
             return Err(RenderError(
                 "density audit worker failed during teardown".into(),
             ));
+        }
+        if let Some(save) = save {
+            save.map_err(|_| RenderError("camera-save worker failed".into()))?
+                .map_err(|e| RenderError(e.to_string()))?;
         }
         Ok(())
     }

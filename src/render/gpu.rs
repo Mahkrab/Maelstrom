@@ -33,6 +33,10 @@ pub struct DrawScene<'a> {
     pub radius_m: f64,
     /// Presentation camera.
     pub camera: &'a Camera,
+    /// Fixed colour or energy interval selected for this presentation.
+    pub colours: &'a crate::presentation::ParticleColours,
+    /// Physical particle mass in kilograms, used only for energy colouring.
+    pub particle_mass_kg: f32,
     /// Actual non-zero drawable width.
     pub width: u32,
     /// Actual non-zero drawable height.
@@ -155,7 +159,7 @@ impl Graphics {
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("camera"),
-            size: 80,
+            size: 112,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -163,7 +167,7 @@ impl Graphics {
             label: Some("camera"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -200,9 +204,9 @@ impl Graphics {
             attributes: &wgpu::vertex_attr_array![0=>Float32x3],
         };
         let instance_layout = wgpu::VertexBufferLayout {
-            array_stride: 12,
+            array_stride: 16,
             step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &wgpu::vertex_attr_array![1=>Float32x3],
+            attributes: &wgpu::vertex_attr_array![1=>Float32x3,2=>Float32],
         };
         let make_pipeline =
             |entry, fragment, topology, buffers: &[Option<wgpu::VertexBufferLayout<'_>>]| {
@@ -396,6 +400,12 @@ impl Graphics {
             uniform.push(0.0);
         }
         uniform.extend([0.0, 0.0, 0.0, radius]);
+        let colours = scene.colours.prepare(f64::from(scene.particle_mass_kg))?;
+        let (low, high) = colours.endpoints();
+        for endpoint in [low, high] {
+            uniform.extend(endpoint);
+            uniform.push(0.0);
+        }
         self.queue.write_buffer(&self.uniform, 0, &bytes(&uniform));
         if scene
             .particles
@@ -406,14 +416,17 @@ impl Graphics {
                 "drawing requires ascending particle identities".into(),
             ));
         }
-        let centres = scene
-            .particles
-            .iter()
-            .map(|p| convert(position(p)))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
+        let mut centres = Vec::with_capacity(
+            scene
+                .particles
+                .len()
+                .checked_mul(4)
+                .ok_or_else(|| RenderError("particle draw capacity overflow".into()))?,
+        );
+        for particle in scene.particles {
+            centres.extend(convert(position(particle))?);
+            centres.push(colours.fraction(particle)?);
+        }
         let lines = scene
             .boundaries
             .vertices_m

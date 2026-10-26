@@ -119,10 +119,10 @@ fn construct(spec: RunSpec, shared: Arc<SharedRun>, stopping: &AtomicBool) -> Ac
         return active;
     }
     active.set_status(RunStatus::Constructing);
-    let solver = if spec.scene.schema_version != crate::config::CONFIG_SCHEMA_VERSION {
+    let solver = if !matches!(spec.scene.schema_version, 1 | 2) {
         Err(crate::config::ConfigError::UnsupportedSchema {
             document: "scene",
-            supported: crate::config::CONFIG_SCHEMA_VERSION,
+            supported: crate::config::CURRENT_INPUT_SCHEMA_VERSION,
             found: spec.scene.schema_version,
         }
         .into())

@@ -71,12 +71,15 @@ fn checked_in_configuration_resolves_to_the_selected_numerical_values() {
         0.1_f32.to_bits()
     );
     assert_eq!(resolved.derived.lattice_offset_count, 27);
-    assert!(
-        resolved
-            .sources
-            .values()
-            .all(|source| *source == FieldSource::ConfigurationFile)
-    );
+    assert!(resolved.sources.iter().all(|(field, source)| *source
+        == if matches!(
+            *field,
+            "xsph_viscosity_coefficient" | "vorticity_confinement_strength_m_s"
+        ) {
+            FieldSource::BuiltInDefault
+        } else {
+            FieldSource::ConfigurationFile
+        }));
     resolved
         .pbf_parameters()
         .expect("resolved values should feed the numerical API");
@@ -110,10 +113,10 @@ solver_iterations = 6
 
 #[test]
 fn schema_unknown_fields_and_missing_required_fields_are_rejected() {
-    let unsupported = DEFAULTS_TOML.replacen("schema_version = 1", "schema_version = 2", 1);
+    let unsupported = DEFAULTS_TOML.replacen("schema_version = 1", "schema_version = 3", 1);
     assert!(matches!(
         parse_configuration(&unsupported),
-        Err(ConfigError::UnsupportedSchema { found: 2, .. })
+        Err(ConfigError::UnsupportedSchema { found: 3, .. })
     ));
     let old = DEFAULTS_TOML.replacen("schema_version = 1", "schema_version = 0", 1);
     assert!(matches!(
@@ -164,6 +167,14 @@ fn schema_unknown_fields_and_missing_required_fields_are_rejected() {
 #[test]
 fn every_primary_numeric_domain_rejects_invalid_or_non_finite_values() {
     let invalid = [
+        NumericalOverrides {
+            xsph_viscosity_coefficient: Some(-0.1),
+            ..Default::default()
+        },
+        NumericalOverrides {
+            xsph_viscosity_coefficient: Some(1.01),
+            ..Default::default()
+        },
         NumericalOverrides {
             external_acceleration_m_s2: Some([0.0, f32::NAN, 0.0]),
             ..Default::default()
@@ -246,6 +257,10 @@ fn every_primary_numeric_domain_rejects_invalid_or_non_finite_values() {
 #[test]
 fn every_floating_primary_field_rejects_a_non_finite_value() {
     let invalid = [
+        NumericalOverrides {
+            xsph_viscosity_coefficient: Some(f32::NAN),
+            ..Default::default()
+        },
         NumericalOverrides {
             external_acceleration_m_s2: Some([f32::NAN, 0.0, 0.0]),
             ..Default::default()
@@ -369,11 +384,7 @@ fn different_supported_values_resolve_and_fixed_policy_alternatives_fail() {
             ..Default::default()
         },
         NumericalOverrides {
-            xsph_viscosity_enabled: Some(true),
-            ..Default::default()
-        },
-        NumericalOverrides {
-            vorticity_confinement_enabled: Some(true),
+            vorticity_confinement_strength_m_s: Some(-0.01),
             ..Default::default()
         },
     ];

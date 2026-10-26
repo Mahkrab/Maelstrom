@@ -71,14 +71,23 @@ pub(super) fn create(cli: &Cli, storage: &Storage, name: &str, from: &str) -> Re
         refine_timestep: None,
     };
     let resolved = inputs::resolve_in(&selection, storage)?;
-    let source = match storage.scene(from)? {
-        Some(path) => storage::read(&path, 64 * 1024 * 1024)?,
-        None => bundled::scene(from.strip_prefix("builtin:").unwrap_or(from))
-            .map(str::to_owned)
-            .ok_or_else(|| CliError::input("unknown source scene".into()))?,
-    };
-    let mut document =
-        maelstrom::scene::parse_scene(&source).map_err(|e| CliError::input(e.to_string()))?;
+    let presentation = super::presentation::resolve(Some(&resolved), &Default::default())?;
+    let render_text = presentation
+        .effective
+        .to_toml()
+        .map_err(|e| CliError::input(e.to_string()))?;
+    let mut document = resolved
+        .document
+        .clone()
+        .ok_or_else(|| CliError::input("missing source scene".into()))?;
+    document.schema_version = 2;
+    if document.run.is_none() {
+        document.run = Some(maelstrom::scene::RunDefaults {
+            steps: None,
+            duration_s: Some(1.0),
+        });
+    }
+    inherit_spacing(&mut document.particles);
     document.name = name.into();
     document.configuration.source = maelstrom::scene::ConfigurationSource::File;
     document.configuration.path = Some("config.toml".into());
@@ -89,13 +98,58 @@ pub(super) fn create(cli: &Cli, storage: &Storage, name: &str, from: &str) -> Re
     // document. Write primary values only, with the input schema's vector shape.
     let acceleration = resolved.configuration.numerical.external_acceleration_m_s2;
     let mut configuration = json!({
-        "schema_version":resolved.configuration.schema_version,
+        "schema_version":2,
         "name":resolved.configuration.name,
         "description":resolved.configuration.description,
         "numerical":resolved.configuration.numerical,
     });
     configuration["numerical"]["external_acceleration_m_s2"] =
         json!([acceleration.x, acceleration.y, acceleration.z]);
+    let mut assertions = serde_json::to_value(resolved.configuration.derived)
+        .map_err(|e| CliError::input(e.to_string()))?;
+    if let Some(fields) = assertions.as_object_mut() {
+        fields.remove("lattice_offset_count");
+    }
+    let mut assertion_replacements = Vec::new();
+    let mut asserted_fields = std::collections::BTreeSet::new();
+    for (label, original) in [
+        (
+            "configuration",
+            resolved
+                .selected_configuration
+                .as_ref()
+                .map(|c| &c.overlay.derived),
+        ),
+        (
+            "scene",
+            resolved
+                .document
+                .as_ref()
+                .and_then(|s| s.configuration.overrides.as_ref())
+                .map(|o| &o.derived),
+        ),
+    ] {
+        if let Some(original) = original {
+            let value =
+                serde_json::to_value(original).map_err(|e| CliError::input(e.to_string()))?;
+            if let Some(fields) = value.as_object() {
+                for (field, old) in fields {
+                    if !old.is_null() {
+                        asserted_fields.insert(field.clone());
+                    }
+                    if !old.is_null() && *old != assertions[field] {
+                        assertion_replacements.push(json!({"layer":label,"field":field,"previous":old,"effective":assertions[field]}));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(fields) = assertions.as_object_mut() {
+        fields.retain(|key, _| asserted_fields.contains(key));
+    }
+    if !asserted_fields.is_empty() {
+        configuration["derived"] = assertions;
+    }
     let config_text =
         toml::to_string_pretty(&configuration).map_err(|e| CliError::input(e.to_string()))?;
     fs::create_dir_all(&storage.scenes)
@@ -109,10 +163,33 @@ pub(super) fn create(cli: &Cli, storage: &Storage, name: &str, from: &str) -> Re
         .map_err(|e| CliError::output(e.to_string()))?;
     fs::write(target.join("scene.toml"), scene_text)
         .map_err(|e| CliError::output(e.to_string()))?;
+    fs::write(target.join("render.toml"), render_text)
+        .map_err(|e| CliError::output(e.to_string()))?;
+    if !assertion_replacements.is_empty() && !cli.quiet {
+        use std::io::Write;
+        writeln!(
+            std::io::stderr().lock(),
+            "migration replaced source-layer assertions with final effective assertions: {}",
+            json!(assertion_replacements)
+        )
+        .map_err(|e| CliError::output(format!("stderr: {e}")))?;
+    }
     super::print_document(
         cli.format,
         format!("Created user:{name}\n{}", target.display()),
-        json!({"schema_version":1,"name":name,"path":target,"source":from}),
+        json!({"schema_version":1,"name":name,"path":target,"source":from,"assertion_replacements":assertion_replacements}),
     )?;
     Ok(0)
+}
+
+fn inherit_spacing(source: &mut maelstrom::scene::ParticleSource) {
+    match source {
+        maelstrom::scene::ParticleSource::Lattice { spacing_m, .. } => *spacing_m = None,
+        maelstrom::scene::ParticleSource::Groups { groups } => {
+            for group in groups {
+                inherit_spacing(&mut group.source);
+            }
+        }
+        maelstrom::scene::ParticleSource::Explicit { .. } => {}
+    }
 }

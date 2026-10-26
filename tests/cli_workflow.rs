@@ -437,6 +437,8 @@ fn configured_iteration_work_is_identified_and_replays_exactly() {
     let original = command(&dir.0)
         .args([
             "run",
+            "--backend",
+            "serial-grid",
             "falling-block-04",
             "--steps",
             "2",
@@ -868,6 +870,8 @@ fn replay_rejects_the_previous_projection_contract_explicitly() {
     let dir = Directory::new();
     let run = cli(&[
         "run",
+        "--backend",
+        "serial-grid",
         "falling-block-04",
         "--steps",
         "0",
@@ -1474,6 +1478,8 @@ fn threaded_selection_replay_and_environment_independence_are_public() {
     );
     let serial = cli(&[
         "run",
+        "--backend",
+        "serial-grid",
         "falling-block-04",
         "--steps",
         "3",

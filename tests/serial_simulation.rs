@@ -487,7 +487,7 @@ fn invalid_particles_configuration_and_permissively_constructed_planes_are_rejec
         |c| c.numerical.external_acceleration_m_s2.x = f32::NAN,
         |c| c.numerical.solver_iterations = 0,
         |c| c.numerical.support_policy = "inclusive".into(),
-        |c| c.numerical.xsph_viscosity_enabled = true,
+        |c| c.numerical.xsph_viscosity_coefficient = f32::NAN,
         |c| c.derived.particle_mass_kg = f32::INFINITY,
         |c| c.derived.normalised_rest_density_per_m3 = 1.0,
         |c| c.derived.relaxation_per_m2 = 0.0,

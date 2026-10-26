@@ -14,8 +14,14 @@ use super::{
 
 // i dont like strings
 
-/// Supported configuration schema version.
+/// Legacy input version, retained for historical numerical resolution.
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
+/// Latest input schema accepted by configuration and scene readers.
+pub const CURRENT_INPUT_SCHEMA_VERSION: u32 = 2;
+/// Dimensionless rest-volume smoothing strength used when no coefficient is supplied.
+pub const DEFAULT_XSPH_VISCOSITY_COEFFICIENT: f32 = 0.01;
+/// Confinement strength in metres per second when no value is supplied.
+pub const DEFAULT_VORTICITY_CONFINEMENT_STRENGTH_M_S: f32 = 0.01;
 /// Scalar representation used by every numerical input and derived value.
 pub const SCALAR_PRECISION: &str = "binary32";
 /// Coordinate and unit convention used by configuration and scenes.
@@ -48,10 +54,6 @@ const fn unit_correction_scale() -> f32 {
     1.0
 }
 
-fn is_unit_correction_scale(value: &f32) -> bool {
-    *value == 1.0
-}
-
 /// Origin of one effective numerical value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -70,7 +72,7 @@ pub enum FieldSource {
 pub type ValueSources = BTreeMap<&'static str, FieldSource>;
 
 /// Primary values and fixed policies used to derive simulator parameters.
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NumericalModel {
     /// Scalar representation used by every numerical value.
@@ -103,10 +105,7 @@ pub struct NumericalModel {
     pub relaxation_scale: f32,
     /// Dimensionless multiplier on each complete Jacobi correction; legacy
     /// records omit the unit scale without changing their comparison identity.
-    #[serde(
-        default = "unit_correction_scale",
-        skip_serializing_if = "is_unit_correction_scale"
-    )]
+    #[serde(default = "unit_correction_scale")]
     pub correction_scale: f32,
     /// Whether to apply the artificial-pressure correction.
     pub artificial_pressure_enabled: bool,
@@ -126,8 +125,14 @@ pub struct NumericalModel {
     pub particle_order_policy: String,
     /// Whether XSPH viscosity is enabled.
     pub xsph_viscosity_enabled: bool,
+    /// Dimensionless rest-volume XSPH strength in 0..=1; ignored when disabled.
+    #[serde(default = "default_xsph_coefficient")]
+    pub xsph_viscosity_coefficient: f32,
     /// Whether vorticity confinement is enabled.
     pub vorticity_confinement_enabled: bool,
+    /// Non-negative confinement strength in metres per second; inactive when disabled.
+    #[serde(default = "default_vorticity_strength")]
+    pub vorticity_confinement_strength_m_s: f32,
 }
 
 /// Values calculated from the primary numerical model.
@@ -167,16 +172,19 @@ pub struct ResolvedConfiguration {
     pub derived: ResolvedDerivedValues,
     /// Source layer for each resolved numerical field.
     pub sources: ValueSources,
+    /// Informational refinement selection for newly resolved inputs; recorded
+    /// runs carry effective values and do not need to repeat this operation.
+    pub refinement: Option<super::Refinement>,
 }
 
 impl ResolvedConfiguration {
     // Public fields can be changed after resolution, so validate before the
     // solver takes its owned copy.
     pub(crate) fn validate(&self) -> Result<(), ConfigError> {
-        if self.schema_version != CONFIG_SCHEMA_VERSION {
+        if !matches!(self.schema_version, 1 | 2) {
             return Err(ConfigError::UnsupportedSchema {
                 document: "resolved configuration",
-                supported: CONFIG_SCHEMA_VERSION,
+                supported: CURRENT_INPUT_SCHEMA_VERSION,
                 found: self.schema_version,
             });
         }
@@ -297,7 +305,7 @@ impl fmt::Display for ConfigError {
                 found,
             } => write!(
                 formatter,
-                "unsupported {document} schema version {found}; supported version is {supported}"
+                "unsupported {document} schema version {found}; supported versions are 1..={supported}"
             ),
             Self::InvalidField { field, reason } => write!(formatter, "invalid {field}: {reason}"),
             Self::DerivedMismatch {
@@ -334,6 +342,12 @@ pub fn resolve_effective_configuration(
     scene: Option<&ConfigurationOverlay>,
     command_line: Option<&ConfigurationOverlay>,
 ) -> Result<ResolvedConfiguration, ConfigError> {
+    if let Some(file) = file {
+        super::document::validate_schema(file.schema_version, "configuration")?;
+    }
+    if file.is_some_and(|document| document.schema_version == 2) {
+        return super::resolve_configuration_for_schema(2, file, scene, command_line);
+    }
     let mut numerical = default_model();
     let mut name = DEFAULT_NAME.to_owned();
     let mut description = DEFAULT_DESCRIPTION.to_owned();
@@ -378,6 +392,7 @@ pub fn resolve_effective_configuration(
         numerical,
         derived,
         sources,
+        refinement: None,
     })
 }
 
@@ -413,7 +428,7 @@ fn apply_layer(
     validate_assertions(layer, &overlay.derived, derived)
 }
 
-fn apply_overrides(
+pub(super) fn apply_overrides(
     overrides: &NumericalOverrides,
     source: FieldSource,
     model: &mut NumericalModel,
@@ -454,10 +469,12 @@ fn apply_overrides(
     apply!(neighbour_rebuild_policy);
     apply!(particle_order_policy);
     apply!(xsph_viscosity_enabled);
+    apply!(xsph_viscosity_coefficient);
     apply!(vorticity_confinement_enabled);
+    apply!(vorticity_confinement_strength_m_s);
 }
 
-fn default_model() -> NumericalModel {
+pub(super) fn default_model() -> NumericalModel {
     NumericalModel {
         scalar_precision: SCALAR_PRECISION.to_owned(),
         coordinate_system: COORDINATE_SYSTEM.to_owned(),
@@ -484,11 +501,13 @@ fn default_model() -> NumericalModel {
         neighbour_rebuild_policy: NEIGHBOUR_REBUILD_POLICY.to_owned(),
         particle_order_policy: PARTICLE_ORDER_POLICY.to_owned(),
         xsph_viscosity_enabled: false,
+        xsph_viscosity_coefficient: default_xsph_coefficient(),
         vorticity_confinement_enabled: false,
+        vorticity_confinement_strength_m_s: default_vorticity_strength(),
     }
 }
 
-fn default_sources() -> ValueSources {
+pub(super) fn default_sources() -> ValueSources {
     [
         "scalar_precision",
         "coordinate_system",
@@ -513,9 +532,20 @@ fn default_sources() -> ValueSources {
         "neighbour_rebuild_policy",
         "particle_order_policy",
         "xsph_viscosity_enabled",
+        "xsph_viscosity_coefficient",
         "vorticity_confinement_enabled",
+        "vorticity_confinement_strength_m_s",
     ]
     .into_iter()
     .map(|field| (field, FieldSource::BuiltInDefault))
     .collect()
+}
+
+// Keep the disabled default absent from legacy recorded numerical inputs.
+pub(super) fn default_xsph_coefficient() -> f32 {
+    DEFAULT_XSPH_VISCOSITY_COEFFICIENT
+}
+
+pub(super) fn default_vorticity_strength() -> f32 {
+    DEFAULT_VORTICITY_CONFINEMENT_STRENGTH_M_S
 }

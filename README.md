@@ -24,9 +24,13 @@ maelstrom scenes create water --from builtin:falling-block-04
 maelstrom view water --refine-timestep 4 --steps 480 --paused
 ```
 
-Edit the new scene's `scene.toml` and `config.toml` under the location printed by
+Edit the new scene's `scene.toml`, `config.toml` and `render.toml` under the location printed by
 `maelstrom paths`. Installed examples remain untouched. [Scenes and inputs](docs/inputs.md)
 explains the geometry and numerical settings.
+
+For two interacting blocks inside a box, create a copy with
+`maelstrom scenes create collision --from builtin:two-blocks`. Its named initial groups share
+one fluid model; the scene file supplies box bounds instead of hand-written planes.
 
 ## Compute once, watch later
 

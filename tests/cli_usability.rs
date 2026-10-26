@@ -214,7 +214,33 @@ fn every_bundled_scene_matches_its_file_and_copies_its_own_configuration() {
             "--backend",
             "serial-grid",
         ]);
-        assert_eq!(bundled, file, "{name}");
+        for field in [
+            "configuration",
+            "scene",
+            "refinement",
+            "presentation",
+            "run_defaults",
+            "execution",
+        ] {
+            assert_eq!(bundled[field], file[field], "{name}: {field}");
+        }
+        // Source bytes agree while the portable location labels distinguish an
+        // embedded resource from the same document selected on disk.
+        let identities = |value: &Value| {
+            let mut ids: Vec<_> = value["documents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| (d["domain"].clone(), d["sha256"].clone()))
+                .collect();
+            ids.sort_by_key(|pair| pair.0.to_string());
+            ids
+        };
+        assert_eq!(
+            identities(&bundled),
+            identities(&file),
+            "{name}: source bytes"
+        );
     }
     let source = lib.json(&[
         "inspect",

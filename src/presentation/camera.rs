@@ -155,6 +155,19 @@ impl Camera {
         aspect: f64,
     ) -> Result<(), RenderError> {
         let (lo, hi) = bounds(particles, radius)?;
+        self.fit_bounds(lo, hi, aspect)
+    }
+
+    /// Fits explicit finite bounds, retaining the camera's selected vertical field of view.
+    ///
+    /// # Errors
+    /// Rejects invalid bounds or a camera that cannot represent the resulting projection.
+    pub fn fit_bounds(&mut self, lo: V, hi: V, aspect: f64) -> Result<(), RenderError> {
+        if !lo.into_iter().chain(hi).all(f64::is_finite) || (0..3).any(|i| hi[i] <= lo[i]) {
+            return Err(RenderError(
+                "camera bounds must be finite and increasing".into(),
+            ));
+        }
         let target = mul(add(lo, hi), 0.5);
         let diagonal = sub(hi, lo);
         let r = dot(diagonal, diagonal).sqrt() / 2.0;
@@ -172,6 +185,41 @@ impl Camera {
         next.validate(aspect)?;
         *self = next;
         Ok(())
+    }
+    /// Fits the finite declared domain, otherwise the supplied accepted particles.
+    /// Empty unbounded scenes retain the built-in fixed fallback.
+    ///
+    /// # Errors
+    /// Rejects an invalid particle radius, aspect or unrepresentable camera.
+    pub fn fit_scene(
+        &mut self,
+        particles: &[Particle],
+        planes: &[crate::boundary::Plane],
+        radius: f64,
+        aspect: f64,
+    ) -> Result<(), RenderError> {
+        if !radius.is_finite() || radius <= 0.0 {
+            return Err(RenderError(
+                "camera radius must be positive and finite".into(),
+            ));
+        }
+        if let Some((mut lo, mut hi)) = super::domain_bounds(planes) {
+            for axis in 0..3 {
+                lo[axis] -= radius;
+                hi[axis] += radius;
+            }
+            if self.fit_bounds(lo, hi, aspect).is_ok() {
+                return Ok(());
+            }
+        }
+        if particles.is_empty() {
+            let fallback = Self::default();
+            fallback.validate(aspect)?;
+            *self = fallback;
+            Ok(())
+        } else {
+            self.fit(particles, radius, aspect)
+        }
     }
     /// Orbits around the target. Pitch is clamped away from the up-axis poles.
     pub fn orbit(&mut self, yaw: f64, pitch: f64) -> Result<(), RenderError> {

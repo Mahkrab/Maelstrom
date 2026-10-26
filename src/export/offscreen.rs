@@ -140,6 +140,7 @@ pub(super) struct FrameWriter<'a> {
     pub settings: &'a Settings,
     pub boundaries: &'a BoundaryLines,
     pub spacing: f64,
+    pub mass_kg: f32,
     pub dt: f64,
     pub destination: &'a std::path::Path,
     pub render_seconds: f64,
@@ -160,6 +161,8 @@ impl FrameWriter<'_> {
                 boundaries: self.boundaries,
                 radius_m: self.spacing / 2.0,
                 camera: &self.settings.camera,
+                colours: &self.settings.particles,
+                particle_mass_kg: self.mass_kg,
                 width: self.settings.width,
                 height: self.settings.height,
             },
@@ -215,6 +218,8 @@ mod tests {
                     boundaries: &boundary,
                     radius_m: 0.025,
                     camera: &crate::render::Camera::default(),
+                    colours: &crate::presentation::ParticleColours::default(),
+                    particle_mass_kg: 1.0,
                     width: 16,
                     height: 16
                 }

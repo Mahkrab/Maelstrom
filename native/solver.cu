@@ -20,6 +20,12 @@ struct Checked {
 __device__ Vector add(Vector a, Vector b) { return {a.x+b.x,a.y+b.y,a.z+b.z}; }
 __device__ Vector sub(Vector a, Vector b) { return {a.x-b.x,a.y-b.y,a.z-b.z}; }
 __device__ Vector mul(Vector a, float b) { return {a.x*b,a.y*b,a.z*b}; }
+__device__ Vector cross(Vector a, Vector b) {
+    return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};
+}
+__device__ Vector divide(Vector a, float b) {
+    return {__fdiv_rn(a.x,b),__fdiv_rn(a.y,b),__fdiv_rn(a.z,b)};
+}
 __device__ Vector neg(Vector a) { return {-a.x,-a.y,-a.z}; }
 __device__ float dot(Vector a, Vector b) { return (a.x*b.x+a.y*b.y)+a.z*b.z; }
 __device__ float length(Vector a, Checked &c) {
@@ -171,6 +177,57 @@ extern "C" __global__ void solver(SolverBuffers b, SolverSettings s, unsigned in
         Vector displacement=c.vector(sub(b.position[i],b.old_position[i]),49);
         float reciprocal=c.scalar(__fdiv_rn(1.0f,s.timestep),50);
         b.velocity[i]=c.vector(mul(displacement,reciprocal),51);
+    } else if (operation==14) {
+        // Every row reads reconstructed velocity; candidate is a separate output.
+        Vector sum{0,0,0};
+        Members row(b,s,i);
+        for (auto j=row.next(s.count);j<s.count;j=row.next(s.count)) {
+            float distance=separation(b.position[i],b.position[j],c,18);
+            if (distance>=s.radius) continue;
+            float weight=c.scalar(__fdiv_rn(poly6(distance,s.radius,c),s.rest_density),54);
+            Vector difference=c.vector(sub(b.velocity[j],b.velocity[i]),53);
+            Vector contribution=c.vector(mul(difference,weight),55);
+            sum=c.vector(add(sum,contribution),56);
+        }
+        Vector delta=c.vector(mul(sum,s.xsph),57);
+        b.candidate[i]=c.vector(add(b.velocity[i],delta),58);
+    } else if (operation==15) {
+        // The complete velocity-effect pass has finished on this stream.
+        b.velocity[i]=b.candidate[i];
+    } else if (operation==16) {
+        // Jacobi corrections are finished; their scratch now holds immutable curl.
+        Vector omega{0,0,0};
+        Members row(b,s,i);
+        for (auto j=row.next(s.count);j<s.count;j=row.next(s.count)) {
+            Vector displacement=c.vector(sub(b.position[i],b.position[j]),18);
+            if (length(displacement,c)>=s.radius) continue;
+            Vector gradient=c.vector(divide(spiky(displacement,s.radius,c),s.rest_density),59);
+            Vector difference=c.vector(sub(b.velocity[j],b.velocity[i]),60);
+            Vector contribution=c.vector(cross(gradient,difference),61);
+            omega=c.vector(add(omega,contribution),62);
+        }
+        b.correction[i]=omega;
+        b.density[i]=length(omega,c);
+    } else if (operation==17) {
+        Vector eta{0,0,0};
+        Members row(b,s,i);
+        for (auto j=row.next(s.count);j<s.count;j=row.next(s.count)) {
+            Vector displacement=c.vector(sub(b.position[i],b.position[j]),18);
+            if (length(displacement,c)>=s.radius) continue;
+            Vector gradient=c.vector(divide(spiky(displacement,s.radius,c),s.rest_density),59);
+            float difference=c.scalar(b.density[j]-b.density[i],63);
+            Vector contribution=c.vector(mul(gradient,difference),64);
+            eta=c.vector(add(eta,contribution),65);
+        }
+        float magnitude=length(eta,c);
+        if (magnitude==0.0f) b.candidate[i]=b.velocity[i];
+        else {
+            Vector normal=c.vector(divide(eta,magnitude),66);
+            Vector rotation=c.vector(cross(normal,b.correction[i]),67);
+            Vector acceleration=c.vector(mul(rotation,s.vorticity),68);
+            Vector delta=c.vector(mul(acceleration,s.timestep),69);
+            b.candidate[i]=c.vector(add(b.velocity[i],delta),70);
+        }
     }
     b.errors[i]=c.error;
     // Only failing lanes contend. The high word preserves particle precedence;

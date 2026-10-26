@@ -1,0 +1,7 @@
+schema_version = 2
+name = "two-block-test-model"
+description = "Small fixed interaction fixture, independent of editable examples"
+
+[numerical]
+particle_spacing_m = 0.05
+refine_timestep = 4

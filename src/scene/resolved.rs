@@ -8,7 +8,7 @@ use crate::{
     boundary::Plane,
     config::{
         ConfigError, ConfigurationDocument, ConfigurationOverlay, ResolvedConfiguration,
-        load_configuration, resolve_effective_configuration,
+        load_configuration, resolve_configuration_for_schema,
     },
     math::Vec3,
 };
@@ -29,7 +29,9 @@ pub const MAX_PLANES: usize = 32;
 /// Maximum explicit particle count before pairwise overlap validation is impractical.
 pub const MAX_EXPLICIT_PARTICLES: usize = 4_096;
 /// Maximum deterministic lattice particle count accepted by scene construction.
-pub const MAX_LATTICE_PARTICLES: usize = 1_000_000;
+pub const MAX_LATTICE_PARTICLES: usize = MAX_SCENE_PARTICLES;
+/// Maximum total initial particles in a grouped scene.
+pub const MAX_SCENE_PARTICLES: usize = 1_000_000;
 
 /// Position and velocity associated with one stable particle identity.
 ///
@@ -94,6 +96,13 @@ pub enum SceneError {
     },
     /// A configuration file was selected but not supplied for resolution.
     MissingConfigurationDocument,
+    /// An initial source failed validation inside the named group.
+    ParticleGroup {
+        /// Name of the group containing the invalid source.
+        name: String,
+        /// Underlying source error.
+        error: Box<SceneError>,
+    },
     /// The scene contains more planes than the supported limit.
     TooManyPlanes {
         /// Largest supported plane count.
@@ -168,6 +177,9 @@ pub enum SceneError {
 impl fmt::Display for SceneError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ParticleGroup { name, error } => {
+                write!(formatter, "particle group {name:?}: {error}")
+            }
             Self::Configuration(error) => write!(formatter, "invalid scene configuration: {error}"),
             Self::ConfigurationFile { path, error } => {
                 write!(formatter, "configuration file {path:?}: {error}")
@@ -218,7 +230,7 @@ impl fmt::Display for SceneError {
             }
             Self::ParticleIdentityOrder { previous, next } => write!(
                 formatter,
-                "explicit particle identities must be unique and ascending, got {previous} then {next}"
+                "particle identities must be unique and ascending, got {previous} then {next}"
             ),
             Self::LatticeCoordinateCollapse {
                 axis,
@@ -250,6 +262,7 @@ impl fmt::Display for SceneError {
 impl std::error::Error for SceneError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::ParticleGroup { error, .. } => Some(error.as_ref()),
             Self::Configuration(error) => Some(error),
             Self::ConfigurationFile { error, .. } => Some(error),
             Self::Numerical(error) => Some(error),
@@ -312,7 +325,8 @@ pub fn resolve_scene(
         }
     };
 
-    let configuration = resolve_effective_configuration(
+    let configuration = resolve_configuration_for_schema(
+        document.schema_version,
         selected_file,
         document.configuration.overrides.as_ref(),
         command_line,
@@ -332,7 +346,8 @@ pub fn resolve_scene_with_configuration(
     configuration: &ConfigurationDocument,
     command_line: Option<&ConfigurationOverlay>,
 ) -> Result<ResolvedScene, SceneError> {
-    let configuration = resolve_effective_configuration(
+    let configuration = resolve_configuration_for_schema(
+        document.schema_version,
         Some(configuration),
         document.configuration.overrides.as_ref(),
         command_line,
@@ -344,7 +359,12 @@ fn build_scene(
     document: &SceneDocument,
     configuration: ResolvedConfiguration,
 ) -> Result<ResolvedScene, SceneError> {
-    let planes = resolve_planes(&document.planes)?;
+    document.validate_schema_fields()?;
+    if let Some(run) = &document.run {
+        run.resolved_steps(configuration.numerical.fixed_timestep_s)?;
+    }
+    let plane_documents = super::container::expanded_planes(document)?;
+    let planes = resolve_planes(&plane_documents)?;
     validate_plane_compatibility(&planes)?;
     let particles = resolve_particles(
         &document.particles,

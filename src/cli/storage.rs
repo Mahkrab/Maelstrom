@@ -191,7 +191,7 @@ pub(super) fn read(path: &Path, limit: u64) -> Result<String, CliError> {
         limit,
     )
 }
-fn read_file(file: fs::File, limit: u64) -> Result<String, CliError> {
+pub(super) fn read_file(file: fs::File, limit: u64) -> Result<String, CliError> {
     let mut text = String::new();
     file.take(limit + 1)
         .read_to_string(&mut text)

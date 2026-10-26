@@ -12,6 +12,7 @@ mod management;
 mod pacing;
 #[cfg(feature = "viewer")]
 mod play;
+mod presentation;
 mod scenes;
 mod selection;
 mod storage;
@@ -150,6 +151,13 @@ fn execute(cli: &Cli) -> Result<u8, CliError> {
         Command::Compile(args) => bundle::compile(cli, &storage, args),
         Command::Validate(inputs) | Command::Inspect { inputs, .. } => {
             let resolved = inputs::resolve_in(inputs, &storage)?;
+            let default_presentation = arguments::PresentationOptions::default();
+            let presentation_options = if let Command::Inspect { presentation, .. } = &cli.command {
+                presentation
+            } else {
+                &default_presentation
+            };
+            let rendered = presentation::resolve(Some(&resolved), presentation_options)?;
             diagnostic(cli, &resolved)?;
             let inspect = matches!(cli.command, Command::Inspect { .. });
             let mut text = if inspect {
@@ -174,17 +182,68 @@ fn execute(cli: &Cli) -> Result<u8, CliError> {
                         ))
                 )
             };
+            for source in &resolved.documents {
+                text.push_str(&format!(
+                    "{} source: {} (SHA-256 {})\n",
+                    source.domain, source.label, source.sha256
+                ));
+            }
+            if let Some(source) = &rendered.document {
+                text.push_str(&format!(
+                    "render source: {} (SHA-256 {})\n",
+                    source.label, source.sha256
+                ));
+            }
             let mut document = inspection(&resolved);
+            if let Some(refinement) = &resolved.configuration.refinement {
+                text.push_str(&format!(
+                    "Refinement: {} from {:?}; timestep {} → {} s; correction scale {} → {}\n",
+                    refinement.factor,
+                    refinement.source,
+                    refinement.unrefined_timestep_s,
+                    resolved.configuration.numerical.fixed_timestep_s,
+                    refinement.unrefined_correction_scale,
+                    resolved.configuration.numerical.correction_scale
+                ));
+            }
+            document["applicability"] = json!({
+                "numerical":["run","view","compile"], "run_defaults":["run","view","compile"],
+                "presentation":["view","compile","export"],"step_stride":["compile","export"],
+                "play":"recorded images only; current scene defaults are not loaded",
+            });
+            document["presentation"] =
+                serde_json::to_value(&rendered).map_err(|e| CliError::input(e.to_string()))?;
+            document["run_defaults"] =
+                json!(resolved.document.as_ref().and_then(|d| d.run.as_ref()));
+            text.push_str(&format!(
+                "\nPresentation: {:?}; {} × {}; stride {}; colours {:?}\n",
+                rendered.effective.camera_mode,
+                rendered.effective.settings.width,
+                rendered.effective.settings.height,
+                rendered.effective.settings.step_stride,
+                rendered.effective.settings.particles
+            ));
             if let Command::Inspect {
-                selection: args, ..
+                selection: args,
+                limit,
+                ..
             } = &cli.command
             {
-                let options = selection::resolve(args, &storage.preferences()?)?;
+                let preferences = storage.preferences()?;
+                let options = selection::resolve(args, &preferences)?;
                 text.push_str(&format!(
                     "\nExecution: {:?}; {:?}\n",
                     options.backend, options.execution
                 ));
-                document["execution"] = json!({"discovery":format!("{:?}",options.backend),"resources":options.execution});
+                document["execution"] = json!({"discovery":format!("{:?}",options.backend),"resources":options.execution,"provenance":selection::provenance(args,&preferences)});
+                if limit.steps.is_some()
+                    || limit.duration.is_some()
+                    || resolved.document.as_ref().is_some_and(|d| d.run.is_some())
+                {
+                    let steps = resolved.steps(limit)?;
+                    document["run"] = json!({"steps":steps,"source":if limit.steps.is_some() || limit.duration.is_some() { "command_line" } else { "scene" }});
+                    text.push_str(&format!("Run: {steps} steps\n"));
+                }
             }
             document["operation"] = json!(if inspect { "inspect" } else { "validate" });
             print_document(cli.format, text, document)?;
@@ -209,11 +268,7 @@ fn execute(cli: &Cli) -> Result<u8, CliError> {
             }
             let resolved = inputs::resolve_in(&run.inputs, &storage)?;
             diagnostic(cli, &resolved)?;
-            let steps = run_limit(
-                run.limit.steps,
-                run.limit.duration,
-                resolved.configuration.numerical.fixed_timestep_s,
-            )?;
+            let steps = resolved.steps(&run.limit)?;
             if run.checkpoints.iter().any(|&step| step > steps)
                 || run.checkpoints.windows(2).any(|pair| pair[0] >= pair[1])
             {
@@ -243,6 +298,10 @@ fn execute(cli: &Cli) -> Result<u8, CliError> {
                 &ResolvedInputs {
                     configuration: scene.configuration.clone(),
                     scene: Some(scene.clone()),
+                    document: None,
+                    directory: None,
+                    documents: vec![],
+                    selected_configuration: None,
                 },
             )?;
             execute_run(cli, &scene, request, &replay.output, options, false)
@@ -273,28 +332,32 @@ fn inspection(inputs: &ResolvedInputs) -> Value {
             "description": configuration.description, "numerical": configuration.numerical,
             "derived": configuration.derived, "provenance": configuration.sources,
             "comparison_key": configuration.comparison_key()},
+        "refinement":configuration.refinement,
+        "documents":inputs.documents,
         "scene": inputs.scene.as_ref().map(|scene| json!({"schema_version": scene.schema_version,
             "name": scene.name, "description": scene.description, "particle_count": scene.particles.len(),
             "plane_count": scene.planes.len(), "randomness": scene.randomness,
+            "particle_groups": inputs.document.as_ref().map(|d|match &d.particles {
+                maelstrom::scene::ParticleSource::Groups {groups}=>groups.iter().map(|g|g.name.as_str()).collect::<Vec<_>>(),
+                _=>vec![],
+            }),
+            "container":inputs.document.as_ref().and_then(|d|d.container.as_ref()),
             "planes": scene.planes.iter().map(|plane| json!({"normal": plane.normal(), "offset_m": plane.offset()})).collect::<Vec<_>>() }))
     })
 }
 
 fn run_limit(steps: Option<u64>, duration: Option<f64>, timestep: f32) -> Result<u64, CliError> {
-    if let Some(steps) = steps {
-        return Ok(steps);
+    if steps.is_none() && duration.is_none() {
+        return Err(CliError::usage(
+            "run requires --steps or --duration, or a saved scene run limit".into(),
+        ));
     }
-    let duration =
-        duration.ok_or_else(|| CliError::usage("run requires --steps or --duration".into()))?;
-    let steps = (duration / f64::from(timestep)).ceil();
-    if !duration.is_finite()
-        || duration < 0.0
-        || !steps.is_finite()
-        || steps >= 18_446_744_073_709_551_616.0
-    {
-        return Err(CliError::usage("--duration must be finite, non-negative and representable as a u64 count of fixed timesteps; use --steps for an exact count".into()));
+    maelstrom::scene::RunDefaults {
+        steps,
+        duration_s: duration,
     }
-    Ok(steps as u64)
+    .resolved_steps(timestep)
+    .map_err(|e| CliError::usage(format!("{e}; use --steps or --duration")))
 }
 
 fn execute_run(

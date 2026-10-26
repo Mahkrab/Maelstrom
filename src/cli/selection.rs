@@ -5,6 +5,25 @@ use super::{
     arguments::{ExecutionKind, Selection},
     storage::Preferences,
 };
+
+pub(super) fn provenance(args: &Selection, preferences: &Preferences) -> serde_json::Value {
+    let explicit = args.backend.is_some() || args.execution.is_some();
+    let origin = |argument: bool, preference: bool| {
+        if argument {
+            "command_line"
+        } else if preference {
+            "application_preferences"
+        } else {
+            "automatic"
+        }
+    };
+    serde_json::json!({
+        "backend":origin(explicit,preferences.backend.is_some()),
+        "threads":origin(args.threads.is_some(),!explicit && preferences.threads.is_some()),
+        "device":origin(args.device.is_some(),!explicit && preferences.device.is_some()),
+        "block_size":origin(args.block_size.is_some(),!explicit && preferences.block_size.is_some()),
+    })
+}
 use maelstrom::{execution::ExecutionMode, neighbours::SearchBackend, workflow::ExecutionOptions};
 
 pub(super) fn resolve(

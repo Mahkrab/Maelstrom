@@ -185,21 +185,18 @@ pub(super) fn compile(_: &Cli, _: &Storage, _: &Compile) -> Result<u8, CliError>
 pub(super) fn compile(cli: &Cli, storage: &Storage, args: &Compile) -> Result<u8, CliError> {
     use maelstrom::{
         export::{ExportRequest, Source},
-        render::{GraphicsSelection, Settings},
+        render::GraphicsSelection,
     };
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     };
     let resolved = super::inputs::resolve_in(&args.inputs, storage)?;
+    let steps = resolved.steps(&args.limit)?;
     let scene = resolved
         .scene
+        .as_ref()
         .ok_or_else(|| CliError::usage("compile requires SCENE".into()))?;
-    let steps = super::run_limit(
-        args.limit.steps,
-        args.limit.duration,
-        scene.configuration.numerical.fixed_timestep_s,
-    )?;
     let options = super::selection::resolve(&args.selection, &storage.preferences()?)?;
     if let Some(name) = &args.name
         && (name.is_empty() || name.len() > 256 || name.chars().any(char::is_control))
@@ -208,23 +205,19 @@ pub(super) fn compile(cli: &Cli, storage: &Storage, args: &Compile) -> Result<u8
             "run label must contain 1..=256 non-control characters".into(),
         ));
     }
-    let mut settings = match &args.render_config {
-        Some(path) => Settings::parse(&storage::read(path, 1024 * 1024)?)
-            .map_err(|e| CliError::input(e.to_string()))?,
-        None => Settings::default(),
-    };
-    if let Some(v) = args.width {
-        settings.width = v;
-    }
-    if let Some(v) = args.height {
-        settings.height = v;
-    }
-    if let Some(stride) = args.frame_stride {
-        settings.step_stride = stride;
-    }
-    settings
-        .validate()
-        .map_err(|e| CliError::input(e.to_string()))?;
+    let selected = super::presentation::resolve(
+        Some(&resolved),
+        &super::arguments::PresentationOptions {
+            render_config: args.render_config.clone(),
+            width: args.width,
+            height: args.height,
+            frame_stride: args.frame_stride,
+            fit_camera: args.fit_camera,
+            no_fit_camera: args.no_fit_camera,
+        },
+    )?;
+    let fit_camera = selected.effective.camera_mode == maelstrom::presentation::CameraMode::Fit;
+    let settings = selected.effective.settings;
     let destination = match &args.output {
         Some(path) => path.clone(),
         None => {
@@ -245,7 +238,7 @@ pub(super) fn compile(cli: &Cli, storage: &Storage, args: &Compile) -> Result<u8
     let exported = maelstrom::export::export(
         ExportRequest {
             source: Source::Direct {
-                scene: &scene,
+                scene,
                 steps,
                 options,
             },
@@ -254,7 +247,7 @@ pub(super) fn compile(cli: &Cli, storage: &Storage, args: &Compile) -> Result<u8
                 index: args.graphics_adapter,
                 software: args.software,
             },
-            fit_camera: args.fit_camera,
+            fit_camera,
             destination: &destination,
         },
         || cancel.load(Ordering::Relaxed),

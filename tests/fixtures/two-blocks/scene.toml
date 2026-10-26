@@ -1,0 +1,36 @@
+schema_version = 2
+name = "two-block-test"
+description = "Two 64-particle blocks approaching inside a finite box"
+randomness = "none"
+
+[configuration]
+source = "file"
+path = "config.toml"
+
+[run]
+duration_s = 1.0
+
+[container]
+min_m = [0.0, 0.0, 0.0]
+max_m = [0.8, 0.7, 0.6]
+
+[particles]
+construction = "groups"
+
+[[particles.groups]]
+name = "left"
+construction = "lattice"
+origin_m = [0.1, 0.25, 0.1]
+counts = [4, 4, 4]
+endpoint_rule = "counted_half_open"
+order = "x_then_y_then_z"
+initial_velocity_m_s = [0.25, 0.0, 0.0]
+
+[[particles.groups]]
+name = "right"
+construction = "lattice"
+origin_m = [0.55, 0.25, 0.1]
+counts = [4, 4, 4]
+endpoint_rule = "counted_half_open"
+order = "x_then_y_then_z"
+initial_velocity_m_s = [-0.25, 0.0, 0.0]

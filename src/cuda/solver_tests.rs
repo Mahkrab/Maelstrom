@@ -3,6 +3,94 @@
 use super::*;
 
 #[test]
+#[ignore = "requires an explicitly selected CUDA hardware test run"]
+fn xsph_candidate_is_separate_and_numerical_failure_can_retry_without_partial_commit() {
+    let config = crate::config::resolve_effective_configuration(None, None, None).unwrap();
+    for threads in [32, 64, 128, 256] {
+        let mut gpu = CudaSolver::new(0, threads).unwrap();
+        let particles = vec![
+            Particle {
+                identity: 0,
+                position_m: Vec3::ZERO,
+                velocity_m_s: Vec3::new(2., 0., 0.),
+            },
+            Particle {
+                identity: 1,
+                position_m: Vec3::new(0.5, 0., 0.),
+                velocity_m_s: Vec3::new(-2., 0., 0.),
+            },
+        ];
+        let mut s = settings(&config, 2, 0).unwrap();
+        s.radius = 1.;
+        s.rest_density = 4.;
+        s.xsph = 0.25;
+        for (distance, overflow) in [
+            (0.5, false),
+            (0.5, true),
+            (0.5, false),
+            (0.0, false),
+            (1.0, false),
+            (f32::from_bits(1.0_f32.to_bits() - 1), false),
+            (f32::from_bits(1.0_f32.to_bits() + 1), false),
+            (1.0, true),
+        ] {
+            gpu.prepare(s, &particles, &[]).unwrap();
+            let mut positions: Vec<_> = particles.iter().map(|p| p.position_m).collect();
+            gpu.context
+                .inner
+                .upload(2, &positions.iter().copied().map(array).collect::<Vec<_>>())
+                .unwrap();
+            gpu.discover(&mut s, &positions).unwrap();
+            // Keep the predicted row, but independently change the final distance.
+            positions[1].x = distance;
+            gpu.context
+                .inner
+                .upload(2, &positions.iter().copied().map(array).collect::<Vec<_>>())
+                .unwrap();
+            let velocities = if overflow {
+                vec![Vec3::new(f32::MAX, 0., 0.), Vec3::new(-f32::MAX, 0., 0.)]
+            } else {
+                particles.iter().map(|p| p.velocity_m_s).collect()
+            };
+            let input: Vec<_> = velocities.iter().copied().map(array).collect();
+            gpu.context.inner.upload(3, &input).unwrap();
+            let result = gpu.operation(s, 14);
+            let after: Vec<[f32; 3]> = gpu.context.inner.download(3, 2).unwrap();
+            assert_eq!(after, input, "smoothing must not overwrite its own input");
+            if overflow && distance < 1.0 {
+                assert!(matches!(
+                    result,
+                    Err(StepError::Numerical(NumericalError::NonFiniteResult {
+                        quantity: "XSPH velocity difference"
+                    }))
+                ));
+            } else {
+                result.unwrap();
+                let expected = crate::velocity::xsph_viscosity(
+                    &positions,
+                    &velocities,
+                    &crate::fluid::InteractionSets::new(vec![vec![1], vec![0]]).unwrap(),
+                    1.,
+                    4.,
+                    0.25,
+                )
+                .unwrap();
+                let candidate: Vec<[f32; 3]> = gpu.context.inner.download(8, 2).unwrap();
+                assert_eq!(
+                    candidate,
+                    expected.into_iter().map(array).collect::<Vec<_>>()
+                );
+                gpu.operation(s, 15).unwrap();
+                assert_eq!(
+                    gpu.context.inner.download::<[f32; 3]>(3, 2).unwrap(),
+                    candidate
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn packed_diagnostics_preserve_quantities_and_reject_invalid_records() {
     assert!(diagnostic_error(u64::MAX, 0).is_ok());
     assert!(diagnostic_error(u64::MAX, 9).is_ok());
@@ -16,7 +104,7 @@ fn packed_diagnostics_preserve_quantities_and_reject_invalid_records() {
         diagnostic_error((3_u64 << 32) | 52, 9),
         Err(StepError::Cuda(CudaError::NeighbourStorage { particle: 3 }))
     ));
-    for (particle, quantity, count) in [(0, 0, 1), (0, 53, 1), (1, 22, 1), (0, 22, 0)] {
+    for (particle, quantity, count) in [(0, 0, 1), (0, 71, 1), (1, 22, 1), (0, 22, 0)] {
         assert!(matches!(
             diagnostic_error((particle as u64) << 32 | u64::from(quantity), count),
             Err(StepError::Cuda(CudaError::Diagnostic { particle: actual_particle, quantity: actual_quantity }))

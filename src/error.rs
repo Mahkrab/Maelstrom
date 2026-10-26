@@ -25,6 +25,8 @@ pub enum NumericalError {
     NegativeScalar { quantity: &'static str, value: f32 },
     /// A calculation produced NaN or infinity from otherwise finite inputs.
     NonFiniteResult { quantity: &'static str },
+    /// A dimensionless smoothing strength is outside the finite interval 0..=1.
+    InvalidSmoothingCoefficient { value: f32 },
     /// The artificial-pressure sample point is not strictly inside kernel support.
     InvalidReferenceSeparation {
         separation: f32,
@@ -70,6 +72,12 @@ pub enum NumericalError {
 impl fmt::Display for NumericalError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidSmoothingCoefficient { value } => {
+                write!(
+                    formatter,
+                    "smoothing coefficient must be finite and in 0..=1, got {value}"
+                )
+            }
             Self::SearchAllocation => {
                 write!(formatter, "could not reserve neighbour-search storage")
             }

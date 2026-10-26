@@ -38,7 +38,7 @@ pub struct StepOutcome {
 }
 
 /// PBF solver with private state, selectable discovery and execution resources.
-/// Threaded mode distributes Jacobi particle work; all other stages remain serial.
+/// Threaded mode distributes Jacobi and enabled velocity-effect rows.
 /// CUDA runs discovery and numerical stages on its private device stream.
 #[derive(Debug)]
 pub struct Simulation {
@@ -369,7 +369,7 @@ impl Simulation {
         }
 
         let mut particles = Vec::with_capacity(positions.len());
-        for (old, position_m) in self.accepted.particles.iter().zip(positions) {
+        for (old, &position_m) in self.accepted.particles.iter().zip(&positions) {
             particles.push(Particle {
                 identity: old.identity,
                 position_m,
@@ -379,6 +379,50 @@ impl Simulation {
                     model.fixed_timestep_s,
                 )?,
             });
+        }
+        if model.vorticity_confinement_enabled && model.vorticity_confinement_strength_m_s != 0.0 {
+            check_cancellation(cancelled)?;
+            let velocities: Vec<_> = particles
+                .iter()
+                .map(|particle| particle.velocity_m_s)
+                .collect();
+            let confined = crate::velocity::vorticity::with_execution(
+                &positions,
+                &velocities,
+                &fixed,
+                crate::velocity::VorticityParameters {
+                    radius_m: derived.support_radius_m,
+                    rest_density_per_m3: derived.normalised_rest_density_per_m3,
+                    strength_m_s: model.vorticity_confinement_strength_m_s,
+                    timestep_s: model.fixed_timestep_s,
+                },
+                &self.execution,
+                &mut || check_cancellation(cancelled),
+            )?;
+            check_cancellation(cancelled)?;
+            for (particle, velocity) in particles.iter_mut().zip(confined) {
+                particle.velocity_m_s = velocity;
+            }
+        }
+        if model.xsph_viscosity_enabled && model.xsph_viscosity_coefficient != 0.0 {
+            check_cancellation(cancelled)?;
+            let velocities: Vec<_> = particles
+                .iter()
+                .map(|particle| particle.velocity_m_s)
+                .collect();
+            let smoothed = crate::velocity::xsph_with_execution(
+                &positions,
+                &velocities,
+                &fixed,
+                derived.support_radius_m,
+                derived.normalised_rest_density_per_m3,
+                model.xsph_viscosity_coefficient,
+                &self.execution,
+            )?;
+            check_cancellation(cancelled)?;
+            for (particle, velocity) in particles.iter_mut().zip(smoothed) {
+                particle.velocity_m_s = velocity;
+            }
         }
         validate_particles(&particles)?;
         // Fixed rows are immutable and validated at construction. Their indices

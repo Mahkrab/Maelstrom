@@ -7,22 +7,15 @@ use super::{
     inputs,
 };
 use maelstrom::{
-    application::RunSpec,
-    execution::ExecutionMode,
-    neighbours::SearchBackend,
-    render::{GraphicsSelection, Settings},
-    viewer::Draft,
+    application::RunSpec, execution::ExecutionMode, neighbours::SearchBackend,
+    render::GraphicsSelection, viewer::Draft,
 };
 use std::fs;
 
 pub(super) fn launch(view: &View, storage: &super::storage::Storage) -> Result<u8, CliError> {
     let resolved = inputs::resolve_in(&view.inputs, storage)?;
     let options = super::selection::resolve(&view.selection, &storage.preferences()?)?;
-    let steps = super::run_limit(
-        view.limit.steps,
-        view.limit.duration,
-        resolved.configuration.numerical.fixed_timestep_s,
-    )?;
+    let steps = resolved.steps(&view.limit)?;
     let (mode, workers, device, block_size) = match options.execution {
         ExecutionMode::Cuda { device, threads } => ("cuda-grid", 4, device, threads),
         ExecutionMode::Threaded { workers } => ("threaded-grid", workers, 0, 128),
@@ -37,22 +30,17 @@ pub(super) fn launch(view: &View, storage: &super::storage::Storage) -> Result<u
             128,
         ),
     };
-    let mut settings = match &view.render_config {
-        Some(path) => Settings::parse(&fs::read_to_string(path).map_err(|e| {
-            CliError::input(format!("could not read selected render file: {}", e.kind()))
-        })?)
-        .map_err(|e| CliError::input(e.to_string()))?,
-        None => Settings::default(),
+    let presentation_options = super::arguments::PresentationOptions {
+        render_config: view.render_config.clone(),
+        width: view.width,
+        height: view.height,
+        fit_camera: view.fit_camera,
+        no_fit_camera: view.no_fit_camera,
+        ..Default::default()
     };
-    if let Some(width) = view.width {
-        settings.width = width;
-    }
-    if let Some(height) = view.height {
-        settings.height = height;
-    }
-    settings
-        .validate()
-        .map_err(|e| CliError::input(e.to_string()))?;
+    let selected = super::presentation::resolve(Some(&resolved), &presentation_options)?;
+    let fit_camera = selected.effective.camera_mode == maelstrom::presentation::CameraMode::Fit;
+    let settings = selected.effective.settings;
     let draft =
         Draft {
             scene: view.inputs.scene.clone().ok_or_else(|| {
@@ -71,24 +59,64 @@ pub(super) fn launch(view: &View, storage: &super::storage::Storage) -> Result<u
         };
     let overrides = view.inputs.overrides.clone();
     let refinement = view.inputs.refine_timestep;
+    let visual_storage = storage.clone();
+    let camera_output = view.camera_output.clone();
+    let presentation_resolver: maelstrom::viewer::PresentationResolver = Box::new(move |draft| {
+        resolve_presentation(
+            draft,
+            &visual_storage,
+            &presentation_options,
+            camera_output.as_deref(),
+        )
+    });
     let storage = storage.clone();
     let paused = view.paused;
-    maelstrom::viewer::run(
+    maelstrom::viewer::run_with_presentation(
         draft,
         settings,
         GraphicsSelection {
             index: view.graphics_adapter,
             software: view.software,
         },
-        view.fit_camera,
+        fit_camera,
         Box::new(move |draft| {
             let mut spec = resolve_in(draft, &overrides, refinement, &storage)?;
             spec.initially_paused = paused;
             Ok(spec)
         }),
+        presentation_resolver,
     )
     .map_err(|e| CliError::input(e.to_string()))?;
     Ok(0)
+}
+fn resolve_presentation(
+    draft: &Draft,
+    storage: &super::storage::Storage,
+    options: &super::arguments::PresentationOptions,
+    camera_output: Option<&std::path::Path>,
+) -> Result<maelstrom::viewer::ViewPresentation, String> {
+    let selected = storage
+        .scene(&draft.scene)
+        .map_err(|e| redact(e.message, draft))?;
+    let path = selected
+        .map(fs::canonicalize)
+        .transpose()
+        .map_err(|e| format!("selected scene directory: {}", e.kind()))?;
+    let directory = path.as_deref().and_then(std::path::Path::parent);
+    let presentation = super::presentation::resolve_directory(directory, options)
+        .map_err(|e| redact(e.message, draft))?
+        .effective;
+    let camera_save = directory
+        .map(|directory| {
+            let default = directory.join("render.toml");
+            maelstrom::presentation::CameraSaveTarget::new(camera_output.unwrap_or(&default))
+                .map_err(|e| e.to_string())
+        })
+        .transpose()?;
+    Ok(maelstrom::viewer::ViewPresentation {
+        presentation,
+        camera_save,
+    })
 }
 #[cfg(test)]
 fn resolve(
@@ -188,6 +216,55 @@ fn redact(mut message: String, draft: &Draft) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn presentation_saves_to_scene_unless_an_output_is_explicitly_selected() {
+        let directory = std::env::temp_dir().join(format!(
+            "maelstrom-viewer-camera-selection-{}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let scene = directory.join("scene.toml");
+        fs::write(&scene, "").unwrap();
+        let replacement = directory.join("replacement.toml");
+        let source = "schema_version=2\nwidth=123\n";
+        fs::write(&replacement, source).unwrap();
+        let storage = super::super::storage::Storage::new(None, None)
+            .unwrap_or_else(|e| panic!("{}", e.message));
+        let mut d = draft();
+        d.scene = scene.to_string_lossy().into_owned();
+        let options = super::super::arguments::PresentationOptions {
+            render_config: Some(replacement.clone()),
+            ..Default::default()
+        };
+        let selected = resolve_presentation(&d, &storage, &options, None).unwrap();
+        assert_eq!(selected.presentation.settings.width, 123);
+        let local = directory.join("render.toml");
+        assert!(!local.exists());
+        selected
+            .camera_save
+            .unwrap()
+            .save(&Default::default(), 1.)
+            .unwrap();
+        assert!(local.is_file());
+        assert_eq!(fs::read_to_string(&replacement).unwrap(), source);
+        let output = directory.join("chosen.toml");
+        let selected = resolve_presentation(&d, &storage, &options, Some(&output)).unwrap();
+        assert!(!output.exists());
+        selected
+            .camera_save
+            .unwrap()
+            .save(&Default::default(), 1.)
+            .unwrap();
+        assert!(output.is_file());
+        d.scene = "builtin:falling-block-04".into();
+        assert!(
+            resolve_presentation(&d, &storage, &options, Some(&output))
+                .unwrap()
+                .camera_save
+                .is_none()
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
     fn draft() -> Draft {
         Draft {
             scene: "falling-block-04".into(),
@@ -231,7 +308,7 @@ mod tests {
         d.scene = "/unusable/private/selected-scene.toml".into();
         let error = resolve(&d, &[], None).unwrap_err();
         assert!(!error.contains("/unusable/private"));
-        assert!(error.contains("<selected input>"));
+        assert!(error.contains("scene") && error.contains("not found"));
     }
     #[test]
     fn scene_selected_configuration_errors_hide_the_external_input_directory() {
@@ -250,6 +327,9 @@ mod tests {
         fs::remove_file(path).unwrap();
         fs::remove_dir(&directory).unwrap();
         assert!(!message.contains(&directory.to_string_lossy().to_string()));
-        assert!(message.contains("<input directory>"), "{message}");
+        assert!(
+            message.contains("scene.toml") && message.contains("missing-config.toml"),
+            "{message}"
+        );
     }
 }

@@ -46,7 +46,7 @@ fn camera_has_known_orientation_scale_and_depth() {
 fn invalid_camera_and_strict_render_documents_are_rejected() {
     for source in [
         "width=10",
-        "schema_version=2",
+        "schema_version=3",
         "schema_version=1\nwidth=0",
         "schema_version=1\nheight=8193",
         "schema_version=1\nstep_stride=0",

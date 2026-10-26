@@ -98,6 +98,12 @@ the retained trajectories. The narrow positive-base/exponent implementation in
 its Arm-derived code retains the MIT licence in `native/power-LICENSE`.
 This does not promise agreement with every libm or permit blanket fast-math.
 
+Enabled XSPH uses a separate complete velocity pass and a subsequent replacement pass. Rows read
+final projected positions and the immutable reconstructed velocity snapshot; no thread reads another
+thread's partially smoothed output. The candidate buffer is reused after projection. Disabled or
+zero strength launches neither pass. The [input guide](inputs.md#fluid-motion-controls) describes
+coefficient units and the effect of timestep refinement.
+
 Cancellation is cooperative between completed stages. Numerical failure or cancellation
 retains old accepted state; retry reloads it and rebuilds membership. Input rejection
 and device-allocation exhaustion may be retried. Other driver faults poison the
@@ -124,3 +130,10 @@ Measured step totals include required transfers, launches, synchronisation and a
 acceptance. Context/module setup and teardown are separate; audits, output, graphics
 and pacing are outside solver timing. Coarse host stage intervals do not isolate
 kernel time or prove which overhead dominates. See [measurement use](usage.md#solver-measurements).
+
+Optional vorticity confinement runs after velocity reconstruction and before XSPH. A complete curl
+pass reuses finished Jacobi scratch; a second pass computes confinement into candidate velocities,
+then a separate pass replaces the velocity snapshot. XSPH also uses separate candidate and replacement
+passes. Disabled or zero-strength effects launch none of their passes. Both effects retain ordered
+fixed neighbour rows and strict final-distance support; no extra discovery or device allocation is
+introduced. Strengths and numerical revisions are part of recorded physical inputs.

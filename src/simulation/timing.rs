@@ -21,7 +21,7 @@ pub struct StageTimes {
     pub jacobi_s: f64,
     /// Candidate construction, ordered plane projection, position replacement and poll.
     pub projection_s: f64,
-    /// Velocity reconstruction, final state/plane checks, poll and atomic acceptance.
+    /// Velocity reconstruction, enabled velocity effects, final checks, polls and acceptance.
     pub acceptance_s: f64,
 }
 

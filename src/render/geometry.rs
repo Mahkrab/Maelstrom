@@ -18,23 +18,36 @@ pub struct BoundaryLines {
     pub vertices_m: Vec<V>,
 }
 impl BoundaryLines {
-    /// Clips each plane to the initial bounds, using the contract's empty fallback.
+    /// Clips planes to a finite domain, otherwise the expanded initial particle box.
     pub fn new(
         particles: &[Particle],
         planes: &[Plane],
         spacing: f64,
     ) -> Result<Self, RenderError> {
-        let (mut lo, mut hi) = bounds(particles, spacing / 2.0)?;
+        let declared = crate::presentation::domain_bounds(planes);
+        if !spacing.is_finite() || spacing <= 0.0 {
+            return Err(RenderError(
+                "display spacing must be positive and finite".into(),
+            ));
+        }
+        let (mut lo, mut hi) = match declared {
+            Some(bounds) => bounds,
+            None => bounds(particles, spacing / 2.0)?,
+        };
         // The display box starts at unexpanded particle bounds; radius expansion
         // belongs to camera fitting, not the clipped-plane rule.
-        if !particles.is_empty() {
+        if declared.is_none() && !particles.is_empty() {
             for i in 0..3 {
                 lo[i] += spacing / 2.0;
                 hi[i] -= spacing / 2.0;
             }
         }
         let side = (0..3).map(|i| hi[i] - lo[i]).fold(0.0, f64::max);
-        let expand = (2.0 * spacing).max(side / 2.0);
+        let expand = if declared.is_some() {
+            0.0
+        } else {
+            (2.0 * spacing).max(side / 2.0)
+        };
         for i in 0..3 {
             lo[i] -= expand;
             hi[i] += expand;

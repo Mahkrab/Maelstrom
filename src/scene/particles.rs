@@ -1,10 +1,12 @@
-//! TODO: Addd top level documntation.
+//! Explicit and lattice sources retain their established position arithmetic.
+//! Group construction reuses them before checking the combined geometry.
 
 use crate::{config::ResolvedConfiguration, math::Vec3, validation};
 
 use super::{
     LatticeEndpointRule, LatticeOrder, MAX_EXPLICIT_PARTICLES, MAX_LATTICE_PARTICLES,
-    PARTICLE_SEPARATION_RELATIVE_TOLERANCE, Particle, ParticleSource, SceneError,
+    MAX_SCENE_PARTICLES, PARTICLE_SEPARATION_RELATIVE_TOLERANCE, Particle, ParticleSource,
+    SceneError,
 };
 
 pub(super) fn resolve_particles(
@@ -12,13 +14,31 @@ pub(super) fn resolve_particles(
     configuration: &ResolvedConfiguration,
     allow_coincident: bool,
 ) -> Result<Vec<Particle>, SceneError> {
+    if let ParticleSource::Groups { groups } = source {
+        return super::groups::resolve(groups, configuration, allow_coincident);
+    }
+    resolve_source(source, configuration, allow_coincident, 0, true)
+}
+
+pub(super) fn resolve_source(
+    source: &ParticleSource,
+    configuration: &ResolvedConfiguration,
+    allow_coincident: bool,
+    automatic_identity: u64,
+    standalone: bool,
+) -> Result<Vec<Particle>, SceneError> {
     match source {
         ParticleSource::Explicit { items } => {
             let requested = items.len() as u64;
-            if items.len() > MAX_EXPLICIT_PARTICLES {
+            let maximum = if standalone {
+                MAX_EXPLICIT_PARTICLES
+            } else {
+                MAX_SCENE_PARTICLES
+            };
+            if items.len() > maximum {
                 return Err(SceneError::ParticleCountTooLarge {
                     construction: "explicit",
-                    maximum: MAX_EXPLICIT_PARTICLES,
+                    maximum,
                     requested,
                 });
             }
@@ -42,11 +62,13 @@ pub(super) fn resolve_particles(
                 });
                 previous = Some(item.identity);
             }
-            validate_explicit_separation(
-                &particles,
-                configuration.derived.particle_diameter_m,
-                allow_coincident,
-            )?;
+            if standalone {
+                validate_explicit_separation(
+                    &particles,
+                    configuration.derived.particle_diameter_m,
+                    allow_coincident,
+                )?;
+            }
             Ok(particles)
         }
         ParticleSource::Lattice {
@@ -58,13 +80,18 @@ pub(super) fn resolve_particles(
             order: LatticeOrder::XThenYThenZ,
             initial_velocity_m_s,
         } => resolve_lattice(
-            *first_identity,
+            first_identity.unwrap_or(automatic_identity),
             *origin_m,
             *counts,
-            *spacing_m,
+            spacing_m.unwrap_or(configuration.numerical.particle_spacing_m),
             *initial_velocity_m_s,
             configuration,
         ),
+        ParticleSource::Groups { .. } => Err(crate::config::ConfigError::InvalidField {
+            field: "particles.groups",
+            reason: "nested groups are not supported".into(),
+        }
+        .into()),
     }
 }
 

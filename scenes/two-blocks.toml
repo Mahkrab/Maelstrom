@@ -1,0 +1,36 @@
+schema_version = 2
+name = "two-blocks"
+description = "Two equal fluid blocks moving towards each other inside a box"
+randomness = "none"
+
+[configuration]
+source = "file"
+path = "../config/two-blocks.toml"
+
+[run]
+duration_s = 10.0
+
+[container]
+min_m = [0.0, 0.0, 0.0]
+max_m = [1.0, 1.0, 2.0]
+
+[particles]
+construction = "groups"
+
+[[particles.groups]]
+name = "left"
+construction = "lattice"
+origin_m = [0.1, 0.6, 0.1]
+counts = [16, 16, 16]
+endpoint_rule = "counted_half_open"
+order = "x_then_y_then_z"
+initial_velocity_m_s = [0.0, 0.0, 0.0]
+
+[[particles.groups]]
+name = "right"
+construction = "lattice"
+origin_m = [0.55, 0.25, 1.0]
+counts = [16, 16, 16]
+endpoint_rule = "counted_half_open"
+order = "x_then_y_then_z"
+initial_velocity_m_s = [0, 0.0, 0.0]

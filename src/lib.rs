@@ -20,11 +20,13 @@ pub mod math;
 pub mod neighbours;
 #[cfg(feature = "render")]
 pub mod playback;
+pub mod presentation;
 pub mod reference;
 #[cfg(feature = "render")]
 pub mod render;
 pub mod scene;
 pub mod simulation;
+pub mod velocity;
 #[cfg(feature = "viewer")]
 pub mod viewer;
 pub mod workflow;

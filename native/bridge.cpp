@@ -236,7 +236,7 @@ static Status solver(Resource &r, SolverSettings settings, unsigned int operatio
         unsigned int threads, std::uint64_t *diagnostic=nullptr, bool grouped=false) {
     if (r.poisoned) return {-3,14};
     if ((grouped && (!diagnostic || (operation!=5 && operation!=9))) ||
-        operation>13 || ((operation==2 || operation==4 || operation==12) && (!std::isfinite(settings.width) || settings.width<=0)) ||
+        operation>17 || ((operation==2 || operation==4 || operation==12) && (!std::isfinite(settings.width) || settings.width<=0)) ||
         (threads!=32 && threads!=64 && threads!=128 && threads!=256) ||
         settings.padded==0 || (settings.padded&(settings.padded-1)) ||
         settings.count>settings.padded || settings.entries>static_cast<std::uint64_t>(PTRDIFF_MAX)/4 ||
@@ -328,7 +328,7 @@ extern "C" Status maelstrom_cuda_checked_solver(void *handle, SolverSettings set
         unsigned int operation, unsigned int threads, std::uint64_t *diagnostic) {
     auto &r=*static_cast<Resource *>(handle);
     if (r.poisoned) return {-3,14};
-    if (!diagnostic || operation==2 || operation==3 || operation>=13) return {CUDA_ERROR_INVALID_VALUE,7};
+    if (!diagnostic || operation==2 || operation==3 || operation==13 || operation>17) return {CUDA_ERROR_INVALID_VALUE,7};
     return solver(r,settings,operation,threads,diagnostic);
 }
 

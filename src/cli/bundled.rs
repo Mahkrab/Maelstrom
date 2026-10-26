@@ -22,6 +22,17 @@ pub(super) fn scene(name: &str) -> Option<&'static str> {
 pub(super) fn configuration(
     document: &SceneDocument,
 ) -> Result<Option<ConfigurationDocument>, CliError> {
+    configuration_source(document)?
+        .map(|source| {
+            parse_configuration(source)
+                .map_err(|error| CliError::input(format!("bundled configuration: {error}")))
+        })
+        .transpose()
+}
+
+pub(super) fn configuration_source(
+    document: &SceneDocument,
+) -> Result<Option<&'static str>, CliError> {
     if document.configuration.source != ConfigurationSource::File {
         return Ok(None);
     }
@@ -46,9 +57,7 @@ pub(super) fn configuration(
         .find(|(key, _)| Path::new(key) == path)
         .map(|(_, source)| *source)
         .ok_or_else(|| CliError::input(format!("configuration {reference:?} is not bundled")))?;
-    parse_configuration(source)
-        .map(Some)
-        .map_err(|error| CliError::input(format!("bundled configuration {reference:?}: {error}")))
+    Ok(Some(source))
 }
 
 #[cfg(test)]

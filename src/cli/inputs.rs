@@ -1,102 +1,214 @@
-//! Named scenes embed the same TOML inputs shipped with the application. External
-//! paths use the library loader, including its scene-relative file resolution.
+//! Resolve source bytes once, retaining portable provenance alongside accepted inputs.
 
-use std::{fs, path::Path};
-
+use super::{
+    CliError,
+    arguments::{Inputs, Limit},
+    bundled,
+    storage::Storage,
+};
 use maelstrom::{
     config::{
-        ConfigurationOverlay, ResolvedConfiguration, load_configuration,
+        ConfigurationOverlay, ResolvedConfiguration, parse_configuration,
         parse_configuration_overlay, resolve_effective_configuration,
     },
     scene::{
-        ResolvedScene, load_resolved_scene, parse_scene, resolve_scene,
+        ConfigurationSource, ResolvedScene, SceneDocument, parse_scene, resolve_scene,
         resolve_scene_with_configuration,
     },
 };
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
-use super::{CliError, arguments::Inputs, bundled};
+#[derive(Clone, Serialize)]
+pub(super) struct DocumentIdentity {
+    pub domain: &'static str,
+    pub label: String,
+    pub sha256: String,
+}
+pub(super) fn identity(domain: &'static str, label: String, source: &str) -> DocumentIdentity {
+    DocumentIdentity {
+        domain,
+        label,
+        sha256: Sha256::digest(source.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect(),
+    }
+}
 
 pub(super) struct ResolvedInputs {
     pub configuration: ResolvedConfiguration,
     pub scene: Option<ResolvedScene>,
+    pub document: Option<SceneDocument>,
+    pub directory: Option<PathBuf>,
+    pub documents: Vec<DocumentIdentity>,
+    pub selected_configuration: Option<maelstrom::config::ConfigurationDocument>,
 }
-
-pub(super) fn resolve_in(
-    inputs: &Inputs,
-    storage: &super::storage::Storage,
-) -> Result<ResolvedInputs, CliError> {
-    let mut inputs = inputs.clone();
-    if let Some(selection) = &inputs.scene {
-        inputs.scene = Some(match storage.scene(selection)? {
-            Some(path) => path.to_string_lossy().into_owned(),
-            None => selection
-                .strip_prefix("builtin:")
-                .unwrap_or(selection)
-                .to_owned(),
-        });
+impl ResolvedInputs {
+    pub fn steps(&self, limit: &Limit) -> Result<u64, CliError> {
+        let saved = self.document.as_ref().and_then(|doc| doc.run.as_ref());
+        let (steps, duration) = if limit.steps.is_some() || limit.duration.is_some() {
+            (limit.steps, limit.duration)
+        } else {
+            (
+                saved.and_then(|r| r.steps),
+                saved.and_then(|r| r.duration_s),
+            )
+        };
+        super::run_limit(
+            steps,
+            duration,
+            self.configuration.numerical.fixed_timestep_s,
+        )
     }
-    resolve_document(&inputs)
 }
 
-fn resolve_document(inputs: &Inputs) -> Result<ResolvedInputs, CliError> {
+pub(super) fn resolve_in(inputs: &Inputs, storage: &Storage) -> Result<ResolvedInputs, CliError> {
     let mut overlay = overrides(&inputs.overrides)?;
     if let Some(factor) = inputs.refine_timestep {
         if overlay.numerical.refine_timestep.is_some() {
             return Err(CliError::usage(
-                "select refinement once, using --refine-timestep or --set refine_timestep"
-                    .to_owned(),
+                "select refinement once, using --refine-timestep or --set refine_timestep".into(),
             ));
         }
         overlay.numerical.refine_timestep = Some(factor);
     }
-    let configuration = inputs
+    let mut documents = Vec::new();
+    let explicit = inputs
         .config
         .as_ref()
         .map(|path| {
-            load_configuration(path)
-                .map_err(|error| CliError::input(format!("configuration {path:?}: {error}")))
+            let source = read(path, "configuration")?;
+            documents.push(identity("configuration", label(path), &source));
+            parse_configuration(&source).map_err(|e| CliError::input(format!("configuration: {e}")))
         })
         .transpose()?;
     let Some(selection) = &inputs.scene else {
         let configuration =
-            resolve_effective_configuration(configuration.as_ref(), None, Some(&overlay))
-                .map_err(|error| CliError::input(format!("configuration: {error}")))?;
+            resolve_effective_configuration(explicit.as_ref(), None, Some(&overlay))
+                .map_err(|e| CliError::input(e.to_string()))?;
         return Ok(ResolvedInputs {
             configuration,
             scene: None,
+            document: None,
+            directory: None,
+            documents,
+            selected_configuration: explicit,
         });
     };
-    let scene = if let Some(source) = bundled::scene(selection) {
-        let document = parse_scene(source)
-            .map_err(|error| CliError::input(format!("bundled scene {selection:?}: {error}")))?;
-        let resolved = if let Some(configuration) = &configuration {
-            resolve_scene_with_configuration(&document, configuration, Some(&overlay))
-        } else {
-            let selected = bundled::configuration(&document)?;
-            resolve_scene(&document, selected.as_ref(), Some(&overlay))
-        };
-        resolved.map_err(|error| CliError::input(format!("scene {selection:?}: {error}")))?
-    } else if let Some(configuration) = &configuration {
-        let source =
-            fs::read_to_string(selection).map_err(|error| scene_read_error(selection, error))?;
-        let document = parse_scene(&source)
-            .map_err(|error| CliError::input(format!("scene {selection:?}: {error}")))?;
-        resolve_scene_with_configuration(&document, configuration, Some(&overlay))
-            .map_err(|error| CliError::input(format!("scene {selection:?}: {error}")))?
+    let path = storage.scene(selection)?;
+    let (source, directory, scene_label) = if let Some(path) = &path {
+        let path =
+            fs::canonicalize(path).map_err(|e| CliError::input(format!("scene: {}", e.kind())))?;
+        (
+            read(&path, "scene")?,
+            path.parent().map(Path::to_path_buf),
+            label(&path),
+        )
     } else {
-        load_resolved_scene(Path::new(selection), Some(&overlay))
-            .map_err(|error| CliError::input(format!("scene {selection:?}: {error}; use 'maelstrom scenes' for bundled names or supply a readable TOML path")))?
+        let name = selection.strip_prefix("builtin:").unwrap_or(selection);
+        (
+            bundled::scene(name)
+                .ok_or_else(|| CliError::input("unknown bundled scene".into()))?
+                .into(),
+            None,
+            format!("builtin:{name}"),
+        )
     };
+    documents.push(identity("scene", scene_label, &source));
+    let document = parse_scene(&source).map_err(|e| CliError::input(format!("scene: {e}")))?;
+    let selected = if let Some(explicit) = explicit {
+        Some(explicit)
+    } else if let Some(directory) = &directory {
+        if document.configuration.source == ConfigurationSource::File {
+            let reference =
+                document.configuration.path.as_deref().ok_or_else(|| {
+                    CliError::input("configuration file source requires path".into())
+                })?;
+            if reference.trim().is_empty() || Path::new(reference).is_absolute() {
+                return Err(CliError::input(
+                    "configuration path must be relative to the scene document".into(),
+                ));
+            }
+            let scene_label = documents
+                .iter()
+                .find(|d| d.domain == "scene")
+                .map_or("selected scene", |d| d.label.as_str());
+            let source = read(
+                &directory.join(reference),
+                &format!("scene {scene_label} configuration"),
+            )?;
+            documents.push(identity("configuration", reference.into(), &source));
+            Some(
+                parse_configuration(&source)
+                    .map_err(|e| CliError::input(format!("scene configuration: {e}")))?,
+            )
+        } else {
+            None
+        }
+    } else {
+        let selected = bundled::configuration(&document)?;
+        if selected.is_some() {
+            // The embedded catalogue owns the exact original source bytes.
+            let reference = document.configuration.path.as_deref().unwrap_or_default();
+            if let Some(source) = bundled::configuration_source(&document)? {
+                documents.push(identity(
+                    "configuration",
+                    format!("builtin:{reference}"),
+                    source,
+                ));
+            }
+        }
+        selected
+    };
+    let scene = if inputs.config.is_some() {
+        resolve_scene_with_configuration(
+            &document,
+            selected
+                .as_ref()
+                .ok_or_else(|| CliError::input("missing explicit configuration".into()))?,
+            Some(&overlay),
+        )
+    } else {
+        resolve_scene(&document, selected.as_ref(), Some(&overlay))
+    }
+    .map_err(|e| CliError::input(format!("scene: {e}")))?;
     Ok(ResolvedInputs {
         configuration: scene.configuration.clone(),
         scene: Some(scene),
+        document: Some(document),
+        directory,
+        documents,
+        selected_configuration: selected,
     })
 }
 
-fn scene_read_error(selection: &str, error: std::io::Error) -> CliError {
-    CliError::input(format!(
-        "scene {selection:?}: {error}; use 'maelstrom scenes' for bundled names or supply a readable TOML path"
-    ))
+fn label(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || "selected document".into(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+fn read(path: &Path, kind: &str) -> Result<String, CliError> {
+    let file = fs::File::open(path).map_err(|e| {
+        CliError::input(format!(
+            "could not read {kind} {:?}: {}",
+            label(path),
+            e.kind()
+        ))
+    })?;
+    super::storage::read_file(
+        file,
+        if kind == "scene" {
+            64 * 1024 * 1024
+        } else {
+            1024 * 1024
+        },
+    )
 }
 
 fn overrides(values: &[String]) -> Result<ConfigurationOverlay, CliError> {

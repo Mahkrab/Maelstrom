@@ -24,7 +24,8 @@ selected implicitly. Windowed selection includes surface compatibility.
 These indices do not select the CUDA simulation device. The reported adapter identity
 is authoritative because enumeration can differ between machines.
 
-Use `--render-config ./camera.toml` for presentation settings. This minimal file
+The viewer automatically loads `render.toml` beside the selected scene. Use
+`--render-config ./camera.toml` to replace that file for one launch. This minimal legacy file
 selects a fixed eye and target; omitted settings retain presentation defaults:
 
 ```toml
@@ -45,10 +46,62 @@ far_m = 100.0
 Eye, target and clipping distances are in metres; the field of view is in degrees.
 The up direction must not be parallel to the view. Unknown fields and invalid/non-finite
 cameras fail without changing accepted simulation state.
-`--fit-camera` fits the initial particles once; later movement can leave that view,
-so choose a wider fixed camera to cover a complete trajectory. Empty scenes use a
-one-metre fallback box. Camera calculations use f64 before view-relative graphics f32;
-extreme ranges can still lose precision or clip.
+Without a selected fixed camera, the viewer fits once to the finite plane-bounded domain,
+or to the initial particles if the domain is unbounded. An empty unbounded scene uses the
+built-in fixed camera. `--fit-camera` overrides a saved fixed camera; `--no-fit-camera` uses
+that camera or the built-in fallback. The flags conflict. F explicitly refits the current
+accepted particles or the finite domain using the window's current aspect ratio. Resizing
+changes the projection, without moving your camera. Camera calculations use f64 before
+view-relative graphics f32; extreme ranges can still lose precision or clip.
+
+New scene packages use render schema 2. `camera_mode = "fit"` is its default; `"fixed"` requires
+a `[camera]` table, and supplying that table without a mode also selects fixed behaviour. Schema 1
+continues to use its fixed-camera defaults.
+
+Press **S** outside field editing to save the current camera to the displayed editable scene's
+`render.toml`. This writes fixed mode and all camera fields while retaining unrelated settings
+and comments. It upgrades a legacy render document to schema 2. Publication is atomic; invalid,
+read-only or symbolic-link targets and detected concurrent edits are rejected. The panel reports
+success or failure. The viewer and solver continue while a separate worker saves the camera.
+
+`--camera-output ./chosen-render.toml` chooses an explicit save destination; its parent must exist.
+`--render-config` only selects input and does not redirect saving. Bundled scenes require an editable
+copy through `scenes create` before saving. Launching, orbiting, fitting, resizing and temporary CLI
+overrides never write files. Home restores the camera loaded or fitted for the displayed generation,
+or the last camera successfully saved for it. R resets the simulation while retaining the current view.
+
+## Particle colours
+
+The same `render.toml` controls live viewing and compilation. For a fixed sRGB colour:
+
+```toml
+schema_version = 2
+[particles]
+colour_mode = "fixed"
+colour = "#00aaff"
+```
+
+To colour accepted motion from blue to red:
+
+```toml
+schema_version = 2
+[particles]
+colour_mode = "kinetic_energy"
+min_energy_j = 0.0
+max_energy_j = 0.001
+```
+
+Energy is per-particle kinetic energy, `½m|v|²`, in joules, using the resolved physical particle
+mass and accepted velocity. The saved interval is fixed across frames: values at or below its
+minimum are blue, values at or above its maximum red. Intermediate values interpolate in linear
+RGB before sphere lighting and sRGB encoding. Halfway is equal linear red and blue, rather than
+a temperature reading. Choose bounds for your scene's mass and speeds; the interval is not
+rescaled automatically. It requires finite `0 <= min_energy_j < max_energy_j`.
+
+The default remains fixed `#2b9fd9`. These settings never change accepted state. Headless `run`
+does not read them. Colours and camera are baked into compiled images; `play` cannot change them
+without new rendering from particle observations. Reopen a scene, or apply its draft again, to read
+external edits to its presentation file.
 
 ## Controls
 
@@ -67,7 +120,8 @@ away from another application.
 | Left drag or arrows | Orbit |
 | Right drag | Pan |
 | Wheel or +/- | Zoom |
-| F | Fit initial particles explicitly |
+| F / Home | Refit domain or current particles / restore loaded or last saved camera |
+| S | Save the current camera for the displayed editable scene |
 | H / G | Toggle diagnostics / recreate the surface on the same graphics device |
 | Escape outside editing, or close | Request cooperative shutdown |
 

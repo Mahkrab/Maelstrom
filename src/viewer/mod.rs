@@ -13,7 +13,7 @@ use crate::{
     render::{DrawScene, Graphics, GraphicsSelection, RenderError, Settings},
 };
 use model::Model;
-pub use model::{Draft, Resolver};
+pub use model::{Draft, PresentationResolver, Resolver, ViewPresentation};
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -35,15 +35,47 @@ pub fn run(
     fit_camera: bool,
     resolver: Resolver,
 ) -> Result<(), RenderError> {
+    run_internal(draft, settings, graphics, fit_camera, resolver, None)
+}
+
+/// Launches with scene-owned presentation and camera-save destinations resolved
+/// on each successful apply. Numerical loading remains owned by `resolver`.
+pub fn run_with_presentation(
+    draft: Draft,
+    settings: Settings,
+    graphics: GraphicsSelection,
+    fit_camera: bool,
+    resolver: Resolver,
+    presentation: PresentationResolver,
+) -> Result<(), RenderError> {
+    run_internal(
+        draft,
+        settings,
+        graphics,
+        fit_camera,
+        resolver,
+        Some(presentation),
+    )
+}
+
+fn run_internal(
+    draft: Draft,
+    settings: Settings,
+    graphics: GraphicsSelection,
+    fit_camera: bool,
+    resolver: Resolver,
+    presentation: Option<PresentationResolver>,
+) -> Result<(), RenderError> {
     settings.validate()?;
     #[cfg(target_os = "linux")]
     check_keyboard_libraries()?;
     let event_loop = create_event_loop()?;
     let mut model = Model::new(draft, settings.camera.clone(), resolver)?;
+    model.presentation_resolver = presentation;
     if let Err(e) = model.apply() {
         model.message = e.to_string();
     }
-    if fit_camera {
+    if fit_camera && model.presentation_resolver.is_none() {
         model.fit(f64::from(settings.width) / f64::from(settings.height))?;
     }
     let mut app = Viewer::new(model, settings, graphics);
@@ -300,6 +332,7 @@ impl Viewer {
             Key::Named(NamedKey::ArrowRight) => self.model.camera.orbit(0.1, 0.0),
             Key::Named(NamedKey::ArrowUp) => self.model.camera.orbit(0.0, 0.1),
             Key::Named(NamedKey::ArrowDown) => self.model.camera.orbit(0.0, -0.1),
+            Key::Named(NamedKey::Home) => self.model.restore_camera(),
             Key::Character(s) => match s.to_lowercase().as_str() {
                 "a" => self.model.apply(),
                 "b" => {
@@ -341,6 +374,13 @@ impl Viewer {
                     self.model
                         .fit(f64::from(size.width.max(1)) / f64::from(size.height.max(1)))
                 }
+                "s" => {
+                    let size = self.window.as_ref().map(|w| w.inner_size()).unwrap_or(
+                        winit::dpi::PhysicalSize::new(self.settings.width, self.settings.height),
+                    );
+                    self.model
+                        .save_camera(f64::from(size.width.max(1)) / f64::from(size.height.max(1)))
+                }
                 "o" => {
                     self.model.show_retained = !self.model.show_retained;
                     Ok(())
@@ -358,7 +398,8 @@ impl Viewer {
             "MAELSTROM | accepted particle observations".into(),
             "A apply draft | Space run/pause | N step | R reset | C cancel".into(),
             "Tab field / Enter edit+save / Delete clear / Esc edit or close".into(),
-            "Drag orbit | right-drag pan | wheel zoom | F fit | O prior".into(),
+            "Drag orbit | right-drag pan | wheel zoom | F fit | Home restore | S save camera"
+                .into(),
             "B draft mode | 1-7 scenes | D audit | H panel | G surface".into(),
         ];
         for (i, (label, value)) in self.model.draft.fields().iter().enumerate() {
@@ -536,6 +577,12 @@ impl Viewer {
                     radius_m: f64::from(s.spec.scene.configuration.numerical.particle_spacing_m)
                         / 2.0,
                     camera: &self.model.camera,
+                    colours: &s
+                        .presentation
+                        .as_ref()
+                        .map_or(&self.settings, |p| &p.presentation.settings)
+                        .particles,
+                    particle_mass_kg: s.spec.scene.configuration.derived.particle_mass_kg,
                     width: size.width,
                     height: size.height,
                 },
@@ -551,6 +598,8 @@ impl Viewer {
                     boundaries: &empty,
                     radius_m: 0.025,
                     camera: &self.model.camera,
+                    colours: &self.settings.particles,
+                    particle_mass_kg: 1.0,
                     width: size.width,
                     height: size.height,
                 },
