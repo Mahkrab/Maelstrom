@@ -109,6 +109,22 @@ pub fn cfl_diagnostic(
         }
     }
 
+    cfl_from_maximum_speed(maximum_speed, timestep, particle_diameter, cfl_factor)
+}
+
+/// Finish the shared CFL calculation from a finite non-negative speed maximum.
+/// CUDA supplies an exact maximum of checked binary32 per-particle lengths;
+/// the ratio and warning calculation stays on the host for both backends.
+pub(crate) fn cfl_from_maximum_speed(
+    maximum_speed: f32,
+    timestep: f32,
+    particle_diameter: f32,
+    cfl_factor: f32,
+) -> Result<CflDiagnostic, NumericalError> {
+    validation::positive_scalar("timestep", timestep)?;
+    validation::positive_scalar("particle diameter", particle_diameter)?;
+    validation::positive_scalar("CFL factor", cfl_factor)?;
+    validation::non_negative_scalar("maximum speed", maximum_speed)?;
     if maximum_speed == 0.0 {
         return Ok(CflDiagnostic {
             maximum_speed,

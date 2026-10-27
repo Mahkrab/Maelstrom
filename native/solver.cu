@@ -3,6 +3,7 @@
 #include "solver.h"
 #include <cmath>
 #include <climits>
+#include <cfloat>
 #include "power.cuh"
 
 // Error numbers map to enduring checked quantities in src/cuda/solver.rs.
@@ -61,6 +62,17 @@ __device__ bool active(SolverBuffers b, SolverSettings s, unsigned int i, unsign
     return separation(b.position[i],b.position[j],c,18) < s.radius;
 }
 #include "neighbours.cuh"
+#include "spatial_sort.cuh"
+
+// Sorting has its own entry point so its shared tile does not reduce occupancy
+// for the numerical solver kernels.
+extern "C" __global__ void spatial_sort(SolverBuffers b, SolverSettings s, unsigned int operation) {
+    __shared__ Cell tile[256];
+    if (operation==19) sort_cell_tile(b.cells,s.padded,s.stride,tile);
+    else merge_cell_tile(b.cells,s.padded,s.span,s.stride,tile);
+}
+
+#include "state_observation.cuh"
 
 extern "C" __global__ void solver(SolverBuffers b, SolverSettings s, unsigned int operation) {
     const auto lane=static_cast<std::uint64_t>(blockIdx.x)*blockDim.x+threadIdx.x;
@@ -79,8 +91,22 @@ extern "C" __global__ void solver(SolverBuffers b, SolverSettings s, unsigned in
         b.cells[i]=i<s.count ? cell(b.position[i],s.width,i) : Cell{LLONG_MAX,LLONG_MAX,LLONG_MAX,UINT_MAX,0};
         return;
     }
+    if (operation==18) {
+        const auto row=lane/32;
+        // Block sizes are multiples of a warp. A tail row therefore exits as
+        // a whole warp, leaving every lane named by a shuffle participating.
+        if (row>=s.count || (b.diagnostic && b.diagnostic[0]!=ULLONG_MAX)) return;
+        const auto owner=static_cast<unsigned int>(row);
+        const auto start=b.offsets[owner], stop=b.offsets[owner+1];
+        if (b.errors[owner] || start>stop || stop>s.entries) return;
+        if (start!=stop) sort_row_cooperatively(b.neighbours+start,stop-start,threadIdx.x%32);
+        return;
+    }
     if (lane>=s.count) return;
-    auto i=static_cast<unsigned int>(lane);
+    // Adjacent lanes traverse nearby cells, while offsets and diagnostics stay
+    // indexed by particle identity. Every particle still owns exactly one row.
+    auto i=(operation==4 || operation==12) ? b.cells[lane].index
+        : static_cast<unsigned int>(lane);
     const auto pass=b.first_operation ? operation-b.first_operation : 0;
     // Earlier kernels have completed on this stream. Their records are no
     // longer being written, so these reads do not race this pass's atomic min.
@@ -116,18 +142,29 @@ extern "C" __global__ void solver(SolverBuffers b, SolverSettings s, unsigned in
         float constraint=c.scalar(c.scalar(__fdiv_rn(density,s.rest_density),24)-1.0f,25);
         b.constraint[i]=constraint;
         float reciprocal=c.scalar(__fdiv_rn(1.0f,s.rest_density),26);
+        Checked prefix;
+        float sum=0;
         Members owner_row(b,s,i);
-        for (auto j=owner_row.next(s.count);j<s.count;j=owner_row.next(s.count)) if (active(b,s,i,j,c)) {
-            Vector direction=spiky(sub(b.position[i],b.position[j]),s.radius,c);
-            owner=c.vector(add(owner,direction),27);
-            c.vector(mul(neg(direction),reciprocal),29);
+        auto suffix=owner_row.stop;
+        for (auto j=owner_row.next(s.count);j<s.count;j=owner_row.next(s.count)) {
+            if (j>i && suffix==owner_row.stop) suffix=owner_row.cursor-1;
+            if (active(b,s,i,j,c)) {
+                Vector direction=spiky(sub(b.position[i],b.position[j]),s.radius,c);
+                owner=c.vector(add(owner,direction),27);
+                Vector dir=c.vector(mul(neg(direction),reciprocal),29);
+                // These contributions precede self in the ordered sum. Keep
+                // their original additions, but defer errors until all owner
+                // checks finish, just as in the separate squared-row traversal.
+                if (j<i) sum=prefix.scalar(sum+prefix.scalar(dot(dir,dir),30),31);
+            }
         }
         owner=c.vector(mul(owner,reciprocal),28);
-        float sum=0;
-        Members squared_row(b,s,i,true);
+        if (!c.error) c.error=prefix.error;
+        sum=c.scalar(sum+c.scalar(dot(owner,owner),30),31);
+        Members squared_row(b,s,i);
+        squared_row.cursor=suffix;
         for (auto j=squared_row.next(s.count);j<s.count;j=squared_row.next(s.count)) {
-            if (i==j) sum=c.scalar(sum+c.scalar(dot(owner,owner),30),31);
-            else if (active(b,s,i,j,c)) {
+            if (active(b,s,i,j,c)) {
                 Vector dir=c.vector(mul(neg(spiky(sub(b.position[i],b.position[j]),s.radius,c)),reciprocal),29);
                 sum=c.scalar(sum+c.scalar(dot(dir,dir),30),31);
             }

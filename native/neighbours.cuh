@@ -1,6 +1,7 @@
 // Prediction-time rows contain only actual neighbours, sorted by identity. The
-// count and fill passes share geometry; checked host prefixes determine storage.
+// count and fill passes share geometry; checked prefix totals determine storage.
 #pragma once
+#include "row_sort.cuh"
 
 struct Members {
     const std::uint32_t *indices;
@@ -29,24 +30,6 @@ __device__ Cell cell(Vector p, double width, unsigned int i) {
     return {static_cast<long long>(floor(static_cast<double>(p.x)/width)),
             static_cast<long long>(floor(static_cast<double>(p.y)/width)),
             static_cast<long long>(floor(static_cast<double>(p.z)/width)),i,0};
-}
-
-__device__ void sift_down(std::uint32_t *row, std::uint64_t root, std::uint64_t count) {
-    while (root<count/2) {
-        auto child=root*2+1;
-        if (child+1<count && row[child]<row[child+1]) ++child;
-        if (row[root]>=row[child]) return;
-        auto value=row[root]; row[root]=row[child]; row[child]=value;
-        root=child;
-    }
-}
-__device__ void sort_row(std::uint32_t *row, std::uint64_t count) {
-    // Heapsort needs no auxiliary storage and stays O(k log k) for dense rows.
-    for (auto root=count/2;root>0;--root) sift_down(row,root-1,count);
-    for (auto end=count;end>1;--end) {
-        auto value=row[0]; row[0]=row[end-1]; row[end-1]=value;
-        sift_down(row,0,end-1);
-    }
 }
 
 __device__ void discover_row(SolverBuffers b, SolverSettings s, unsigned int i,
@@ -84,7 +67,6 @@ __device__ void discover_row(SolverBuffers b, SolverSettings s, unsigned int i,
     }
     if (fill) {
         if (cursor!=stop) { c.error=52; return; }
-        if (cursor>start) sort_row(b.neighbours+start,cursor-start);
     } else {
         if (i==0) b.offsets[0]=0;
         b.offsets[i+1]=cursor;

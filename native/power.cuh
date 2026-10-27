@@ -35,7 +35,7 @@ __device__ __constant__ unsigned long long power_exp_table[32] = {
  0x3fef5818dcfba487,0x3fef7c97337b9b5f,0x3fefa4afa2a490da,0x3fefd0765b6e4540
 };
 
-__device__ float ordered_power(float x,float exponent) {
+__device__ float ordered_power_reference(float x,float exponent) {
     if (x==0 || !isfinite(x)) return x;
     auto ix=__float_as_uint(x);
     if (ix<0x00800000) { ix=__float_as_uint(x*0x1p23f); ix-=23u<<23; }
@@ -64,4 +64,27 @@ __device__ float ordered_power(float x,float exponent) {
     y=0x1.62e42ff0c52d6p-1*r+1;
     y=z*r2+y;
     return static_cast<float>(y*scale);
+}
+
+// Only accept the quartic away from binary32 rounding boundaries. The retained
+// approximation handles the remaining inputs and all other exponents. The
+// complete non-negative binary32 domain is checked by power_exhaustive.cu.
+__device__ bool try_power_four(float x, float &result) {
+    if (!(x>0) || !isfinite(x)) return false;
+    double square=static_cast<double>(x)*static_cast<double>(x);
+    double fourth=square*square;
+    result=static_cast<float>(fourth);
+    const auto bits=__float_as_uint(result);
+    if (bits<=0x00800000U || bits>=0x7f7fffffU) return false;
+    // Binary64 has 29 more fraction bits. Bit 28 is the binary32
+    // rounding midpoint; retain the reference near either side of it.
+    const auto tail=static_cast<unsigned long long>(__double_as_longlong(fourth))&0x1fffffffULL;
+    const auto distance=tail>0x10000000ULL ? tail-0x10000000ULL : 0x10000000ULL-tail;
+    return distance>0x200000ULL;
+}
+
+__device__ float ordered_power(float x,float exponent) {
+    float result;
+    if (exponent==4.0f && try_power_four(x,result)) return result;
+    return ordered_power_reference(x,exponent);
 }

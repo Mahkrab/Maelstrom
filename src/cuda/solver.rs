@@ -1,13 +1,13 @@
-//! Device scratch persists across timesteps; accepted state belongs to Simulation.
-//! Each attempt reloads that state, so cancellation or numerical failure can retry
-//! without exposing or trusting a previous attempt's partial device buffers.
+//! Accepted device vectors survive timesteps alongside Simulation's host mirror.
+//! Attempts write separate working vectors. Only final host validation permits
+//! promotion, so cancellation and retries never depend on partial device output.
 
 use super::{CudaContext, CudaError};
 use crate::{
     NumericalError,
     boundary::Plane,
     config::ResolvedConfiguration,
-    diagnostics::{CflDiagnostic, cfl_diagnostic},
+    diagnostics::{CflDiagnostic, cfl_from_maximum_speed},
     math::Vec3,
     scene::Particle,
     simulation::{
@@ -50,6 +50,7 @@ pub(crate) struct CudaSolver {
     pub(crate) context: CudaContext,
     threads: u32,
     neighbour_capacity: usize,
+    resident: bool,
 }
 
 fn array(v: Vec3) -> [f32; 3] {
@@ -114,10 +115,10 @@ fn storage_sizes(s: Settings) -> Result<[usize; 14], CudaError> {
         n * 4,
         n * 4,
         n * 4,
-        n * 12,
+        (n * 12).max(32),
         n * 12,
         u128::from(s.planes) * 16,
-        u128::from(s.padded) * 32,
+        u128::from(s.padded) * 64,
         u128::from(s.entries) * 4,
         n * 4,
         (n + 1) * 8,
@@ -133,6 +134,7 @@ fn storage_sizes(s: Settings) -> Result<[usize; 14], CudaError> {
 }
 
 /// Replace independently counted row lengths with checked exclusive offsets.
+#[cfg(test)]
 fn prefix_offsets(counts: &mut [u64], particles: u32) -> Result<u64, CudaError> {
     if counts.len() != particles as usize + 1 || counts.first() != Some(&0) {
         return Err(CudaError::NeighbourStorage { particle: 0 });
@@ -188,6 +190,7 @@ impl CudaSolver {
             context: CudaContext::new(device)?,
             threads,
             neighbour_capacity: 0,
+            resident: false,
         })
     }
 
@@ -197,6 +200,7 @@ impl CudaSolver {
         particles: &[Particle],
         planes: &[Plane],
     ) -> Result<(), CudaError> {
+        self.resident = false;
         for (slot, size) in storage_sizes(s)?.into_iter().enumerate() {
             self.context.inner.reserve(slot as u32, size)?;
         }
@@ -211,6 +215,12 @@ impl CudaSolver {
         self.context.inner.upload(1, &velocities)?;
         self.context.inner.upload(9, &planes)?;
         self.context.inner.begin_attempt()
+    }
+
+    /// Promote only after Simulation's final checks; host installation follows
+    /// immediately and cannot fail. Inputs and planes are immutable for its life.
+    pub(crate) fn accept(&mut self) -> Result<(), CudaError> {
+        self.context.inner.accept()
     }
 
     fn operation(&mut self, s: Settings, operation: u32) -> Result<(), StepError> {
@@ -236,12 +246,8 @@ impl CudaSolver {
         diagnostic_error(record, s.count)
     }
 
+    #[cfg(test)]
     fn discover(&mut self, s: &mut Settings, positions: &[Vec3]) -> Result<(), StepError> {
-        s.entries = 0;
-        if s.count == 0 {
-            self.context.inner.upload(13, &[0_u64])?;
-            return Ok(());
-        }
         let mut largest = 0.0_f64;
         let mut lower = Vec3::new(f32::MAX, f32::MAX, f32::MAX);
         let mut upper = Vec3::new(-f32::MAX, -f32::MAX, -f32::MAX);
@@ -259,13 +265,27 @@ impl CudaSolver {
         while s.width < minimum {
             s.width *= 2.0;
         }
+        self.discover_with_width(s)
+    }
+
+    fn discover_with_width(&mut self, s: &mut Settings) -> Result<(), StepError> {
+        s.entries = 0;
+        if s.count == 0 {
+            self.context.inner.upload(13, &[0_u64])?;
+            return Ok(());
+        }
+        // Cell generation, sorting, counting and checked prefix formation share
+        // the stream. The host needs only the total before allocating row storage.
         self.operation(*s, 2)?;
         if s.padded > 1 {
             self.context.inner.launch(*s, 13, self.threads)?;
         }
-        self.operation(*s, 4)?;
-        let mut offsets: Vec<u64> = self.context.inner.download(13, s.count as usize + 1)?;
-        s.entries = prefix_offsets(&mut offsets, s.count)?;
+        let record = self.context.inner.prefix(*s, self.threads, true)?;
+        diagnostic_error(record, s.count)?;
+        s.entries = self
+            .context
+            .inner
+            .download_at::<u64>(13, s.count as usize, 1)?[0];
         let required = storage_sizes(*s)?[11];
         // Membership changes as the block moves. Geometric growth avoids a
         // device reallocation for every small increase, without capping a row.
@@ -280,7 +300,6 @@ impl CudaSolver {
         };
         self.context.inner.reserve(11, capacity)?;
         self.neighbour_capacity = capacity;
-        self.context.inner.upload(13, &offsets)?;
         self.operation(*s, 12)
     }
 
@@ -293,34 +312,62 @@ impl CudaSolver {
         clock: &mut StageClock<PROFILE>,
     ) -> Result<(Vec<Particle>, CflDiagnostic), StepError> {
         let mut s = settings(configuration, particles.len(), planes.len())?;
-        self.prepare(s, particles, planes)?;
-        self.operation(s, 0)?;
-        let velocities = host_values(
-            self.context
-                .inner
-                .download(3, particles.len())?
-                .into_iter()
-                .map(vector),
-        )?;
-        let cfl = cfl_diagnostic(
-            &velocities,
+        if !self.resident {
+            self.prepare(s, particles, planes)?;
+            self.resident = true;
+        } else {
+            // Count, identities, configuration and planes belong to one fixed
+            // Simulation. Accepted vectors were promoted at its last commit;
+            // a failed attempt can overwrite scratch but never these inputs.
+            self.context.inner.begin_attempt()?;
+        }
+        let records = self.context.inner.observe(s, 0, self.threads)?;
+        diagnostic_error(records[0], s.count)?;
+        let blocks = particles.len().div_ceil(self.threads as usize);
+        let summaries: Vec<[f32; 8]> = self.context.inner.download(7, blocks)?;
+        // Preserve the old ordering: acceleration diagnostics, completed host
+        // observation, then CFL errors, then the first cancellation poll.
+        diagnostic_error(records[1], s.count)?;
+        let maximum_speed = summaries.iter().map(|s| s[0]).fold(0.0_f32, f32::max);
+        let cfl = cfl_from_maximum_speed(
+            maximum_speed,
             s.timestep,
             configuration.derived.particle_diameter_m,
             configuration.numerical.cfl_factor,
         )?;
         check_cancellation(cancelled)?;
         clock.mark(Stage::ValidationAndAcceleration);
-        self.operation(s, 1)?;
+        let records = self.context.inner.observe(s, 1, self.threads)?;
+        diagnostic_error(records[0], s.count)?;
         check_cancellation(cancelled)?;
         clock.mark(Stage::Prediction);
-        let positions = host_values(
-            self.context
-                .inner
-                .download(2, particles.len())?
-                .into_iter()
-                .map(vector),
-        )?;
-        self.discover(&mut s, &positions)?;
+        let summaries: Vec<[f32; 8]> = self.context.inner.download(7, blocks)?;
+        let mut largest = 0.0_f64;
+        let mut lower = Vec3::new(f32::MAX, f32::MAX, f32::MAX);
+        let mut upper = Vec3::new(-f32::MAX, -f32::MAX, -f32::MAX);
+        for summary in summaries {
+            largest = largest.max(f64::from(summary[0]));
+            lower = Vec3::new(
+                lower.x.min(summary[1]),
+                lower.y.min(summary[2]),
+                lower.z.min(summary[3]),
+            );
+            upper = Vec3::new(
+                upper.x.max(summary[4]),
+                upper.y.max(summary[5]),
+                upper.z.max(summary[6]),
+            );
+        }
+        s.validate_pairs =
+            u32::from(particles.len() > 1 && !(upper - lower).length_squared().is_finite());
+        let minimum = f64::from(s.radius)
+            .max(2.0_f64.powi(-72))
+            .max(largest * 2.0_f64.powi(-50));
+        s.width = 2.0_f64.powi(-72);
+        while s.width < minimum {
+            s.width *= 2.0;
+        }
+        self.discover_with_width(&mut s)?;
         check_cancellation(cancelled)?;
         clock.mark(Stage::NeighbourSearch);
         for _ in 0..configuration.numerical.solver_iterations {
@@ -438,6 +485,10 @@ const QUANTITIES: [&str; 71] = [
 mod tests;
 
 #[cfg(test)]
+#[path = "residency_tests.rs"]
+mod residency_tests;
+
+#[cfg(test)]
 #[path = "correction_tests.rs"]
 mod correction_tests;
 
@@ -448,3 +499,11 @@ mod search_tests;
 #[cfg(test)]
 #[path = "vorticity_tests.rs"]
 mod vorticity_tests;
+
+#[cfg(test)]
+#[path = "spatial_sort_tests.rs"]
+mod spatial_sort_tests;
+
+#[cfg(test)]
+#[path = "observation_tests.rs"]
+mod observation_tests;

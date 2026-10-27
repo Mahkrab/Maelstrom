@@ -394,7 +394,7 @@ fn hardware_multiplier_prefix_keeps_self_order_and_rechecks_current_support() {
     let config = crate::config::resolve_effective_configuration(None, None, None).unwrap();
     for threads in [32, 64, 128, 256] {
         let mut gpu = CudaSolver::new(0, threads).unwrap();
-        for count in [1, 3, 31, 32, 33, 129] {
+        for count in [0, 1, 3, 31, 32, 33, 129] {
             let initial: Vec<_> = (0..count)
                 .map(|i| {
                     Vec3::new(
@@ -502,7 +502,9 @@ fn hardware_batched_sort_matches_integer_keys_and_individual_passes() {
     let configuration = crate::config::resolve_effective_configuration(None, None, None).unwrap();
     for threads in [32, 64, 128, 256] {
         let mut gpu = CudaSolver::new(0, threads).unwrap();
-        for count in [1, 3, 9, 129, 257] {
+        for count in [
+            1, 3, 9, 31, 32, 33, 127, 128, 129, 255, 256, 257, 1025, 8193,
+        ] {
             // Integral coordinates make the expected unit-width cell keys
             // independent of the device's floating-point cell calculation.
             let keys: Vec<_> = (0..count)
@@ -608,6 +610,85 @@ pub(super) fn discovered(
                 .collect()
         })
         .collect())
+}
+
+#[test]
+#[ignore = "requires an explicitly selected CUDA hardware test run"]
+fn hardware_identity_rows_sort_network_edges_dense_fallback_and_tail_warps() {
+    for threads in [32, 64, 128, 256] {
+        let mut gpu = CudaSolver::new(0, threads).unwrap();
+        // Every pair is inside support, but cell order interleaves identities.
+        // Each row's exact answer is simply all identities except its owner.
+        for count in [
+            0, 1, 2, 3, 32, 33, 34, 64, 65, 66, 128, 129, 130, 256, 257, 258, 514, 1026,
+        ] {
+            let positions: Vec<_> = (0..count)
+                .map(|i| {
+                    Vec3::new(
+                        if i & 1 == 0 { -0.01 } else { 0.01 },
+                        if i & 2 == 0 { -0.01 } else { 0.01 },
+                        if i & 4 == 0 { -0.01 } else { 0.01 },
+                    )
+                })
+                .collect();
+            let rows = discovered(&mut gpu, &positions, 0.1).unwrap();
+            for (owner, row) in rows.iter().enumerate() {
+                let expected: Vec<_> = (0..count).filter(|&i| i != owner).collect();
+                assert_eq!(
+                    row, &expected,
+                    "particles {count}, owner {owner}, block {threads}"
+                );
+            }
+        }
+        // Spatially separated clusters give a single launch different network
+        // widths, empty rows and a final row beyond the dense-row threshold.
+        let mut points = Vec::new();
+        let mut expected = Vec::new();
+        for (cluster, count) in [1, 2, 34, 66, 130, 258].into_iter().enumerate() {
+            let first = points.len();
+            for local in 0..count {
+                points.push(Vec3::new(
+                    cluster as f32 * 2.0,
+                    if local & 1 == 0 { -0.01 } else { 0.01 },
+                    0.0,
+                ));
+                expected.push(
+                    (first..first + count)
+                        .filter(|&i| i != first + local)
+                        .collect::<Vec<_>>(),
+                );
+            }
+        }
+        assert_eq!(discovered(&mut gpu, &points, 0.1).unwrap(), expected);
+    }
+}
+
+#[test]
+#[ignore = "requires an explicitly selected CUDA hardware test run"]
+fn hardware_failed_fill_does_not_sort_invalid_rows_and_can_retry() {
+    let config = crate::config::resolve_effective_configuration(None, None, None).unwrap();
+    for threads in [32, 64, 128, 256] {
+        let mut gpu = CudaSolver::new(0, threads).unwrap();
+        let points = [Vec3::ZERO; 3];
+        discovered(&mut gpu, &points, 0.1).unwrap();
+        let mut s = settings(&config, 3, 0).unwrap();
+        s.radius = 0.1;
+        s.width = 0.125;
+        s.entries = 6;
+        let before = vec![99_u32; 6];
+        gpu.context.inner.upload(11, &before).unwrap();
+        // Every range is reversed or beyond storage. No lane may access it.
+        gpu.context.inner.upload(13, &[7_u64, 6, 5, 4]).unwrap();
+        assert!(matches!(
+            gpu.operation(s, 12),
+            Err(StepError::Cuda(CudaError::NeighbourStorage { particle: 0 }))
+        ));
+        assert_eq!(gpu.context.inner.download::<u32>(11, 6).unwrap(), before);
+        assert_eq!(
+            discovered(&mut gpu, &points, 0.1).unwrap(),
+            vec![vec![1, 2], vec![0, 2], vec![0, 1]]
+        );
+    }
 }
 
 #[test]
@@ -1054,4 +1135,63 @@ fn hardware_components_preserve_ordered_cpu_arithmetic() {
         order_sensitive,
         "the fixture must detect a reversed floating-point reduction"
     );
+}
+
+#[test]
+#[ignore = "requires an explicitly selected CUDA hardware test run"]
+fn hardware_spatial_schedule_keeps_identity_rows_and_error_priority() {
+    use crate::neighbours::{brute_force, uniform_grid};
+
+    for threads in [32, 64, 128, 256] {
+        let mut gpu = CudaSolver::new(0, threads).unwrap();
+        for count in [33, 257, 4099, 65] {
+            let mut points: Vec<_> = (0..count)
+                .map(|i| {
+                    Vec3::new(
+                        (i % 37) as f32 * 0.04 - 0.8,
+                        ((i / 37) % 11) as f32 * 0.04 - 0.3,
+                        (i / (37 * 11)) as f32 * 0.04 - 0.2,
+                    )
+                })
+                .collect();
+            // Break the relationship between slice identity and spatial order.
+            // The oracle still enumerates neighbours in ascending slice order.
+            for i in (1..count).rev() {
+                points.swap(i, (i * 1664525 + 1013904223) % (i + 1));
+            }
+            let expected = if count < 300 {
+                brute_force(&points, 0.1).unwrap()
+            } else {
+                uniform_grid(&points, 0.1).unwrap()
+            };
+            let actual = discovered(&mut gpu, &points, 0.1).unwrap();
+            for (owner, row) in actual.iter().enumerate() {
+                assert_eq!(row, expected.for_particle(owner).unwrap());
+            }
+        }
+
+        // Spatial order visits the negative extreme first, but particle zero's
+        // displacement error must win. The unsafe-domain all-pairs check retains
+        // its identity-ordered traversal before any cell-local distance checks.
+        let points = [
+            Vec3::new(f32::MAX, 0., 0.),
+            Vec3::new(-f32::MAX, 0., 0.),
+            Vec3::ZERO,
+        ];
+        assert!(matches!(
+            discovered(&mut gpu, &points, 0.1),
+            Err(StepError::Numerical(NumericalError::NonFiniteResult {
+                quantity: "neighbour search displacement"
+            }))
+        ));
+        assert_eq!(
+            gpu.context.inner.download::<u32>(12, 3).unwrap(),
+            vec![1, 1, 2]
+        );
+        assert!(gpu.accept().is_err());
+        assert_eq!(
+            discovered(&mut gpu, &[Vec3::ZERO; 3], 0.1).unwrap(),
+            vec![vec![1, 2], vec![0, 2], vec![0, 1]]
+        );
+    }
 }

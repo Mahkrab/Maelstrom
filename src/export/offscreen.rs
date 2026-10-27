@@ -1,6 +1,7 @@
 //! One submitted texture is read back completely before the next observation is
 //! admitted. Row padding is removed without changing the top-left image origin.
 
+use super::timing::FrameTimings;
 use super::{ExportError, fail};
 use crate::{
     render::{BoundaryLines, DrawScene, Graphics, Settings},
@@ -143,8 +144,7 @@ pub(super) struct FrameWriter<'a> {
     pub mass_kg: f32,
     pub dt: f64,
     pub destination: &'a std::path::Path,
-    pub render_seconds: f64,
-    pub encode_seconds: f64,
+    pub timings: FrameTimings,
 }
 impl FrameWriter<'_> {
     pub fn write(
@@ -152,7 +152,9 @@ impl FrameWriter<'_> {
         snapshot: &SnapshotRecord,
         index: usize,
     ) -> Result<super::Frame, ExportError> {
+        let start = std::time::Instant::now();
         let particles: Vec<_> = snapshot.particles().iter().map(|p| p.particle()).collect();
+        self.timings.particle_copy += start.elapsed();
         let start = std::time::Instant::now();
         let rgba = (self.operations.read_pixels)(
             self.graphics,
@@ -167,14 +169,17 @@ impl FrameWriter<'_> {
                 height: self.settings.height,
             },
         )?;
-        self.render_seconds += start.elapsed().as_secs_f64();
+        self.timings.graphics_readback += start.elapsed();
         let start = std::time::Instant::now();
         let bytes = (self.operations.encode_png)(self.settings.width, self.settings.height, &rgba)?;
-        self.encode_seconds += start.elapsed().as_secs_f64();
+        self.timings.png_encoding += start.elapsed();
+        let start = std::time::Instant::now();
         let file = format!("frame-{index:08}.png");
         publish_bytes(&self.destination.join(&file), &bytes)
             .map_err(|e| fail(format!("frame {index} publication: {}", e.kind())))?;
-        Ok(super::Frame {
+        self.timings.publication += start.elapsed();
+        let start = std::time::Instant::now();
+        let frame = super::Frame {
             index,
             step: snapshot.completed_steps().to_string(),
             simulated_seconds: snapshot.completed_steps() as f64 * self.dt,
@@ -182,7 +187,9 @@ impl FrameWriter<'_> {
             png_sha256: super::hash(&bytes),
             rgba_sha256: super::hash(&rgba),
             snapshot_sha256: super::hash(snapshot.to_json().map_err(fail)?.as_bytes()),
-        })
+        };
+        self.timings.hashing += start.elapsed();
+        Ok(frame)
     }
 }
 

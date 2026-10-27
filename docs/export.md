@@ -110,6 +110,15 @@ coalesced observations. Numerical outcome and image publication are distinct.
 Solver work, graphics/readback and PNG encoding have separate manifest timings;
 total wall time includes additional work and is not an interchangeable solver benchmark.
 
+New manifests also contain `timing_profile` schema 1. Its disjoint `components_s` cover
+setup, solver steps, snapshot capture, checkpoint comparison, frame particle copying,
+graphics/readback, PNG encoding, frame publication, frame hashing, progress updates and
+an explicit `other` remainder. `total_s` ends before manifest construction, as indicated
+by `boundary = "export_entry_to_before_manifest"`. It excludes final manifest publication,
+CLI output and teardown; measure whole-command wall time for the full cost. Graphics/readback
+includes CPU packing and driver waits. Frame hashing includes portable snapshot JSON encoding.
+The existing three `timing_seconds` fields retain their meanings, and older bundles remain valid.
+
 The default stride is 1: every accepted timestep produces an image, including when
 the timestep has been refined. For example, `--steps 480 --frame-stride 4` stores
 121 images while still computing all 480 steps. Choose the stride for the desired

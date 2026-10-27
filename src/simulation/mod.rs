@@ -296,6 +296,7 @@ impl Simulation {
                 }
             }
             check_cancellation(cancelled)?;
+            cuda.accept()?;
             self.accepted = Snapshot {
                 completed_steps,
                 particles,

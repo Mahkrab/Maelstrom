@@ -7,6 +7,8 @@
 #include <limits>
 #include <new>
 #include <cmath>
+#include <utility>
+#include <algorithm>
 
 #if CUDA_VERSION < 13000
 #error "The CUDA bridge requires CUDA 13 headers; see docs/cuda.md"
@@ -56,12 +58,17 @@ struct Resource {
     CUmodule module = nullptr;
     CUfunction kernel = nullptr;
     CUfunction solver = nullptr;
+    CUfunction spatial_sort = nullptr;
+    CUfunction observe_state = nullptr;
+    CUfunction prefix_counts = nullptr;
     CUdeviceptr diagnostic = 0;
     bool diagnostic_clear = false;
+    bool attempt_open = false;
     CUdeviceptr slots[14]{};
     std::size_t capacities[14]{};
     CUdeviceptr buffer = 0;
     bool poisoned = false;
+    bool pending = false;
     ~Resource() {
         // Context destruction releases its module, stream and device storage,
         // including allocations retained after an uncertain completion failure.
@@ -97,6 +104,9 @@ static Status initialise(Resource &r, int ordinal, const char *ptx,
     if ((code = d.cuModuleLoadData_fn(&r.module, ptx)) != CUDA_SUCCESS) status = {code, 5};
     if (!status.code && (code = d.cuModuleGetFunction_fn(&r.kernel, r.module, "roundtrip")) != CUDA_SUCCESS) status = {code, 5};
     if (!status.code && (code = d.cuModuleGetFunction_fn(&r.solver, r.module, "solver")) != CUDA_SUCCESS) status = {code, 5};
+    if (!status.code && (code = d.cuModuleGetFunction_fn(&r.spatial_sort, r.module, "spatial_sort")) != CUDA_SUCCESS) status = {code, 5};
+    if (!status.code && (code = d.cuModuleGetFunction_fn(&r.observe_state, r.module, "observe_state")) != CUDA_SUCCESS) status = {code, 5};
+    if (!status.code && (code = d.cuModuleGetFunction_fn(&r.prefix_counts, r.module, "prefix_counts")) != CUDA_SUCCESS) status = {code, 5};
     // Pageable uploads may return before DMA finishes on the legacy stream.
     // This private stream must inherit that dependency before reading the data.
     if (!status.code && (code = d.cuStreamCreate_fn(&r.stream, CU_STREAM_DEFAULT)) != CUDA_SUCCESS) status = {code, 6};
@@ -181,20 +191,35 @@ extern "C" Status maelstrom_cuda_close(void *handle) {
     return {code, code == CUDA_SUCCESS ? 0 : 15};
 }
 
-// Operations finish their stream before returning. Only allocation exhaustion
-// permits driver-resource retry; partial solver output remains private scratch.
-template<class Operation> static Status solver_call(Resource &r, Operation operation,
-        std::uint64_t *diagnostic=nullptr, unsigned int diagnostic_count=1) {
+// Submission borrows no host storage. Observation drains the private stream;
+// storage access drains it before a copy or allocation replacement can run.
+// Keep pending set after uncertain completion so only destruction can reclaim
+// allocations which might still be in use.
+enum class Boundary { Submit, HostAccess, Observe };
+static Status complete(Resource &r) {
+    if (!r.pending) return {0,0};
+    auto code=r.driver.cuStreamSynchronize_fn(r.stream);
+    if (code!=CUDA_SUCCESS) return {code,10};
+    r.pending=false;
+    return {0,0};
+}
+
+template<class Operation> static Status solver_call(Resource &r, Boundary boundary,
+        Operation operation, std::uint64_t *diagnostic=nullptr,
+        unsigned int diagnostic_count=1) {
     if (r.poisoned) return {-3,14};
     auto &d=r.driver;
     auto code=d.cuCtxPushCurrent_fn(r.context);
     if (code!=CUDA_SUCCESS) { r.poisoned=true; return {code,13}; }
-    Status status=operation();
-    code=d.cuStreamSynchronize_fn(r.stream);
-    if (code!=CUDA_SUCCESS) status={code,10};
-    // The stream is already drained. A synchronous device-to-host copy finishes
-    // writing the borrowed result before returning; another stream wait adds no
-    // dependency. Keep transfer faults inside the same invalidation boundary.
+    Status status=boundary==Boundary::HostAccess ? complete(r) : Status{0,0};
+    if (!status.code) status=operation();
+    // Immediate submission failures still drain earlier work. Completion faults
+    // take precedence, and an uncertain context is never reused, even for an
+    // otherwise recoverable allocation failure.
+    if ((boundary==Boundary::Observe || status.code) && status.stage!=10) {
+        const auto completion=complete(r);
+        if (completion.code) status=completion;
+    }
     if (!status.code && diagnostic) {
         code=d.cuMemcpyDtoH_fn(diagnostic,r.diagnostic,diagnostic_count*sizeof(*diagnostic));
         if (code!=CUDA_SUCCESS) status={code,11};
@@ -207,13 +232,17 @@ template<class Operation> static Status solver_call(Resource &r, Operation opera
 }
 
 extern "C" Status maelstrom_cuda_storage(void *handle, unsigned int slot,
-                                          void *host, std::size_t bytes, unsigned int action) {
+                                          void *host, std::size_t bytes, unsigned int action, std::size_t offset=0) {
     auto &r=*static_cast<Resource *>(handle);
     if (r.poisoned) return {-3,14};
     if (slot>=14 || action>2 || bytes>static_cast<std::size_t>(PTRDIFF_MAX) ||
+        offset>static_cast<std::size_t>(PTRDIFF_MAX) || (!action && offset) ||
         (action && bytes && !host)) return {CUDA_ERROR_INVALID_VALUE,7};
-    if (action && bytes>r.capacities[slot]) return {CUDA_ERROR_INVALID_VALUE,7};
-    return solver_call(r,[&]() -> Status {
+    if (action && (offset>r.capacities[slot] || bytes>r.capacities[slot]-offset)) return {CUDA_ERROR_INVALID_VALUE,7};
+    // Reservations within capacity and empty transfers neither submit work nor
+    // expose device data. In particular, a Rust upload's reserve is usually free.
+    if ((!action && bytes<=r.capacities[slot]) || (action && !bytes)) return {0,0};
+    return solver_call(r,Boundary::HostAccess,[&]() -> Status {
         auto &d=r.driver;
         CUresult code=CUDA_SUCCESS;
         if (!action && bytes>r.capacities[slot]) {
@@ -226,17 +255,23 @@ extern "C" Status maelstrom_cuda_storage(void *handle, unsigned int slot,
             }
             r.slots[slot]=replacement;
             r.capacities[slot]=bytes;
-        } else if (action==1 && bytes) code=d.cuMemcpyHtoD_fn(r.slots[slot],host,bytes);
-        else if (action==2 && bytes) code=d.cuMemcpyDtoH_fn(host,r.slots[slot],bytes);
+        } else if (action==1 && bytes) code=d.cuMemcpyHtoD_fn(r.slots[slot]+offset,host,bytes);
+        else if (action==2 && bytes) code=d.cuMemcpyDtoH_fn(host,r.slots[slot]+offset,bytes);
         return {code,code==CUDA_SUCCESS ? 0 : (action==1 ? 8 : 11)};
     });
 }
 
+enum class Observation { None, State, CountPrefix, Prefix };
 static Status solver(Resource &r, SolverSettings settings, unsigned int operation,
-        unsigned int threads, std::uint64_t *diagnostic=nullptr, bool grouped=false) {
+        unsigned int threads, std::uint64_t *diagnostic=nullptr, bool grouped=false,
+        Observation observation=Observation::None) {
     if (r.poisoned) return {-3,14};
-    if ((grouped && (!diagnostic || (operation!=5 && operation!=9))) ||
-        operation>17 || ((operation==2 || operation==4 || operation==12) && (!std::isfinite(settings.width) || settings.width<=0)) ||
+    const bool state=observation==Observation::State;
+    const bool prefix=observation==Observation::CountPrefix || observation==Observation::Prefix;
+    if ((observation!=Observation::None && (!diagnostic || grouped)) ||
+        (state && operation>1) || (prefix && operation!=4) ||
+        (grouped && (!diagnostic || (operation!=5 && operation!=9))) ||
+        operation>17 || ((operation==2 || (operation==4 && observation!=Observation::Prefix) || operation==12) && (!std::isfinite(settings.width) || settings.width<=0)) ||
         (threads!=32 && threads!=64 && threads!=128 && threads!=256) ||
         settings.padded==0 || (settings.padded&(settings.padded-1)) ||
         settings.count>settings.padded || settings.entries>static_cast<std::uint64_t>(PTRDIFF_MAX)/4 ||
@@ -244,19 +279,28 @@ static Status solver(Resource &r, SolverSettings settings, unsigned int operatio
         (settings.stride&(settings.stride-1)) || (settings.span&(settings.span-1)) || settings.span>settings.padded)))
         return {CUDA_ERROR_INVALID_VALUE,7};
     std::uint64_t n=settings.count;
-    std::uint64_t required[14]={n*12,n*12,n*12,n*12,n*4,n*4,n*4,n*12,n*12,
-        static_cast<std::uint64_t>(settings.planes)*16,static_cast<std::uint64_t>(settings.padded)*32,
+    std::uint64_t required[14]={n*12,n*12,n*12,n*12,n*4,n*4,n*4,n ? std::max<std::uint64_t>(n*12,32) : (prefix ? 32 : 0),n*12,
+        static_cast<std::uint64_t>(settings.planes)*16,static_cast<std::uint64_t>(settings.padded)*64,
         settings.entries*4,n*4,(n+1)*8};
     for (unsigned int slot=0;slot<14;++slot) if (required[slot]>r.capacities[slot]) return {CUDA_ERROR_INVALID_VALUE,7};
     if (diagnostic && !r.diagnostic_clear) return {CUDA_ERROR_INVALID_VALUE,7};
-    if (!settings.count) {
-        if (diagnostic) *diagnostic=UINT64_MAX;
-        return {0,0};
+    if (!settings.count && !prefix) {
+        // Empty observations still complete an attempt's queued reset, so
+        // acceptance and deferred driver errors obey the non-empty contract.
+        const auto status=diagnostic ? solver_call(r,Boundary::Observe,[]() -> Status {
+            return {0,0};
+        }) : Status{0,0};
+        if (diagnostic && !status.code) {
+            *diagnostic=UINT64_MAX;
+            if (state) diagnostic[1]=UINT64_MAX;
+        }
+        return status;
     }
     const unsigned int passes=grouped ? (operation==5 ? 4 : 2) : 1;
+    const unsigned int record_count=prefix || (state && operation==0) ? 2 : passes;
     std::uint64_t records[4]={UINT64_MAX,UINT64_MAX,UINT64_MAX,UINT64_MAX};
     if (diagnostic) r.diagnostic_clear=false;
-    const auto status=solver_call(r,[&]() -> Status {
+    const auto status=solver_call(r,diagnostic ? Boundary::Observe : Boundary::Submit,[&]() -> Status {
         SolverBuffers buffers;
         static_assert(offsetof(SolverBuffers,diagnostic)==sizeof(r.slots));
         // CUdeviceptr holds the 64-bit address representation used by embedded PTX.
@@ -267,39 +311,72 @@ static Status solver(Resource &r, SolverSettings settings, unsigned int operatio
         const bool sort=operation==13;
         unsigned int kernel_operation=sort ? 3 : operation;
         void *args[]={&buffers,&settings,&kernel_operation};
-        std::uint64_t count=(operation==2 || kernel_operation==3) ? settings.padded : settings.count;
+        std::uint64_t count=(operation==2 || sort || kernel_operation==3) ? settings.padded : settings.count;
+        CUfunction function=state ? r.observe_state : (sort ? r.spatial_sort : r.solver);
         auto launch=[&]() -> Status {
-            auto code=r.driver.cuLaunchKernel_fn(r.solver,static_cast<unsigned int>((count+threads-1)/threads),
+            // Conservatively mark before submission: even an immediate error
+            // must pass through the completion/poisoning boundary.
+            r.pending=true;
+            auto code=r.driver.cuLaunchKernel_fn(function,static_cast<unsigned int>((count+threads-1)/threads),
                 1,1,threads,1,1,0,r.stream,args,nullptr);
             return {code,code==CUDA_SUCCESS ? 0 : 9};
         };
         if (!sort) {
-            for (unsigned int pass=0;pass<passes;++pass) {
+            for (unsigned int pass=0;observation!=Observation::Prefix && (!prefix || settings.count) && pass<passes;++pass) {
                 kernel_operation=operation+pass;
                 auto status=launch();
                 if (status.code) return status;
+                if (kernel_operation==12) {
+                    // Fill finishes on this stream before any row is sorted.
+                    // Keep both launches inside the same failure/readback boundary.
+                    kernel_operation=18;
+                    count=static_cast<std::uint64_t>(settings.count)*32;
+                    status=launch();
+                    if (status.code) return status;
+                }
+            }
+            if (prefix) {
+                function=r.prefix_counts;
+                settings.stride=observation==Observation::CountPrefix;
+                settings.span=static_cast<unsigned int>((static_cast<std::uint64_t>(settings.count)+threads)/threads);
+                for (kernel_operation=21;kernel_operation<=23;++kernel_operation) {
+                    count=kernel_operation==22 ? threads : static_cast<std::uint64_t>(settings.count)+1;
+                    const auto status=launch();
+                    if (status.code) return status;
+                }
             }
             return {0,0};
         }
-        // These integer-only passes have no host observations or cancellation
-        // polls between them. Stream order supplies their global dependency;
-        // solver_call drains the batch even after an immediate launch failure.
-        for (std::uint64_t span=2;span<=settings.padded;span*=2) {
-            settings.span=static_cast<unsigned int>(span);
-            for (settings.stride=settings.span/2;settings.stride;settings.stride/=2) {
-                auto status=launch();
-                if (status.code) return status;
-            }
+        if (settings.padded==1) return {0,0};
+        // Choose the tile output buffer so the final merge always lands at the
+        // public cell base. No copy-back, extra stream or per-step allocation.
+        unsigned int merges=0;
+        for (std::uint64_t width=threads;width<settings.padded;width*=2) ++merges;
+        settings.stride=merges&1U;
+        kernel_operation=19;
+        auto status=launch();
+        if (status.code) return status;
+        for (std::uint64_t width=threads;width<settings.padded;width*=2) {
+            settings.span=static_cast<unsigned int>(width);
+            kernel_operation=20;
+            status=launch();
+            if (status.code) return status;
+            settings.stride^=1U;
         }
         return {0,0};
-    },diagnostic ? records : nullptr,passes);
+    },diagnostic ? records : nullptr,record_count);
     if (diagnostic && !status.code) {
         // Stage order precedes particle/expression order, even when a later
         // stage would fail at an earlier particle. Never select by packet value.
         *diagnostic=UINT64_MAX;
-        for (unsigned int pass=0;pass<passes;++pass)
-            if (records[pass]!=UINT64_MAX) { *diagnostic=records[pass];break; }
-        r.diagnostic_clear=*diagnostic==UINT64_MAX;
+        if (state) {
+            diagnostic[0]=records[0];diagnostic[1]=records[1];
+            r.diagnostic_clear=records[0]==UINT64_MAX && records[1]==UINT64_MAX;
+        } else {
+            for (unsigned int pass=0;pass<record_count;++pass)
+                if (records[pass]!=UINT64_MAX) { *diagnostic=records[pass];break; }
+            r.diagnostic_clear=*diagnostic==UINT64_MAX;
+        }
     }
     return status;
 }
@@ -307,16 +384,33 @@ static Status solver(Resource &r, SolverSettings settings, unsigned int operatio
 extern "C" Status maelstrom_cuda_begin_attempt(void *handle) {
     auto &r=*static_cast<Resource *>(handle);
     if (r.poisoned) return {-3,14};
-    if (r.diagnostic_clear) return {0,0};
+    r.attempt_open=false;
+    if (r.diagnostic_clear) { r.attempt_open=true; return {0,0}; }
     // Successful passes leave the sentinel untouched. Reset only for the first
     // attempt or after a numerical failure; never trust that flag after a driver
-    // fault. No dependent work can observe a partly initialised record.
-    auto status=solver_call(r,[&]() -> Status {
+    // fault. Stream order places the reset before all dependent kernels.
+    auto status=solver_call(r,Boundary::Submit,[&]() -> Status {
+        r.pending=true;
         auto code=r.driver.cuMemsetD8Async_fn(r.diagnostic,0xff,4*sizeof(std::uint64_t),r.stream);
         return {code,code==CUDA_SUCCESS ? 0 : 9};
     });
-    if (!status.code) r.diagnostic_clear=true;
+    if (!status.code) { r.diagnostic_clear=true; r.attempt_open=true; }
     return status;
+}
+
+// The caller has downloaded and validated final output and passed its last
+// cancellation poll. Final downloads drained the stream; promotion only changes
+// ownership of allocations. Rejected attempts leave both accepted vectors alone.
+extern "C" Status maelstrom_cuda_accept(void *handle) {
+    auto &r=*static_cast<Resource *>(handle);
+    if (r.poisoned) return {-3,14};
+    if (!r.attempt_open || !r.diagnostic_clear || r.pending) return {CUDA_ERROR_INVALID_VALUE,7};
+    for (unsigned int slot : {0U,1U}) {
+        std::swap(r.slots[slot],r.slots[slot+2]);
+        std::swap(r.capacities[slot],r.capacities[slot+2]);
+    }
+    r.attempt_open=false;
+    return {0,0};
 }
 
 extern "C" Status maelstrom_cuda_solver(void *handle, SolverSettings settings,
@@ -335,4 +429,18 @@ extern "C" Status maelstrom_cuda_checked_solver(void *handle, SolverSettings set
 extern "C" Status maelstrom_cuda_checked_group(void *handle, SolverSettings settings,
         unsigned int first_operation, unsigned int threads, std::uint64_t *diagnostic) {
     return solver(*static_cast<Resource *>(handle),settings,first_operation,threads,diagnostic,true);
+}
+
+extern "C" Status maelstrom_cuda_observe(void *handle, SolverSettings settings,
+        unsigned int operation, unsigned int threads, std::uint64_t *records) {
+    return solver(*static_cast<Resource *>(handle),settings,operation,threads,records,false,Observation::State);
+}
+
+extern "C" Status maelstrom_cuda_prefix(void *handle, SolverSettings settings,
+        unsigned int threads, unsigned int count_rows, std::uint64_t *diagnostic) {
+    auto &r=*static_cast<Resource *>(handle);
+    if (r.poisoned) return {-3,14};
+    if (count_rows>1) return {CUDA_ERROR_INVALID_VALUE,7};
+    return solver(r,settings,4,threads,diagnostic,false,
+        count_rows ? Observation::CountPrefix : Observation::Prefix);
 }

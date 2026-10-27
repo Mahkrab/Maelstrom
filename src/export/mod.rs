@@ -3,6 +3,7 @@
 
 mod offscreen;
 mod source;
+mod timing;
 
 use crate::{
     render::{BoundaryLines, Graphics, GraphicsSelection, Settings},
@@ -130,6 +131,8 @@ fn export_using(
     mut cancelled: impl FnMut() -> bool,
     operations: offscreen::FrameOperations,
 ) -> Result<Value, ExportError> {
+    let started = Instant::now();
+    let mut timings = timing::ExportTimings::default();
     let mut settings = request.settings;
     settings.validate().map_err(fail)?;
     let recorded = match &request.source {
@@ -234,11 +237,13 @@ fn export_using(
     // Exclusive creation rejects directories, files and symlinks equally.
     fs::create_dir(request.destination)
         .map_err(|e| fail(format!("create new output directory: {}", e.kind())))?;
+    timings.setup = started.elapsed();
+    let start = Instant::now();
     let mut progress = json!({"schema_version":1,"complete":false,"source_mode":mode,"expected_frames":schedule.steps.len(),"frames":[],"failures":[],"original":recorded.as_ref().map(|r|&r.provenance)});
     write_progress(request.destination, &progress)?;
+    timings.progress += start.elapsed();
     let result = (|| {
         let mut frames = Vec::with_capacity(schedule.steps.len());
-        let mut step_seconds = 0.0;
         let mut writer = offscreen::FrameWriter {
             operations,
             graphics: &graphics,
@@ -248,10 +253,10 @@ fn export_using(
             mass_kg: scene.configuration.derived.particle_mass_kg,
             dt,
             destination: request.destination,
-            render_seconds: 0.0,
-            encode_seconds: 0.0,
+            timings: timing::FrameTimings::default(),
         };
         let mut diagnostics = Vec::new();
+        let start = Instant::now();
         let mut solver = if mode == "saved" {
             None
         } else {
@@ -265,6 +270,7 @@ fn export_using(
             m.device = s.device().cloned();
             m
         });
+        timings.setup += start.elapsed();
         let mut next = 0;
         for step in 0..=last_step {
             // Saved schedules can be sparse and enormous. Iterate scheduled
@@ -281,11 +287,14 @@ fn export_using(
             if step > 0 {
                 let start = Instant::now();
                 let outcome = s.step_with_cancellation(&mut cancelled).map_err(fail)?;
-                step_seconds += start.elapsed().as_secs_f64();
+                timings.solver_steps += start.elapsed();
                 diagnostics.push(crate::workflow::StepDiagnostic::new(step, outcome.cfl));
                 progress["accepted_steps"] = json!(step.to_string());
             }
+            let start = Instant::now();
             let snapshot = SnapshotRecord::capture(s.snapshot());
+            timings.snapshot_capture += start.elapsed();
+            let start = Instant::now();
             if let Some(expected) = recorded.as_ref().and_then(|r| r.snapshots.get(&step))
                 && let Err(error) = source::compare(expected, &snapshot, options.execution)
             {
@@ -301,13 +310,16 @@ fn export_using(
                 }
                 return Err(error);
             }
+            timings.comparison += start.elapsed();
             if schedule.steps.get(next) == Some(&step) {
                 let frame = writer.write(&snapshot, next)?;
                 frames.push(frame);
                 next += 1;
+                let start = Instant::now();
                 progress["frames"] = serde_json::to_value(&frames).map_err(fail)?;
                 progress["accepted_steps"] = json!(step.to_string());
                 write_progress(request.destination, &progress)?;
+                timings.progress += start.elapsed();
             }
         }
         if mode == "saved" {
@@ -323,9 +335,11 @@ fn export_using(
                     .get(step)
                     .ok_or_else(|| fail("missing saved frame"))?;
                 frames.push(writer.write(snapshot, index)?);
+                let start = Instant::now();
                 progress["frames"] = serde_json::to_value(&frames).map_err(fail)?;
                 progress["accepted_steps"] = json!(step.to_string());
                 write_progress(request.destination, &progress)?;
+                timings.progress += start.elapsed();
             }
         }
         if frames.len() != schedule.steps.len() {
@@ -335,6 +349,8 @@ fn export_using(
             return Err(fail("export cancelled before completion publication"));
         }
         graphics.check().map_err(fail)?;
+        timings.frames = writer.timings;
+        let timing_profile = timings.profile(started.elapsed())?;
         let manifest = json!({"schema_version":1,"complete":true,"source_mode":mode,"application_version":env!("CARGO_PKG_VERSION"),
             "build":{"commit":option_env!("MAELSTROM_EXPORT_COMMIT"),"dirty":option_env!("MAELSTROM_EXPORT_DIRTY"),"source_sha256":option_env!("MAELSTROM_EXPORT_SOURCE"),"lock_sha256":option_env!("MAELSTROM_EXPORT_LOCK"),"target":option_env!("MAELSTROM_EXPORT_TARGET"),"rustc":option_env!("MAELSTROM_EXPORT_RUSTC"),"debug_assertions":cfg!(debug_assertions),"profile":option_env!("MAELSTROM_EXPORT_PROFILE"),"opt_level":option_env!("MAELSTROM_EXPORT_OPT_LEVEL"),"rustflags_sha256":option_env!("MAELSTROM_EXPORT_CARGO_ENCODED_RUSTFLAGS"),"features":{"render":true,"viewer":cfg!(feature="viewer"),"cuda":cfg!(feature="cuda")}},
             "backend":RunMetadata::new(&input,last_step,options.backend,options.execution).backend,"execution":options.execution,"request":{"steps":last_step.to_string(),"checkpoints":schedule.steps.iter().map(u64::to_string).collect::<Vec<_>>()},"input":input,"effective_execution":options.execution,"discovery":format!("{:?}",options.backend),"run_metadata":metadata,"original":recorded.as_ref().map(|r|&r.provenance),
@@ -343,7 +359,7 @@ fn export_using(
             "renderer":{"revision":"opaque-spheres-lines-v2","shader_sha256":hash(include_bytes!("../render/particles.wgsl")),"format":"Rgba8UnormSrgb","samples":1,"overlays":false},
             "graphics":{"backend":format!("{:?}",graphics.adapter_info.backend),"name":graphics.adapter_info.name,"device_type":format!("{:?}",graphics.adapter_info.device_type),"vendor":graphics.adapter_info.vendor,"device":graphics.adapter_info.device,"driver":graphics.adapter_info.driver,"driver_info":graphics.adapter_info.driver_info,"selection_index":request.graphics.index,"software_requested":request.graphics.software},
             "encoder":{"crate":"png","version":"0.18.1","colour":"RGBA8 sRGB","compression":"Balanced","filter":"Adaptive"},
-            "timing_seconds":{"solver_steps":step_seconds,"graphics_readback":writer.render_seconds,"encoding":writer.encode_seconds},"accepted_diagnostics":diagnostics,
+            "timing_seconds":{"solver_steps":timings.solver_steps.as_secs_f64(),"graphics_readback":timings.frames.graphics_readback.as_secs_f64(),"encoding":timings.frames.png_encoding.as_secs_f64()},"timing_profile":timing_profile,"accepted_diagnostics":diagnostics,
             "destination_label":request.destination.file_name().map(|s|s.to_string_lossy())});
         publish_bytes(
             &request.destination.join("manifest.json"),

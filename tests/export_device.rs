@@ -116,12 +116,30 @@ fn exercise(scene: &ResolvedScene, steps: u64, stride: u64, options: ExecutionOp
     .unwrap();
     eprintln!("export graphics: {}", direct["graphics"]);
     for manifest in [&direct, &saved, &rerun] {
+        let profile = &manifest["timing_profile"];
+        assert_eq!(profile["schema_version"], 1);
+        assert_eq!(profile["boundary"], "export_entry_to_before_manifest");
+        let components = profile["components_s"].as_object().unwrap();
+        assert_eq!(components.len(), 11);
+        let seconds: Vec<_> = components.values().map(|v| v.as_f64().unwrap()).collect();
+        assert!(seconds.iter().all(|v| v.is_finite() && *v >= 0.0));
+        let total = profile["total_s"].as_f64().unwrap();
+        assert!(total.is_finite() && total > 0.0);
+        assert!((seconds.iter().sum::<f64>() - total).abs() <= total * 1e-12);
+        for (legacy, component) in [
+            ("solver_steps", "solver_steps"),
+            ("graphics_readback", "graphics_readback"),
+            ("encoding", "png_encoding"),
+        ] {
+            assert_eq!(manifest["timing_seconds"][legacy], components[component]);
+        }
         assert_eq!(manifest["frame_count"], schedule.steps.len());
         assert_eq!(
             manifest["input"]["comparison_key"],
             serde_json::to_value(reference.input().unwrap()).unwrap()["comparison_key"]
         );
     }
+    assert_eq!(saved["timing_profile"]["components_s"]["solver_steps"], 0.0);
     for (i, checkpoint) in reference.checkpoints().iter().enumerate() {
         let name = format!("frame-{i:08}.png");
         let rgba = decode(&a.0.join(&name));

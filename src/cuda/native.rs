@@ -1,5 +1,6 @@
-//! The only Rust unsafe boundary. Native calls borrow slices synchronously and
-//! opaque handles are neither shared nor moved across threads.
+//! The only Rust unsafe boundary. Transfers complete their host borrows before
+//! returning; submissions retain only context-owned device storage. Handles stay
+//! on their owning thread, with completion at diagnostics and host observations.
 
 use super::solver::Settings;
 use super::{CudaError, CudaStage, DeviceInfo, Probe};
@@ -78,6 +79,7 @@ unsafe extern "C" {
         host: *mut c_void,
         bytes: usize,
         action: u32,
+        offset: usize,
     ) -> Status;
     fn maelstrom_cuda_solver(
         handle: *mut c_void,
@@ -92,7 +94,22 @@ unsafe extern "C" {
         threads: u32,
         diagnostic: *mut u64,
     ) -> Status;
+    fn maelstrom_cuda_observe(
+        handle: *mut c_void,
+        settings: Settings,
+        operation: u32,
+        threads: u32,
+        records: *mut u64,
+    ) -> Status;
+    fn maelstrom_cuda_prefix(
+        handle: *mut c_void,
+        settings: Settings,
+        threads: u32,
+        count_rows: u32,
+        diagnostic: *mut u64,
+    ) -> Status;
     fn maelstrom_cuda_begin_attempt(handle: *mut c_void) -> Status;
+    fn maelstrom_cuda_accept(handle: *mut c_void) -> Status;
     fn maelstrom_cuda_checked_group(
         handle: *mut c_void,
         settings: Settings,
@@ -107,6 +124,7 @@ unsafe extern "C" {
 pub(super) trait Transfer: Copy + Default {}
 impl Transfer for [f32; 3] {}
 impl Transfer for [f32; 4] {}
+impl Transfer for [f32; 8] {}
 impl Transfer for f32 {}
 impl Transfer for u32 {}
 impl Transfer for u64 {}
@@ -125,10 +143,19 @@ const _: () = {
 };
 
 impl Context {
+    pub(super) fn accept(&mut self) -> Result<(), CudaError> {
+        let handle = self.handle.ok_or(CudaError::Poisoned)?;
+        // SAFETY: This unique thread-local handle has no outstanding work or
+        // borrowed host memory. Simulation calls only after final validation.
+        // Native code rejects poisoned/closed attempts before exchanging owned
+        // vector allocations and their capacities; it makes no driver calls.
+        unsafe { maelstrom_cuda_accept(handle.as_ptr()) }.result()
+    }
+
     pub(super) fn begin_attempt(&mut self) -> Result<(), CudaError> {
         let handle = self.handle.ok_or(CudaError::Poisoned)?;
         // SAFETY: The unique live handle owns the diagnostic allocation. Native
-        // code completes any required reset before returning and rejects reuse
+        // code orders any required reset before subsequent kernels and rejects reuse
         // after uncertain driver faults. No host storage is borrowed.
         unsafe { maelstrom_cuda_begin_attempt(handle.as_ptr()) }.result()
     }
@@ -140,7 +167,7 @@ impl Context {
         let handle = self.handle.ok_or(CudaError::Poisoned)?;
         // SAFETY: The unique thread-local handle is live. Action zero allocates
         // context-owned storage and never dereferences the null host pointer.
-        unsafe { maelstrom_cuda_storage(handle.as_ptr(), slot, std::ptr::null_mut(), bytes, 0) }
+        unsafe { maelstrom_cuda_storage(handle.as_ptr(), slot, std::ptr::null_mut(), bytes, 0, 0) }
             .result()
     }
 
@@ -157,6 +184,7 @@ impl Context {
                 values.as_ptr().cast_mut().cast(),
                 bytes,
                 1,
+                0,
             )
         }
         .result()
@@ -167,6 +195,19 @@ impl Context {
         slot: u32,
         count: usize,
     ) -> Result<Vec<T>, CudaError> {
+        self.download_at(slot, 0, count)
+    }
+
+    pub(super) fn download_at<T: Transfer>(
+        &mut self,
+        slot: u32,
+        offset: usize,
+        count: usize,
+    ) -> Result<Vec<T>, CudaError> {
+        let offset = offset
+            .checked_mul(size_of::<T>())
+            .filter(|&n| n <= isize::MAX as usize)
+            .ok_or(CudaError::Capacity)?;
         let bytes = count
             .checked_mul(size_of::<T>())
             .filter(|&n| n <= isize::MAX as usize)
@@ -178,9 +219,17 @@ impl Context {
         values.resize(count, T::default());
         let handle = self.handle.ok_or(CudaError::Poisoned)?;
         // SAFETY: Action two writes only the allocated, initialised plain-number
-        // slice and finishes before returning. Native code checks slot capacity.
+        // slice and finishes before returning. Native code checks offset and length
+        // against slot capacity before forming the device address.
         unsafe {
-            maelstrom_cuda_storage(handle.as_ptr(), slot, values.as_mut_ptr().cast(), bytes, 2)
+            maelstrom_cuda_storage(
+                handle.as_ptr(),
+                slot,
+                values.as_mut_ptr().cast(),
+                bytes,
+                2,
+                offset,
+            )
         }
         .result()?;
         Ok(values)
@@ -194,7 +243,8 @@ impl Context {
     ) -> Result<(), CudaError> {
         let handle = self.handle.ok_or(CudaError::Poisoned)?;
         // SAFETY: Settings has the asserted C layout. The bridge checks launch
-        // dimensions and all slot sizes, then waits for this private stream.
+        // dimensions and all slot sizes. Submission retains only context-owned
+        // device allocations; later diagnostics/transfers drain the private stream.
         unsafe { maelstrom_cuda_solver(handle.as_ptr(), settings, operation, threads) }.result()
     }
 
@@ -245,6 +295,57 @@ impl Context {
         }
         .result()?;
         Ok(diagnostic)
+    }
+
+    pub(super) fn observe(
+        &mut self,
+        settings: Settings,
+        operation: u32,
+        threads: u32,
+    ) -> Result<[u64; 2], CudaError> {
+        let handle = self.handle.ok_or(CudaError::Poisoned)?;
+        let mut records = [u64::MAX; 2];
+        // SAFETY: Settings has the checked C layout and records owns two u64s.
+        // Native code accepts only acceleration/prediction, validates scratch,
+        // completes the stream and copies results before ending this borrow.
+        // Summaries remain in context-owned scratch until a synchronous download.
+        unsafe {
+            maelstrom_cuda_observe(
+                handle.as_ptr(),
+                settings,
+                operation,
+                threads,
+                records.as_mut_ptr(),
+            )
+        }
+        .result()?;
+        Ok(records)
+    }
+
+    pub(super) fn prefix(
+        &mut self,
+        settings: Settings,
+        threads: u32,
+        count_rows: bool,
+    ) -> Result<u64, CudaError> {
+        let handle = self.handle.ok_or(CudaError::Poisoned)?;
+        let mut record = u64::MAX;
+        // SAFETY: The unique handle owns offsets and scratch. Native code checks
+        // capacities and launch sizes, orders count/scan kernels on its stream,
+        // and completes diagnostic readback before this scalar borrow ends.
+        // Without counting, slot 13 supplies count+1 checked row lengths with
+        // zero first; malformed values are diagnosed before offsets are used.
+        unsafe {
+            maelstrom_cuda_prefix(
+                handle.as_ptr(),
+                settings,
+                threads,
+                u32::from(count_rows),
+                &mut record,
+            )
+        }
+        .result()?;
+        Ok(record)
     }
 
     pub fn new(ordinal: u32) -> Result<Self, CudaError> {

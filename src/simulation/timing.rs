@@ -49,7 +49,7 @@ pub(crate) struct StageClock<const ENABLED: bool> {
 }
 
 impl<const ENABLED: bool> StageClock<ENABLED> {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             previous: if ENABLED { Some(Instant::now()) } else { None },
             times: StageTimes::default(),
