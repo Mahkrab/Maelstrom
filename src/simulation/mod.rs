@@ -277,21 +277,26 @@ impl Simulation {
             .ok_or(StepError::StepCountOverflow)?;
         #[cfg(feature = "cuda")]
         if let Some(cuda) = &mut self.cuda {
-            let (particles, cfl) = cuda.step(
+            let output = cuda.step(
                 &self.configuration,
                 &self.accepted.particles,
                 &self.planes,
                 cancelled,
                 clock,
             )?;
+            let particles = output.particles;
             validate_particles(&particles)?;
-            for particle in &particles {
-                for (index, plane) in self.planes.iter().enumerate() {
-                    if !plane.contains(particle.position_m)? {
-                        return Err(StepError::OutsidePlane {
-                            identity: particle.identity,
-                            plane: index,
-                        });
+            if !output.planes_checked {
+                // Preserve the original host failure path and its particle,
+                // plane and numerical error priority when the device flags it.
+                for particle in &particles {
+                    for (index, plane) in self.planes.iter().enumerate() {
+                        if !plane.contains(particle.position_m)? {
+                            return Err(StepError::OutsidePlane {
+                                identity: particle.identity,
+                                plane: index,
+                            });
+                        }
                     }
                 }
             }
@@ -304,7 +309,7 @@ impl Simulation {
             clock.mark(Stage::Acceptance);
             return Ok(StepOutcome {
                 completed_steps,
-                cfl,
+                cfl: output.cfl,
             });
         }
         let model = &self.configuration.numerical;

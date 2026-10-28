@@ -4,6 +4,42 @@
 struct StateSummary { float scalar; Vector lower, upper; float reserved; };
 static_assert(sizeof(StateSummary)==32);
 
+__device__ void record_diagnostic(SolverBuffers b, unsigned int slot, unsigned long long value) {
+    const auto previous=atomicMin(b.diagnostic+slot,value);
+    if (value<previous) {
+        // Successful lanes never access host memory. Winning updates alone
+        // reduce PCIe traffic on failures; a second minimum tolerates their
+        // different arrival order. Host access waits for stream completion.
+        auto host=reinterpret_cast<unsigned long long *>(b.diagnostic[diagnostic_record_count]);
+        atomicMin(host+slot,value);
+    }
+}
+
+__device__ unsigned long long *plane_observation(SolverBuffers b, SolverSettings s) {
+    // A Vector is 12 bytes; odd counts need one u32 before the aligned record.
+    auto tail=reinterpret_cast<std::uint32_t *>(b.velocity+s.count);
+    return reinterpret_cast<unsigned long long *>(tail+(s.count&1U));
+}
+
+__device__ void reset_plane_observation(SolverBuffers b, SolverSettings s) {
+    auto tail=reinterpret_cast<std::uint32_t *>(b.velocity+s.count);
+    for (unsigned int k=0;k<velocity_observation_bytes/sizeof(*tail);++k) tail[k]=0;
+    *plane_observation(b,s)=ULLONG_MAX;
+}
+
+__device__ void observe_final_planes(SolverBuffers b, SolverSettings s, unsigned int i) {
+    const auto point=b.position[i];
+    for (unsigned int k=0;k<s.planes;++k) {
+        const auto plane=b.planes[k];
+        const float product=dot(plane.normal,point), constraint=product-plane.offset;
+        if (!isfinite(point.x) || !isfinite(point.y) || !isfinite(point.z) ||
+            !isfinite(product) || !isfinite(constraint) || constraint<0.0f) {
+            atomicMin(plane_observation(b,s),(static_cast<unsigned long long>(i)<<32)|k);
+            break;
+        }
+    }
+}
+
 extern "C" __global__ void observe_state(SolverBuffers b, SolverSettings s, unsigned int operation) {
     __shared__ StateSummary values[256];
     const auto lane=threadIdx.x;
@@ -19,7 +55,7 @@ extern "C" __global__ void observe_state(SolverBuffers b, SolverSettings s, unsi
             Checked speed;
             value.scalar=length(b.velocity[i],speed);
             if (speed.error) {
-                atomicMin(b.diagnostic+1,(static_cast<unsigned long long>(i)<<32)|speed.error);
+                record_diagnostic(b,1,(static_cast<unsigned long long>(i)<<32)|speed.error);
                 value.scalar=0;
             }
         } else {
@@ -30,7 +66,7 @@ extern "C" __global__ void observe_state(SolverBuffers b, SolverSettings s, unsi
             value.lower=p;value.upper=p;
         }
         b.errors[i]=c.error;
-        if (c.error) atomicMin(b.diagnostic,(static_cast<unsigned long long>(i)<<32)|c.error);
+        if (c.error) record_diagnostic(b,0,(static_cast<unsigned long long>(i)<<32)|c.error);
     }
     values[lane]=value;
     __syncthreads();
@@ -96,7 +132,7 @@ extern "C" __global__ void prefix_counts(SolverBuffers b, SolverSettings s, unsi
     std::uint64_t value=i<n && (s.count || !s.stride) ? b.offsets[i] : 0;
     if (i<n && ((!i && value) || (i && value>s.count-1))) {
         const auto particle=i ? i-1 : 0;
-        atomicMin(b.diagnostic+1,(static_cast<unsigned long long>(particle)<<32)|52);
+        record_diagnostic(b,1,(static_cast<unsigned long long>(particle)<<32)|52);
         value=0;
     }
     scan[lane]=value;

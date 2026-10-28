@@ -46,8 +46,7 @@ __device__ float poly6(float d, float h, Checked &c) {
     float cube=c.scalar(term*(term*term),10);
     return c.scalar(coeff*cube,11);
 }
-__device__ Vector spiky(Vector displacement, float h, Checked &c) {
-    float d=length(displacement,c);
+__device__ Vector spiky_at_distance(Vector displacement, float d, float h, Checked &c) {
     if (d == 0.0f || d >= h) return {0,0,0};
     float h2=h*h, h4=h2*h2;
     float h6=c.scalar(h2*h4,12);
@@ -56,6 +55,9 @@ __device__ Vector spiky(Vector displacement, float h, Checked &c) {
     float remain=c.scalar(h-d,15);
     float scale=c.scalar(__fdiv_rn(coeff*(remain*remain),d),16);
     return c.vector(mul(displacement,scale),17);
+}
+__device__ Vector spiky(Vector displacement, float h, Checked &c) {
+    return spiky_at_distance(displacement,length(displacement,c),h,c);
 }
 __device__ bool active(SolverBuffers b, SolverSettings s, unsigned int i, unsigned int j, Checked &c) {
     // Callers enumerate the fixed row; only current-distance filtering remains.
@@ -113,6 +115,7 @@ extern "C" __global__ void solver(SolverBuffers b, SolverSettings s, unsigned in
     // Check every earlier slot: skipped kernels leave their own sentinel alone.
     for (unsigned int previous=0;previous<pass;++previous)
         if (b.diagnostic[previous]!=ULLONG_MAX) return;
+    const bool staged=operation==5 && b.first_operation==5;
     Checked c;
     if (operation==0) {
         Vector delta=c.vector(mul(s.acceleration,s.timestep),19);
@@ -122,42 +125,63 @@ extern "C" __global__ void solver(SolverBuffers b, SolverSettings s, unsigned in
         b.position[i]=c.vector(add(b.old_position[i],delta),22);
     } else if (operation==4 || operation==12) {
         discover_row(b,s,i,c,operation==12);
-    } else if (operation==5) {
-        // Complete all active-distance checks before any multiplier calculation.
+    } else if (operation==5 && !staged) {
+        // Standalone validation retains its own checked traversal.
         Members row(b,s,i);
         for (auto j=row.next(s.count);j<s.count;j=row.next(s.count)) {
             separation(b.position[i],b.position[j],c,18);
             if (c.error) break;
         }
-    } else if (operation==6) {
+    } else if (operation==6 && b.first_operation==5) {
+        // The previous launch checked every row. No output is published if any
+        // distance failed, regardless of speculative numerical errors elsewhere.
+        const auto value=reinterpret_cast<const PendingJacobi *>(b.candidate)[i];
+        b.density[i]=value.density;
+        b.constraint[i]=value.constraint;
+        b.multiplier[i]=value.multiplier;
+        c.error=value.error;
+    } else if (operation==6 || staged) {
+        Checked validation;
         float self=poly6(0,s.radius,c), density=0;
         Vector owner{0,0,0};
-        // Density includes self at its identity-ordered position.
-        Members density_row(b,s,i,true);
-        for (auto j=density_row.next(s.count);j<s.count;j=density_row.next(s.count)) {
-            if (i==j) density=c.scalar(density+self,23);
-            else if (active(b,s,i,j,c)) density=c.scalar(density+poly6(separation(b.position[i],b.position[j],c,18),s.radius,c),23);
-        }
-        b.density[i]=density;
-        float constraint=c.scalar(c.scalar(__fdiv_rn(density,s.rest_density),24)-1.0f,25);
-        b.constraint[i]=constraint;
-        float reciprocal=c.scalar(__fdiv_rn(1.0f,s.rest_density),26);
-        Checked prefix;
+        // The reciprocal value is invariant. Its check stays after the complete
+        // density/constraint calculation, before any owner error is exposed.
+        float reciprocal_value=__fdiv_rn(1.0f,s.rest_density);
+        Checked owner_check, prefix;
         float sum=0;
-        Members owner_row(b,s,i);
-        auto suffix=owner_row.stop;
-        for (auto j=owner_row.next(s.count);j<s.count;j=owner_row.next(s.count)) {
-            if (j>i && suffix==owner_row.stop) suffix=owner_row.cursor-1;
-            if (active(b,s,i,j,c)) {
-                Vector direction=spiky(sub(b.position[i],b.position[j]),s.radius,c);
-                owner=c.vector(add(owner,direction),27);
-                Vector dir=c.vector(mul(neg(direction),reciprocal),29);
-                // These contributions precede self in the ordered sum. Keep
-                // their original additions, but defer errors until all owner
-                // checks finish, just as in the separate squared-row traversal.
+        Members row(b,s,i,true);
+        auto suffix=row.stop;
+        for (auto j=row.next(s.count);j<s.count;j=row.next(s.count)) {
+            if (i==j) {
+                density=c.scalar(density+self,23);
+                continue;
+            }
+            if (j>i && suffix==row.stop) suffix=row.cursor-1;
+            Checked geometry;
+            Vector displacement=geometry.vector(sub(b.position[i],b.position[j]),18);
+            float distance=length(displacement,geometry);
+            // This independent first-error record replaces the earlier complete
+            // traversal. Keep checking geometry even after a numerical failure.
+            if (!validation.error) validation.error=geometry.error;
+            if (!c.error) c.error=geometry.error;
+            if (!owner_check.error) owner_check.error=geometry.error;
+            if (distance<s.radius) {
+                density=c.scalar(density+poly6(distance,s.radius,c),23);
+                // Active geometry is finite; reuse exactly its checked RN
+                // distance for Spiky instead of reading and rooting it again.
+                Vector direction=spiky_at_distance(displacement,distance,s.radius,owner_check);
+                owner=owner_check.vector(add(owner,direction),27);
+                Vector dir=owner_check.vector(mul(neg(direction),reciprocal_value),29);
                 if (j<i) sum=prefix.scalar(sum+prefix.scalar(dot(dir,dir),30),31);
             }
         }
+        if (!staged) b.density[i]=density;
+        float constraint=c.scalar(c.scalar(__fdiv_rn(density,s.rest_density),24)-1.0f,25);
+        if (!staged) b.constraint[i]=constraint;
+        float reciprocal=c.scalar(reciprocal_value,26);
+        // These independent accumulators keep their original additions. Error
+        // selection still follows density, reciprocal, owner, then prefix.
+        if (!c.error) c.error=owner_check.error;
         owner=c.vector(mul(owner,reciprocal),28);
         if (!c.error) c.error=prefix.error;
         sum=c.scalar(sum+c.scalar(dot(owner,owner),30),31);
@@ -170,7 +194,13 @@ extern "C" __global__ void solver(SolverBuffers b, SolverSettings s, unsigned in
             }
         }
         float denom=c.scalar(sum+s.relaxation,32);
-        b.multiplier[i]=c.scalar(__fdiv_rn(-constraint,denom),33);
+        float multiplier=c.scalar(__fdiv_rn(-constraint,denom),33);
+        if (staged) {
+            reinterpret_cast<PendingJacobi *>(b.candidate)[i]={density,constraint,multiplier,c.error};
+            // Only validation can fail this pass. The next pass exposes the
+            // deferred numerical error after this launch's global completion.
+            c.error=validation.error;
+        } else b.multiplier[i]=multiplier;
     } else if (operation==7) {
         Vector sum{0,0,0};
         Members correction_row(b,s,i);
@@ -210,10 +240,16 @@ extern "C" __global__ void solver(SolverBuffers b, SolverSettings s, unsigned in
             }
         }
         b.position[i]=point;
-    } else if (operation==11) {
+        // The complete projection launch precedes final observation. No lane
+        // reads this private trailer until the following stream-ordered pass.
+        if (i==0) reset_plane_observation(b,s);
+    } else if (operation==11 || operation==24) {
         Vector displacement=c.vector(sub(b.position[i],b.old_position[i]),49);
         float reciprocal=c.scalar(__fdiv_rn(1.0f,s.timestep),50);
         b.velocity[i]=c.vector(mul(displacement,reciprocal),51);
+        // The containment result is deferred until effects and host state
+        // validation finish. It cannot replace an earlier numerical error.
+        if (operation==24) observe_final_planes(b,s,i);
     } else if (operation==14) {
         // Every row reads reconstructed velocity; candidate is a separate output.
         Vector sum{0,0,0};
@@ -269,5 +305,5 @@ extern "C" __global__ void solver(SolverBuffers b, SolverSettings s, unsigned in
     b.errors[i]=c.error;
     // Only failing lanes contend. The high word preserves particle precedence;
     // Checked already retained the first failing expression within that lane.
-    if (c.error && b.diagnostic) atomicMin(b.diagnostic+pass,(static_cast<unsigned long long>(i)<<32)|c.error);
+    if (c.error && b.diagnostic) record_diagnostic(b,pass,(static_cast<unsigned long long>(i)<<32)|c.error);
 }

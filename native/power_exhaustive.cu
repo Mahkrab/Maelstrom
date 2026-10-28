@@ -1,5 +1,5 @@
-// Qualify the guarded exponent-four path against every non-negative binary32
-// word. Bounded batches avoid a single long-running watchdog-sensitive kernel.
+// Qualify exponent-four results and guard decisions against every non-negative
+// binary32 word. Bounded batches avoid watchdog-sensitive device work.
 #include <cuda_runtime.h>
 #include <cmath>
 #include <cstdint>
@@ -8,6 +8,22 @@
 #include <cstdlib>
 #include "power.cuh"
 
+// Keep the retained binary64 calculation independent of the integer candidate.
+// Both its acceptance decision and accepted value must match bit for bit.
+__device__ bool retained_power_four(float x, float &result) {
+    if (!(x>0) || !isfinite(x)) return false;
+    double square=static_cast<double>(x)*static_cast<double>(x);
+    double fourth=square*square;
+    result=static_cast<float>(fourth);
+    const auto bits=__float_as_uint(result);
+    if (bits<=0x00800000U || bits>=0x7f7fffffU) return false;
+    // Binary64 has 29 more fraction bits. Bit 28 is the binary32
+    // rounding midpoint; retain the reference near either side of it.
+    const auto tail=static_cast<unsigned long long>(__double_as_longlong(fourth))&0x1fffffffULL;
+    const auto distance=tail>0x10000000ULL ? tail-0x10000000ULL : 0x10000000ULL-tail;
+    return distance>0x200000ULL;
+}
+
 __global__ void compare_words(std::uint64_t begin, std::uint64_t count,
                               unsigned long long *counters) {
     const auto lane=static_cast<std::uint64_t>(blockIdx.x)*blockDim.x+threadIdx.x;
@@ -15,8 +31,12 @@ __global__ void compare_words(std::uint64_t begin, std::uint64_t count,
     unsigned long long mismatches=0, first=~0ULL, guarded=0, raw_mismatches=0, raw_first=~0ULL;
     for (auto index=lane;index<count;index+=stride) {
         auto bits=static_cast<unsigned int>(begin+index);
-        float x=__uint_as_float(bits), candidate;
-        guarded+=try_power_four(x,candidate);
+        float x=__uint_as_float(bits), candidate, retained;
+        const bool accepted=try_power_four(x,candidate), expected_guard=retained_power_four(x,retained);
+        guarded+=accepted;
+        if (accepted!=expected_guard || (accepted && __float_as_uint(candidate)!=__float_as_uint(retained))) {
+            atomicAdd(counters+5,1ULL);atomicMin(counters+6,static_cast<unsigned long long>(bits));
+        }
         const auto expected=__float_as_uint(ordered_power_reference(x,4.0f));
         const auto actual=__float_as_uint(ordered_power(x,4.0f));
         if (actual!=expected) { ++mismatches; if (bits<first) first=bits; }
@@ -48,7 +68,7 @@ int main(int argc, char **argv) {
         threads=static_cast<unsigned int>(parsed);
     } else if (argc!=1) return 1;
     const auto start=std::chrono::steady_clock::now();
-    unsigned long long *device=nullptr, counters[5]={0,~0ULL,0,0,~0ULL};
+    unsigned long long *device=nullptr, counters[7]={0,~0ULL,0,0,~0ULL,0,~0ULL};
     if (!checked(cudaSetDevice(0),"device") ||
         !checked(cudaMalloc(reinterpret_cast<void **>(&device),sizeof(counters)),"allocation") ||
         !checked(cudaMemcpy(device,counters,sizeof(counters),cudaMemcpyHostToDevice),"initialise")) return 1;
@@ -60,7 +80,7 @@ int main(int argc, char **argv) {
     if (!checked(cudaMemcpy(counters,device,sizeof(counters),cudaMemcpyDeviceToHost),"download") ||
         !checked(cudaFree(device),"release")) return 1;
     const double elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
-    std::printf("{\"threads\":%u,\"input_words\":%llu,\"mismatches\":%llu,\"first_mismatch_word\":%llu,\"guarded_words\":%llu,\"raw_quartic_mismatches\":%llu,\"raw_first_mismatch_word\":%llu,\"elapsed_s\":%.9f}\n",
-        threads,static_cast<unsigned long long>(total),counters[0],counters[1],counters[2],counters[3],counters[4],elapsed);
-    return counters[0] || !counters[3] ? 2 : 0;
+    std::printf("{\"threads\":%u,\"input_words\":%llu,\"mismatches\":%llu,\"first_mismatch_word\":%llu,\"guarded_words\":%llu,\"raw_quartic_mismatches\":%llu,\"raw_first_mismatch_word\":%llu,\"guard_mismatches\":%llu,\"first_guard_mismatch\":%llu,\"elapsed_s\":%.9f}\n",
+        threads,static_cast<unsigned long long>(total),counters[0],counters[1],counters[2],counters[3],counters[4],counters[5],counters[6],elapsed);
+    return counters[0] || counters[5] || !counters[3] ? 2 : 0;
 }

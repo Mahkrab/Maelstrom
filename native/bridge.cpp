@@ -26,6 +26,7 @@
     X(cuModuleLoadData, "cuModuleLoadData") X(cuModuleGetFunction, "cuModuleGetFunction") \
     X(cuStreamCreate, "cuStreamCreate") X(cuStreamSynchronize, "cuStreamSynchronize") \
     X(cuMemAlloc, "cuMemAlloc_v2") X(cuMemFree, "cuMemFree_v2") \
+    X(cuMemAllocHost, "cuMemAllocHost_v2") X(cuMemHostGetDevicePointer, "cuMemHostGetDevicePointer_v2") \
     X(cuMemcpyHtoD, "cuMemcpyHtoD_v2") X(cuMemcpyDtoH, "cuMemcpyDtoH_v2") \
     X(cuMemsetD8Async, "cuMemsetD8Async") \
     X(cuLaunchKernel, "cuLaunchKernel")
@@ -62,6 +63,7 @@ struct Resource {
     CUfunction observe_state = nullptr;
     CUfunction prefix_counts = nullptr;
     CUdeviceptr diagnostic = 0;
+    void *host_diagnostic = nullptr;
     bool diagnostic_clear = false;
     bool attempt_open = false;
     CUdeviceptr slots[14]{};
@@ -71,7 +73,7 @@ struct Resource {
     bool pending = false;
     ~Resource() {
         // Context destruction releases its module, stream and device storage,
-        // including allocations retained after an uncertain completion failure.
+        // including mapped host storage retained after uncertain completion.
         if (context) driver.cuCtxDestroy_fn(context);
     }
 };
@@ -110,7 +112,11 @@ static Status initialise(Resource &r, int ordinal, const char *ptx,
     // Pageable uploads may return before DMA finishes on the legacy stream.
     // This private stream must inherit that dependency before reading the data.
     if (!status.code && (code = d.cuStreamCreate_fn(&r.stream, CU_STREAM_DEFAULT)) != CUDA_SUCCESS) status = {code, 6};
-    if (!status.code && (code = d.cuMemAlloc_fn(&r.diagnostic, 4*sizeof(std::uint64_t))) != CUDA_SUCCESS) status = {code, 7};
+    if (!status.code && (code = d.cuMemAlloc_fn(&r.diagnostic, diagnostic_allocation_bytes)) != CUDA_SUCCESS) status = {code, 7};
+    if (!status.code && (code = d.cuMemAllocHost_fn(&r.host_diagnostic, diagnostic_records_bytes)) != CUDA_SUCCESS) status = {code, 7};
+    CUdeviceptr mapped = 0;
+    if (!status.code && (code = d.cuMemHostGetDevicePointer_fn(&mapped, r.host_diagnostic, 0)) != CUDA_SUCCESS) status = {code, 7};
+    if (!status.code && (code = d.cuMemcpyHtoD_fn(r.diagnostic+diagnostic_records_bytes, &mapped, sizeof(mapped))) != CUDA_SUCCESS) status = {code, 8};
     CUcontext previous;
     code = d.cuCtxPopCurrent_fn(&previous);
     if (!status.code && code != CUDA_SUCCESS) status = {code, 13};
@@ -184,7 +190,8 @@ extern "C" Status maelstrom_cuda_roundtrip(void *handle, const Probe *input,
 extern "C" Status maelstrom_cuda_close(void *handle) {
     auto *r = static_cast<Resource *>(handle);
     // Destroying an isolated context is the final abandonment boundary. No
-    // borrowed host storage is outstanding: transfers here are synchronous.
+    // borrowed host storage is outstanding. The mapped diagnostic packet is
+    // context-owned and remains valid until destruction quiesces device access.
     const auto code = r->driver.cuCtxDestroy_fn(r->context);
     r->context = nullptr;
     delete r;
@@ -221,8 +228,9 @@ template<class Operation> static Status solver_call(Resource &r, Boundary bounda
         if (completion.code) status=completion;
     }
     if (!status.code && diagnostic) {
-        code=d.cuMemcpyDtoH_fn(diagnostic,r.diagnostic,diagnostic_count*sizeof(*diagnostic));
-        if (code!=CUDA_SUCCESS) status={code,11};
+        // Only read after successful completion. The device mirror has no CPU
+        // readers or writers while checked kernels can update it.
+        __builtin_memcpy(diagnostic,r.host_diagnostic,diagnostic_count*sizeof(*diagnostic));
     }
     if (status.code && !(status.stage==7 && status.code==CUDA_ERROR_OUT_OF_MEMORY)) r.poisoned=true;
     CUcontext previous;
@@ -271,7 +279,7 @@ static Status solver(Resource &r, SolverSettings settings, unsigned int operatio
     if ((observation!=Observation::None && (!diagnostic || grouped)) ||
         (state && operation>1) || (prefix && operation!=4) ||
         (grouped && (!diagnostic || (operation!=5 && operation!=9))) ||
-        operation>17 || ((operation==2 || (operation==4 && observation!=Observation::Prefix) || operation==12) && (!std::isfinite(settings.width) || settings.width<=0)) ||
+        (operation>17 && operation!=24) || ((operation==2 || (operation==4 && observation!=Observation::Prefix) || operation==12) && (!std::isfinite(settings.width) || settings.width<=0)) ||
         (threads!=32 && threads!=64 && threads!=128 && threads!=256) ||
         settings.padded==0 || (settings.padded&(settings.padded-1)) ||
         settings.count>settings.padded || settings.entries>static_cast<std::uint64_t>(PTRDIFF_MAX)/4 ||
@@ -279,7 +287,8 @@ static Status solver(Resource &r, SolverSettings settings, unsigned int operatio
         (settings.stride&(settings.stride-1)) || (settings.span&(settings.span-1)) || settings.span>settings.padded)))
         return {CUDA_ERROR_INVALID_VALUE,7};
     std::uint64_t n=settings.count;
-    std::uint64_t required[14]={n*12,n*12,n*12,n*12,n*4,n*4,n*4,n ? std::max<std::uint64_t>(n*12,32) : (prefix ? 32 : 0),n*12,
+    const auto velocity_bytes=n ? n*12+velocity_observation_bytes : 0;
+    std::uint64_t required[14]={n*12,velocity_bytes,n*12,velocity_bytes,n*4,n*4,n*4,n ? std::max<std::uint64_t>(n*12,32) : (prefix ? 32 : 0),n*(grouped && operation==5 ? sizeof(PendingJacobi) : sizeof(Vector)),
         static_cast<std::uint64_t>(settings.planes)*16,static_cast<std::uint64_t>(settings.padded)*64,
         settings.entries*4,n*4,(n+1)*8};
     for (unsigned int slot=0;slot<14;++slot) if (required[slot]>r.capacities[slot]) return {CUDA_ERROR_INVALID_VALUE,7};
@@ -390,8 +399,12 @@ extern "C" Status maelstrom_cuda_begin_attempt(void *handle) {
     // attempt or after a numerical failure; never trust that flag after a driver
     // fault. Stream order places the reset before all dependent kernels.
     auto status=solver_call(r,Boundary::Submit,[&]() -> Status {
+        // Checked observations complete before every non-poisoned return.
+        // Unchecked submissions have no diagnostic pointer, so cannot race
+        // this reset after a rejected numerical attempt.
+        std::fill_n(static_cast<std::uint64_t *>(r.host_diagnostic),diagnostic_record_count,UINT64_MAX);
         r.pending=true;
-        auto code=r.driver.cuMemsetD8Async_fn(r.diagnostic,0xff,4*sizeof(std::uint64_t),r.stream);
+        auto code=r.driver.cuMemsetD8Async_fn(r.diagnostic,0xff,diagnostic_records_bytes,r.stream);
         return {code,code==CUDA_SUCCESS ? 0 : 9};
     });
     if (!status.code) { r.diagnostic_clear=true; r.attempt_open=true; }
@@ -422,7 +435,7 @@ extern "C" Status maelstrom_cuda_checked_solver(void *handle, SolverSettings set
         unsigned int operation, unsigned int threads, std::uint64_t *diagnostic) {
     auto &r=*static_cast<Resource *>(handle);
     if (r.poisoned) return {-3,14};
-    if (!diagnostic || operation==2 || operation==3 || operation==13 || operation>17) return {CUDA_ERROR_INVALID_VALUE,7};
+    if (!diagnostic || operation==2 || operation==3 || operation==13 || (operation>17 && operation!=24)) return {CUDA_ERROR_INVALID_VALUE,7};
     return solver(r,settings,operation,threads,diagnostic);
 }
 

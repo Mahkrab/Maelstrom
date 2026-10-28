@@ -17,7 +17,7 @@ maelstrom doctor cuda --device 0 --repetitions 3
 Use CUDA 13 headers and nvcc, a toolkit-supported host compiler, C++17/libstdc++ and ar.
 `CUDA_HOME` is an absolute toolkit path, defaulting to `/usr/local/cuda`, independent
 of PATH. `MAELSTROM_CUDA_ARCH` selects the virtual capability, default 89. The runtime
-device must support that target and the driver must accept the emitted PTX.
+device must support that target, mapped page-locked host memory and the emitted PTX.
 `CXX` and `AR` select executables, not commands containing additional arguments.
 No build step installs a toolkit or changes drivers.
 
@@ -78,8 +78,25 @@ stay on device. These kernels reuse correction scratch after the bounds summary 
 then orders each row by identity. Rows of up to 256 entries use a complete warp;
 larger rows retain heapsort. Fill and sorting share one completion and diagnostic readback.
 Traversal visits those indices, inserting self once at its ordered position where
-required. Storage follows actual membership rather than an all-pairs matrix; dense
+required.
+Density and owner-gradient accumulation share a traversal and checked geometry. Each
+accumulator keeps its identity-ordered additions. Owner and prefix errors are deferred
+until the complete density/constraint and reciprocal checks have finished, preserving
+original diagnostic priority. The higher-identity squared-gradient suffix remains a
+separate traversal; no geometry survives a change of position snapshot. Storage follows actual membership rather than an all-pairs matrix; dense
 input can still require quadratic space and is never silently capped or truncated.
+
+In the grouped Jacobi path, that traversal also performs active-distance validation.
+Its first geometry error is tracked separately from density and multiplier errors,
+even when an earlier numerical expression has already failed. Three numerical values
+and their deferred error word are staged in candidate scratch. A following kernel
+publishes them only after the entire validation pass has succeeded. Consequently a
+distance error at a later particle still precedes any numerical error at an earlier
+particle, and validation failure leaves density, constraint, multiplier and correction
+outputs untouched. The separate validation and numerical calls retain their original
+behaviour. Candidate scratch grows from 12 to 16 bytes per particle and is reused for
+position and velocity candidates afterwards. This removes one complete neighbour
+traversal without a per-neighbour cache, additional launch or host boundary.
 
 The first attempt uploads accepted state and static planes and reserves fixed storage.
 Later attempts reuse accepted device vectors. Acceleration and prediction emit compact block
@@ -92,7 +109,16 @@ Failing lanes select the first particle's checked quantity with an integer atomi
 minimum instead of returning the complete error array. Each Jacobi calculation and
 candidate/projection pair is submitted as a stream-ordered group, with one result
 slot per pass. A kernel skips work if an earlier pass failed; later slots cannot
-replace the earlier error. One readback returns the group's results in stage order.
+replace the earlier error. Device records remain the ordering authority. Winning
+error minima also update a private 32-byte mapped host packet; successful lanes
+never access host memory. The CPU reads that packet only after the existing
+stream completion, retaining stage order without a separate CUDA readback.
+CPU resets occur after previous checked calls completed. GPU-only atomics select
+the minima; the host never polls or competes with those updates. The device
+allocation gains an eight-byte mapped address, uploaded during context setup.
+The context owns both allocations and releases them at destruction, including
+when failed completion leaves access uncertain. No borrowed host pointer is
+retained by submitted work.
 Successful passes leave their sentinels untouched; the four-slot record is reset for the first
 attempt and after a numerical failure. Resets and unchecked kernel calls submit work without
 waiting. The bridge tracks pending work on the private stream: diagnostic observations wait
@@ -127,11 +153,19 @@ contraction preserve the supported arithmetic. Native power alternatives diverge
 the retained trajectories. The narrow positive-base/exponent implementation in
 `native/power.cuh` follows the tested host approximation using binary64 intermediates;
 its Arm-derived code retains the MIT licence in `native/power-LICENSE`.
-For exponent four, a guarded binary64 quartic returns the same binary32 result.
+For exponent four, the fast path reconstructs the retained binary64 quartic and its
+binary32 rounding with integer products. A binary32 input has a 24-bit significand:
+its square fits 48 bits and its fourth power fits 96. The high and low halves of
+that integer product reproduce the retained round-to-nearest 53-bit significand,
+then the same 24-bit result and rounding-boundary guard. The fast path's acceptance
+set and accepted output bits are unchanged; the remaining inputs still use the
+retained approximation. No position-correction accumulation or error check changes.
 Inputs near a rounding midpoint, subnormal or extreme outputs, and other exponents
 use the retained approximation. This preserves its bits rather than substituting a
 different `powf` result. `native/power_exhaustive.cu` compares every non-negative
 binary32 word with the reference and demonstrates why an unguarded quartic differs.
+It also checks every guard decision and accepted value against the retained
+binary64 implementation.
 This does not promise agreement with every libm or permit blanket fast-math.
 
 Enabled XSPH uses a separate complete velocity pass and a subsequent replacement pass. Rows read
@@ -158,9 +192,9 @@ CUDA_HOME=/usr/local/cuda cargo test --locked --features cuda --test cuda_bounda
 Ordinary feature-enabled tests do not imply that opt-in hardware checks ran. Native
 injected-driver tests cover ownership, failure precedence, draining, retry, cleanup and
 context restoration; they are not real device-fault recovery tests. Host ASan/UBSan
-and device memory diagnostics establish different things. The retained PC Compute
-Sanitizer attempt could not initialise its WDDM debugger interface, so no passing
-device-memory diagnostic follows.
+and device memory diagnostics establish different things. Compute
+Sanitizer results must identify the actual tool and checks run; unavailable
+diagnostics and passing host tests do not establish device-memory coverage.
 
 Measured step totals include required transfers, launches, synchronisation and atomic
 acceptance. Context/module setup and teardown are separate; audits, output, graphics
@@ -185,3 +219,18 @@ optional argument selects 32, 64, 128 or 256 threads:
   -o /tmp/maelstrom-power-exhaustive
 /tmp/maelstrom-power-exhaustive 128
 ```
+
+Final plane containment is checked alongside velocity reconstruction, using the same
+binary32 dot-product and subtraction order as the host predicate. A private 16-byte
+trailer in each velocity allocation contains an aligned earliest particle/plane
+failure record. Projection resets it before reconstruction; velocity effects touch
+only the numerical vector prefix. The existing final velocity download returns
+the trailer too, adding 16 bytes without another launch, transfer or stream wait.
+Both allocations retain their trailer when accepted and working buffers swap.
+
+The host still validates particle identities and finite state before acceptance.
+A failed containment certificate runs the original host particle/plane loop at its
+original boundary, preserving numerical errors, first-failure ordering and the
+priority of earlier velocity-effect failures. Successful certificates avoid that
+second traversal. Cancellation polling and accepted-state promotion are unchanged.
+The empty-particle case allocates and reads no trailer.

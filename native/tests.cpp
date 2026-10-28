@@ -7,6 +7,7 @@
 #include <vector>
 #include <map>
 #include <algorithm>
+#include <memory>
 
 struct Observed {
     int fail = 0;
@@ -22,6 +23,11 @@ struct Observed {
     int fail_launch = 0;
     int resets = 0;
     bool fail_reset = false;
+    bool fail_host_allocation = false;
+    bool fail_host_mapping = false;
+    int pinned_allocations = 0;
+    int pinned_releases = 0;
+    std::map<void *,std::unique_ptr<std::uint64_t[]>> host_memory;
     struct Launch { unsigned int operation, stride, span, grid, block; };
     std::vector<Launch> launches;
     std::map<unsigned int,std::pair<unsigned int,std::uint32_t>> numerical_failures;
@@ -48,7 +54,9 @@ static void fake_driver(Driver &d) {
         if (observed.fail == 4) return CUDA_ERROR_OUT_OF_MEMORY;
         *context = reinterpret_cast<CUcontext>(1); return CUDA_SUCCESS;
     };
-    d.cuCtxDestroy_fn = [](CUcontext) { ++observed.destroys; observed.work_pending=false; observed.memory.clear(); return fault(15); };
+    d.cuCtxDestroy_fn = [](CUcontext) { ++observed.destroys; observed.work_pending=false; observed.memory.clear();
+        observed.pinned_releases+=static_cast<int>(observed.host_memory.size());
+        observed.host_memory.clear();return fault(15); };
     d.cuCtxPushCurrent_fn = [](CUcontext) { ++observed.pushes; return fault(13); };
     d.cuCtxPopCurrent_fn = [](CUcontext *context) { ++observed.pops; *context = nullptr; return fault(16); };
     d.cuModuleLoadData_fn = [](CUmodule *module, const void *) { *module = reinterpret_cast<CUmodule>(1); return fault(5); };
@@ -64,6 +72,18 @@ static void fake_driver(Driver &d) {
         if (observed.fail == 7) return CUDA_ERROR_OUT_OF_MEMORY;
         *buffer=observed.next;observed.next+=bytes+4096; observed.memory[*buffer].resize(bytes); return CUDA_SUCCESS;
     };
+    d.cuMemAllocHost_fn = [](void **pointer,std::size_t bytes) {
+        assert(bytes==diagnostic_records_bytes);
+        if (observed.fail_host_allocation) return CUDA_ERROR_OUT_OF_MEMORY;
+        auto memory=std::make_unique<std::uint64_t[]>(diagnostic_record_count);
+        *pointer=memory.get();observed.host_memory.emplace(*pointer,std::move(memory));
+        ++observed.pinned_allocations;return CUDA_SUCCESS;
+    };
+    d.cuMemHostGetDevicePointer_fn = [](CUdeviceptr *device,void *host,unsigned int flags) {
+        assert(!flags && observed.host_memory.count(host)==1);
+        if (observed.fail_host_mapping) return CUDA_ERROR_UNKNOWN;
+        *device=reinterpret_cast<CUdeviceptr>(host);return CUDA_SUCCESS;
+    };
     d.cuMemFree_fn = [](CUdeviceptr pointer) { assert(!observed.work_pending); ++observed.frees; if (!observed.fail) observed.memory.erase(pointer); return fault(12); };
     d.cuMemcpyHtoD_fn = [](CUdeviceptr pointer, const void *data, std::size_t bytes) {
         assert(!observed.work_pending);++observed.uploads;
@@ -76,7 +96,7 @@ static void fake_driver(Driver &d) {
         observed.work_pending=true;
         ++observed.resets;
         if (observed.fail_reset) return CUDA_ERROR_UNKNOWN;
-        assert(bytes==32 && value==0xff && observed.memory.at(pointer).size()==bytes);
+        assert(bytes==32 && value==0xff && observed.memory.at(pointer).size()==diagnostic_allocation_bytes);
         std::memset(observed.memory.at(pointer).data(),value,bytes);
         return CUDA_SUCCESS;
     };
@@ -134,7 +154,23 @@ static void fake_driver(Driver &d) {
         }
         return fault(9);
     };
-    d.cuStreamSynchronize_fn = [](CUstream) { ++observed.completions; if (observed.fail!=10) observed.work_pending=false; return fault(10); };
+    d.cuStreamSynchronize_fn = [](CUstream) {
+        ++observed.completions;
+        // Publish the serial diagnostic oracle only at completion. A failing
+        // completion may still have changed private mapped storage; callers
+        // must not expose it until every completion/binding check succeeds.
+        for (auto &[pointer,memory]:observed.memory) {
+            (void)pointer;
+            if (memory.size()!=diagnostic_allocation_bytes) continue;
+            CUdeviceptr address=0;
+            std::memcpy(&address,memory.data()+diagnostic_records_bytes,sizeof(address));
+            const auto host=reinterpret_cast<void *>(address);
+            if (observed.host_memory.count(host))
+                std::memcpy(host,memory.data(),diagnostic_records_bytes);
+        }
+        if (observed.fail!=10) observed.work_pending=false;
+        return fault(10);
+    };
     d.cuMemcpyDtoH_fn = [](void *data, CUdeviceptr pointer, std::size_t bytes) {
         assert(!observed.work_pending);++observed.downloads;
         auto allocation=observed.memory.upper_bound(pointer);assert(allocation!=observed.memory.begin());--allocation;
@@ -227,7 +263,41 @@ static void merge_sort_submissions() {
     }
 }
 
+static void containment_storage() {
+    // The aligned certificate must fit in both velocity allocations before any
+    // submission, including after accepted/working buffers exchange ownership.
+    for (auto slot : {1U,3U}) for (auto count : {1U,2U,3U}) {
+        observed={};Resource r;ready(r);
+        SolverSettings s{};s.count=count;s.padded=4;
+        for (unsigned int index=0;index<14;++index)
+            assert(maelstrom_cuda_storage(&r,index,nullptr,index==slot ? count*12 : 512,0).code==0);
+        assert(maelstrom_cuda_begin_attempt(&r).code==0);
+        observed.record_solver=true;
+        std::uint64_t result=17;
+        assert(maelstrom_cuda_checked_solver(&r,s,24,128,&result).stage==7);
+        assert(result==17 && observed.launches.empty() && !r.poisoned);
+        assert(maelstrom_cuda_storage(&r,slot,nullptr,count*12+velocity_observation_bytes,0).code==0);
+        assert(maelstrom_cuda_checked_solver(&r,s,24,128,&result).code==0);
+        assert(result==UINT64_MAX && observed.launches.size()==1 && observed.launches[0].operation==24);
+    }
+}
+
 static void checked_groups() {
+    // The grouped validation pass stages four words per particle. Reject an
+    // old vector-sized candidate allocation before submitting any kernel.
+    {
+        observed={};Resource r;ready(r);
+        SolverSettings s{};s.count=5;s.padded=8;
+        for (unsigned int slot=0;slot<14;++slot)
+            assert(maelstrom_cuda_storage(&r,slot,nullptr,slot==8 ? 60 : 512,0).code==0);
+        assert(maelstrom_cuda_begin_attempt(&r).code==0);
+        observed.record_solver=true;
+        std::uint64_t result=17;
+        assert(maelstrom_cuda_checked_group(&r,s,5,128,&result).stage==7);
+        assert(result==17 && observed.launches.empty() && !r.poisoned);
+        assert(maelstrom_cuda_storage(&r,8,nullptr,80,0).code==0);
+        assert(maelstrom_cuda_checked_group(&r,s,5,128,&result).code==0 && result==UINT64_MAX);
+    }
     for (auto first : {5U,9U}) for (auto threads : {32U,64U,128U,256U}) {
         const auto passes=first==5 ? 4U : 2U;
         for (unsigned int fail_at=0;fail_at<=passes;++fail_at) {
@@ -245,7 +315,7 @@ static void checked_groups() {
             std::uint64_t result=0;
             assert(maelstrom_cuda_checked_group(&r,s,first,threads,&result).code==0);
             assert(result==(fail_at==passes ? UINT64_MAX : (std::uint64_t{4}<<32)|22));
-            assert(observed.completions==waits+1 && observed.downloads==copies+1);
+            assert(observed.completions==waits+1 && observed.downloads==copies);
             assert(observed.launches.size()==passes);
             for (unsigned int pass=0;pass<passes;++pass) {
                 assert(observed.launches[pass].operation==first+pass && observed.launches[pass].block==threads);
@@ -279,7 +349,7 @@ static void checked_groups() {
         auto waits=observed.completions;
         std::uint64_t result=17;
         auto status=maelstrom_cuda_checked_group(&r,s,5,128,&result);
-        // Readback is never attempted after submission failure. A completion
+        // Results are never published after submission failure. A completion
         // fault supersedes that failure; context-pop failure supersedes both.
         auto expected=failure==11 ? 9 : failure==16 ? 13 : failure;
         assert(status.stage==expected && r.poisoned && result==17);
@@ -288,7 +358,8 @@ static void checked_groups() {
         assert(maelstrom_cuda_checked_group(&r,s,5,128,&result).stage==14);
         assert(maelstrom_cuda_begin_attempt(&r).stage==14);
     }
-    // A readback fault after an otherwise completed group is also fatal.
+    // Diagnostic observation submits no transfer. A subsequent data-copy fault
+    // still poisons the resource and leaves the caller output untouched.
     observed={};Resource r;ready(r);
     SolverSettings s{};s.count=1;s.padded=1;
     for (unsigned int slot=0;slot<14;++slot)
@@ -296,7 +367,10 @@ static void checked_groups() {
     assert(maelstrom_cuda_begin_attempt(&r).code==0);
     observed.fail=11;
     std::uint64_t result=17;
-    assert(maelstrom_cuda_checked_group(&r,s,9,128,&result).stage==11 && r.poisoned && result==17);
+    assert(maelstrom_cuda_checked_group(&r,s,9,128,&result).code==0 && result==UINT64_MAX);
+    assert(observed.downloads==0 && !r.poisoned);
+    std::uint64_t output=17;
+    assert(maelstrom_cuda_storage(&r,0,&output,sizeof(output),2).stage==11 && r.poisoned);
 }
 
 static void row_sort_batches() {
@@ -316,7 +390,7 @@ static void row_sort_batches() {
             const auto status=maelstrom_cuda_checked_solver(&r,s,12,threads,&result);
             assert(status.stage==(fail_at ? 9 : 0) && r.poisoned==(fail_at!=0));
             assert(observed.completions==waits+1);
-            assert(observed.downloads==downloads+(fail_at ? 0 : 1));
+            assert(observed.downloads==downloads);
             assert(observed.launches.size()==static_cast<unsigned int>(fail_at ? fail_at : 2));
             assert(observed.launches[0].operation==12 && observed.launches[0].grid==(count+threads-1)/threads);
             if (observed.launches.size()==2)
@@ -336,7 +410,7 @@ static void row_sort_batches() {
 }
 
 static void checked_solver() {
-    for (int failure : {0,9,10,11,13,16}) {
+    for (int failure : {0,9,10,13,16}) {
         observed={};
         Resource r;ready(r);
         SolverSettings settings{};settings.count=5;settings.padded=8;
@@ -357,7 +431,7 @@ static void checked_solver() {
         const auto expected=failure==16 ? 13 : failure;
         assert(status.stage==expected && r.poisoned==(failure!=0));
         assert(observed.completions==completions+(failure==13 ? 0 : 1));
-        assert(observed.downloads==downloads+((failure==0 || failure==11 || failure==16) ? 1 : 0));
+        assert(observed.downloads==downloads);
         assert(observed.pops==pops+(failure==13 ? 0 : 1));
         if (!failure) {
             assert(result==((std::uint64_t{2}<<32)|52));
@@ -512,7 +586,7 @@ static void submission_boundaries() {
 }
 
 static void compact_observation_failures() {
-    for (auto prefix : {false,true}) for (auto failure : {0,9,10,11,13,16}) {
+    for (auto prefix : {false,true}) for (auto failure : {0,9,10,13,16}) {
         const auto passes=prefix ? 4 : 1;
         for (int launch=1;launch<=passes;++launch) {
             observed={};Resource r;ready(r);
@@ -529,7 +603,7 @@ static void compact_observation_failures() {
             const auto expected=failure==16 ? 13 : failure;
             assert(status.stage==expected && r.poisoned==(failure!=0));
             assert(observed.completions==(failure==13 ? 0 : 1));
-            assert(observed.downloads==((failure==0 || failure==11 || failure==16) ? 1 : 0));
+            assert(observed.downloads==0);
             if (failure) assert(results[0]==17 && results[1]==19);
             else {
                 assert(results[0]==UINT64_MAX);
@@ -557,7 +631,59 @@ static void compact_observation_failures() {
     assert(observed.downloads==reads && !r.poisoned);
 }
 
+static void mapped_observation_lifetimes() {
+    for (unsigned int failure=0;failure<3;++failure) {
+        observed={};
+        {
+            Resource r;fake_driver(r.driver);
+            observed.fail_host_allocation=failure==0;
+            observed.fail_host_mapping=failure==1;
+            observed.fail=failure==2 ? 8 : 0;
+            DeviceInfo info{};
+            assert(initialise(r,0,"unused",89,&info).stage==(failure==2 ? 8 : 7));
+        }
+        assert(observed.destroys==1 && observed.memory.empty() && observed.host_memory.empty());
+        assert(observed.pinned_allocations==(failure==0 ? 0 : 1));
+        assert(observed.pinned_releases==observed.pinned_allocations);
+    }
+    for (auto failure : {0,9,10,13,16}) {
+        observed={};
+        auto *r=new Resource;ready(*r);
+        SolverSettings s{};s.count=5;s.padded=8;
+        for (unsigned int slot=0;slot<14;++slot)
+            assert(maelstrom_cuda_storage(r,slot,nullptr,512,0).code==0);
+        assert(maelstrom_cuda_begin_attempt(r).code==0);
+        std::uint32_t errors[]={0,0,52,1,0};
+        assert(maelstrom_cuda_storage(r,12,errors,sizeof(errors),1).code==0);
+        const auto host=r->host_diagnostic;
+        observed.fail=failure;
+        std::uint64_t result=17;
+        const auto status=maelstrom_cuda_checked_solver(r,s,0,128,&result);
+        assert(status.stage==(failure==16 ? 13 : failure));
+        assert(result==(failure ? 17 : (std::uint64_t{2}<<32)|52));
+        assert(observed.downloads==0 && observed.host_memory.count(host)==1);
+        // A bad completion can already have changed mapped storage. Its
+        // lifetime extends past this return until context abandonment.
+        if (failure==10) assert(static_cast<std::uint64_t *>(host)[0]==((std::uint64_t{2}<<32)|52));
+        if (!failure) {
+            CUdeviceptr mapped=0;
+            std::memcpy(&mapped,observed.memory.at(r->diagnostic).data()+diagnostic_records_bytes,sizeof(mapped));
+            assert(mapped==reinterpret_cast<CUdeviceptr>(host));
+            assert(maelstrom_cuda_begin_attempt(r).code==0);
+            for (unsigned int k=0;k<diagnostic_record_count;++k)
+                assert(static_cast<std::uint64_t *>(host)[k]==UINT64_MAX);
+            CUdeviceptr after=0;
+            std::memcpy(&after,observed.memory.at(r->diagnostic).data()+diagnostic_records_bytes,sizeof(after));
+            assert(after==mapped); // Reset cannot overwrite the device address.
+        }
+        observed.fail=0;
+        assert(maelstrom_cuda_close(r).code==0);
+        assert(observed.pinned_releases==1 && observed.host_memory.empty() && observed.memory.empty());
+    }
+}
+
 int main() {
+    mapped_observation_lifetimes();
     compact_observation_failures();
     submission_boundaries();
     accepted_vectors();
@@ -565,8 +691,9 @@ int main() {
     merge_sort_submissions();
     row_sort_batches();
     checked_solver();
+    containment_storage();
     checked_groups();
-    for (int stage : {2, 3, 4, 5, 6, 7, 16}) {
+    for (int stage : {2, 3, 4, 5, 6, 7, 8, 16}) {
         observed = {};
         {
             Resource r;
@@ -635,7 +762,7 @@ int main() {
         {
             Resource r;ready(r);
             SolverSettings settings{};settings.count=1;settings.padded=1;
-            std::size_t sizes[14]={12,12,12,12,4,4,4,32,12,0,64,0,4,16};
+            std::size_t sizes[14]={12,12+velocity_observation_bytes,12,12+velocity_observation_bytes,4,4,4,32,12,0,64,0,4,16};
             for (unsigned int slot=0;slot<14;++slot) assert(maelstrom_cuda_storage(&r,slot,nullptr,sizes[slot],0).code==0);
             const auto allocations=observed.memory.size();
             assert(maelstrom_cuda_storage(&r,0,nullptr,12,0).code==0);

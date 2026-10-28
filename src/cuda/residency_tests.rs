@@ -54,7 +54,7 @@ fn hardware_resident_inputs_promote_after_acceptance_and_survive_retry() {
                         &mut StageClock::<false>::new(),
                     )
                     .unwrap()
-                    .0;
+                    .particles;
                 let _ = cpu.step().unwrap();
                 assert_eq!(bits(&output), bits(cpu.snapshot().particles()));
                 assert_eq!(

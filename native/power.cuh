@@ -70,15 +70,33 @@ __device__ float ordered_power_reference(float x,float exponent) {
 // approximation handles the remaining inputs and all other exponents. The
 // complete non-negative binary32 domain is checked by power_exhaustive.cu.
 __device__ bool try_power_four(float x, float &result) {
-    if (!(x>0) || !isfinite(x)) return false;
-    double square=static_cast<double>(x)*static_cast<double>(x);
-    double fourth=square*square;
-    result=static_cast<float>(fourth);
-    const auto bits=__float_as_uint(result);
-    if (bits<=0x00800000U || bits>=0x7f7fffffU) return false;
-    // Binary64 has 29 more fraction bits. Bit 28 is the binary32
-    // rounding midpoint; retain the reference near either side of it.
-    const auto tail=static_cast<unsigned long long>(__double_as_longlong(fourth))&0x1fffffffULL;
+    const auto bits=__float_as_uint(x);
+    // Outside input exponents -32..31 the quartic cannot pass the retained
+    // normal-result guard. Negative, zero and non-finite inputs also fall back.
+    if (bits<(95U<<23) || bits>=(159U<<23)) return false;
+    const unsigned int significand=(bits&0x7fffffU)|0x800000U;
+    const unsigned long long square=static_cast<unsigned long long>(significand)*significand;
+    const unsigned long long low=square*square;
+    const unsigned long long high=__umul64hi(square,square);
+    // The product's leading bit is 92..95, so its discarded low part fits u64.
+    unsigned int leading=95U-__clz(static_cast<unsigned int>(high));
+    const unsigned int shift=leading-52U;
+    unsigned long long rounded=(high<<(64U-shift))|(low>>shift);
+    const auto remainder=low&((1ULL<<shift)-1ULL);
+    const auto midpoint=1ULL<<(shift-1U);
+    // The first binary64 square was exact (48 significant bits). Round the
+    // exact 96-bit fourth power to the same 53-bit binary64 significand.
+    rounded+=remainder>midpoint || (remainder==midpoint && (rounded&1ULL));
+    if (rounded==(1ULL<<53)) { rounded>>=1; ++leading; }
+    int exponent=4*(static_cast<int>(bits>>23)-127)+static_cast<int>(leading)-92;
+    const auto tail=rounded&0x1fffffffULL;
+    unsigned int value=static_cast<unsigned int>(rounded>>29);
+    value+=tail>0x10000000ULL || (tail==0x10000000ULL && (value&1U));
+    if (value==0x1000000U) { value>>=1; ++exponent; }
+    if (exponent< -126 || exponent>127) return false;
+    const auto output=(static_cast<unsigned int>(exponent+127)<<23)|(value&0x7fffffU);
+    if (output<=0x00800000U || output>=0x7f7fffffU) return false;
+    result=__uint_as_float(output);
     const auto distance=tail>0x10000000ULL ? tail-0x10000000ULL : 0x10000000ULL-tail;
     return distance>0x200000ULL;
 }

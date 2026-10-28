@@ -53,6 +53,12 @@ pub(crate) struct CudaSolver {
     resident: bool,
 }
 
+pub(crate) struct CudaStepOutput {
+    pub(crate) particles: Vec<Particle>,
+    pub(crate) cfl: CflDiagnostic,
+    pub(crate) planes_checked: bool,
+}
+
 fn array(v: Vec3) -> [f32; 3] {
     [v.x, v.y, v.z]
 }
@@ -107,16 +113,19 @@ fn settings(
 
 fn storage_sizes(s: Settings) -> Result<[usize; 14], CudaError> {
     let n = u128::from(s.count);
+    let velocity = if n == 0 { 0 } else { n * 12 + 16 };
     let sizes = [
         n * 12,
+        velocity,
         n * 12,
-        n * 12,
-        n * 12,
+        velocity,
         n * 4,
         n * 4,
         n * 4,
         (n * 12).max(32),
-        n * 12,
+        // Candidate scratch first holds three Jacobi scalars and a deferred
+        // error word; position/velocity candidates later use its vector prefix.
+        n * 16,
         u128::from(s.planes) * 16,
         u128::from(s.padded) * 64,
         u128::from(s.entries) * 4,
@@ -310,7 +319,7 @@ impl CudaSolver {
         planes: &[Plane],
         cancelled: &mut impl FnMut() -> bool,
         clock: &mut StageClock<PROFILE>,
-    ) -> Result<(Vec<Particle>, CflDiagnostic), StepError> {
+    ) -> Result<CudaStepOutput, StepError> {
         let mut s = settings(configuration, particles.len(), planes.len())?;
         if !self.resident {
             self.prepare(s, particles, planes)?;
@@ -378,7 +387,7 @@ impl CudaSolver {
             check_cancellation(cancelled)?;
             clock.mark(Stage::Projection);
         }
-        self.operation(s, 11)?;
+        self.operation(s, 24)?;
         if s.vorticity != 0.0 {
             check_cancellation(cancelled)?;
             self.operation(s, 16)?;
@@ -394,7 +403,28 @@ impl CudaSolver {
             self.operation(s, 15)?;
         }
         let positions: Vec<[f32; 3]> = self.context.inner.download(2, particles.len())?;
-        let velocities: Vec<[f32; 3]> = self.context.inner.download(3, particles.len())?;
+        // The trailer is initialized by projection, survives velocity effects,
+        // and returns in the same completed copy as the numerical velocities.
+        let words = particles
+            .len()
+            .checked_mul(3)
+            .and_then(|n| n.checked_add(if particles.is_empty() { 0 } else { 4 }))
+            .ok_or(CudaError::Capacity)?;
+        let velocities: Vec<u32> = self.context.inner.download(3, words)?;
+        let planes_checked = if particles.is_empty() {
+            true
+        } else {
+            let index = 3 * particles.len() + (particles.len() & 1);
+            let record = u64::from(velocities[index]) | (u64::from(velocities[index + 1]) << 32);
+            record == u64::MAX
+        };
+        let velocities = velocities.chunks_exact(3).take(particles.len()).map(|v| {
+            [
+                f32::from_bits(v[0]),
+                f32::from_bits(v[1]),
+                f32::from_bits(v[2]),
+            ]
+        });
         let output = host_values(particles.iter().zip(positions).zip(velocities).map(
             |((old, p), v)| Particle {
                 identity: old.identity,
@@ -402,7 +432,11 @@ impl CudaSolver {
                 velocity_m_s: vector(v),
             },
         ))?;
-        Ok((output, cfl))
+        Ok(CudaStepOutput {
+            particles: output,
+            cfl,
+            planes_checked,
+        })
     }
 }
 
@@ -507,3 +541,19 @@ mod spatial_sort_tests;
 #[cfg(test)]
 #[path = "observation_tests.rs"]
 mod observation_tests;
+
+#[cfg(test)]
+#[path = "active_tests.rs"]
+mod active_tests;
+
+#[cfg(test)]
+#[path = "density_tests.rs"]
+mod density_tests;
+
+#[cfg(test)]
+#[path = "plane_tests.rs"]
+mod plane_tests;
+
+#[cfg(test)]
+#[path = "mirror_tests.rs"]
+mod mirror_tests;
