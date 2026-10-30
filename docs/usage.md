@@ -78,14 +78,14 @@ maelstrom inspect builtin:falling-block-04 --backend cuda --format json
 ## Numerical modes
 
 `run`, `view`, `compile`, `inspect` and `validate` accept
-`--numerical-mode fast` or `--numerical-mode reference`. **Fast is the default.**
-Select reference explicitly with `--numerical-mode reference`, or set
-`numerical_mode = "reference"` in the application preferences at
+`--numerical-mode fast` or `--numerical-mode reference`. **Reference is the default.**
+Opt into fast with `--numerical-mode fast`, or save
+`numerical_mode = "fast"` in the application preferences at
 `$XDG_CONFIG_HOME/maelstrom/config.toml` (normally `~/.config/maelstrom/config.toml`):
 
 ```toml
 schema_version = 1
-numerical_mode = "reference"
+numerical_mode = "fast"
 ```
 
 The command-line mode overrides that preference. Explicit `--set` values override
@@ -106,13 +106,18 @@ throughput/quality trade-off, not a promise of the same fluid response. Both mod
 retain the existing PBF physical limitations. Fast mode can improve compression
 and separation while adding projection energy or changing shear response.
 
-These commands start new simulations. The first runs five simulated seconds;
-the second starts a fresh reference run as an explicit fallback:
+These commands start new simulations for five simulated seconds. The first uses
+reference mode unless an application preference selects another mode; the second
+explicitly selects fast:
 
 ```sh
+maelstrom run builtin:falling-block-20 --duration 5 --unpaced
 maelstrom run builtin:falling-block-20 --numerical-mode fast --duration 5 --unpaced
-maelstrom run builtin:falling-block-20 --numerical-mode reference --duration 5 --unpaced
 ```
+
+Built-in scenes also save the reference schedule in their configuration files.
+Their output stride is eight, giving 60 Hz at 480 steps per simulated second.
+For 60 Hz output with fast mode, add `--frame-stride 4` to `compile`.
 
 Explicit `--set` values take precedence over a preset. Presets reset inherited
 timestep refinement to one; an explicit `--refine-timestep N` still divides the

@@ -3,7 +3,7 @@
 
 use super::{ConfigError, NumericalOverrides};
 
-/// Numerical presets selected by the application; fast is its default.
+/// Numerical presets selected by the application; reference is its default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NumericalMode {
     /// Use the selected scene/configuration without applying a preset.

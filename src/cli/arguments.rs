@@ -153,7 +153,7 @@ pub(super) struct Inputs {
     pub scene: Option<String>,
     #[arg(long, value_name = "FILE")]
     pub config: Option<PathBuf>,
-    /// Numerical preset (default: fast, or application preference). Explicit --set values win
+    /// Numerical preset (default: reference, or application preference). Explicit --set values win
     #[arg(long, value_parser = ["reference", "fast", "scene"])]
     pub numerical_mode: Option<String>,
     /// Primary numerical override expressed as a TOML literal

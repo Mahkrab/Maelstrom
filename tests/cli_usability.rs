@@ -63,8 +63,13 @@ impl Drop for Library {
 }
 
 #[test]
-fn fast_is_default_and_reference_can_be_selected_by_flag_or_preferences() {
+fn reference_is_default_and_fast_is_opt_in_by_flag_or_preferences() {
     let lib = Library::new();
+    assert_eq!(lib.json(&["config", "show"])["numerical_mode"], "reference");
+    assert_eq!(
+        lib.json(&["inspect"])["configuration"],
+        lib.json(&["inspect", "--numerical-mode", "reference"])["configuration"]
+    );
     let args = [
         "run",
         "builtin:falling-block-04",
@@ -92,11 +97,11 @@ fn fast_is_default_and_reference_can_be_selected_by_flag_or_preferences() {
     let mut fast_args = args.to_vec();
     fast_args.extend(["--numerical-mode", "fast"]);
     let fast = lib.json(&fast_args);
-    assert_eq!(implicit["input"], fast["input"]);
-    assert_eq!(implicit["final_snapshot"], fast["final_snapshot"]);
     let mut reference_args = args.to_vec();
     reference_args.extend(["--numerical-mode", "reference"]);
     let reference = lib.json(&reference_args);
+    assert_eq!(implicit["input"], reference["input"]);
+    assert_eq!(implicit["final_snapshot"], reference["final_snapshot"]);
     assert_ne!(
         reference["input"]["configuration"]["numerical"],
         fast["input"]["configuration"]["numerical"]
@@ -105,20 +110,20 @@ fn fast_is_default_and_reference_can_be_selected_by_flag_or_preferences() {
     fs::create_dir_all(&directory).unwrap();
     fs::write(
         directory.join("config.toml"),
-        "schema_version=1\nnumerical_mode='reference'\n",
+        "schema_version=1\nnumerical_mode='fast'\n",
     )
     .unwrap();
     let configured = lib.json(&args);
-    assert_eq!(configured["input"], reference["input"]);
-    assert_eq!(configured["final_snapshot"], reference["final_snapshot"]);
-    assert_eq!(lib.json(&fast_args)["input"], fast["input"]);
-    assert_eq!(lib.json(&["config", "show"])["numerical_mode"], "reference");
-    let recorded = lib.0.join("recorded-reference.json");
-    fs::write(&recorded, serde_json::to_vec(&reference).unwrap()).unwrap();
+    assert_eq!(configured["input"], fast["input"]);
+    assert_eq!(configured["final_snapshot"], fast["final_snapshot"]);
+    assert_eq!(lib.json(&reference_args)["input"], reference["input"]);
+    assert_eq!(lib.json(&["config", "show"])["numerical_mode"], "fast");
+    let recorded = lib.0.join("recorded-fast.json");
+    fs::write(&recorded, serde_json::to_vec(&fast).unwrap()).unwrap();
     fs::remove_file(directory.join("config.toml")).unwrap();
     assert_eq!(
         lib.json(&["rerun", recorded.to_str().unwrap()])["final_snapshot"],
-        reference["final_snapshot"]
+        fast["final_snapshot"]
     );
 }
 
@@ -362,12 +367,33 @@ fn every_bundled_scene_matches_its_file_and_copies_its_own_configuration() {
             "{name}"
         );
         assert_eq!(
-            bundled["configuration"]["numerical"]["relaxation_scale"], 2.0,
+            bundled["configuration"]["numerical"]["relaxation_scale"], 20.0,
             "{name}"
         );
         assert_eq!(
-            bundled["configuration"]["numerical"]["correction_scale"], 0.5,
+            bundled["configuration"]["numerical"]["correction_scale"], 0.0625,
             "{name}"
+        );
+        assert_eq!(
+            bundled["configuration"]["numerical"]["fixed_timestep_s"],
+            f64::from(1.0_f32 / 480.0),
+            "{name}"
+        );
+        assert_eq!(
+            bundled["configuration"]["numerical"]["solver_iterations"],
+            8
+        );
+        assert_eq!(
+            bundled["presentation"]["effective"]["settings"]["step_stride"],
+            8
+        );
+        // Reading saved values directly prevents the default preset from hiding
+        // a scene package that still contains the old schedule.
+        let saved = maelstrom::scene::load_resolved_scene(&path, None).unwrap();
+        assert_eq!(
+            serde_json::to_value(&saved.configuration.numerical).unwrap(),
+            bundled["configuration"]["numerical"],
+            "{name}: saved schedule"
         );
         let copied = format!("copy-{name}");
         assert!(
@@ -476,7 +502,7 @@ fn every_bundled_scene_matches_its_file_and_copies_its_own_configuration() {
     assert_eq!(replaced["configuration"]["name"], "falling-block-04-model");
     assert_eq!(
         replaced["configuration"]["numerical"]["relaxation_scale"],
-        2.0
+        20.0
     );
 }
 #[test]

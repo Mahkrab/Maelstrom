@@ -1,13 +1,13 @@
 schema_version = 2
 name = "two-blocks-model"
-description = "Fast numerical model for two-blocks; spacing is inherited by every particle group"
+description = "Reference numerical model for two-blocks; spacing is inherited by every particle group"
 
 [numerical]
 particle_spacing_m = 0.04
-fixed_timestep_s = 0.004166666666666667
+fixed_timestep_s = 0.0020833333333333333
 solver_iterations = 8
-correction_scale = 0.5
-relaxation_scale = 2.0
+correction_scale = 0.0625
+relaxation_scale = 20.0
 external_acceleration_m_s2 = [0.0, -9.81, 0.0]
 xsph_viscosity_enabled = false
 vorticity_confinement_enabled = false

@@ -38,8 +38,8 @@ by `MAELSTROM_RUNS_DIR` or `--runs-dir`. See [compiled output](export.md).
 `$XDG_CONFIG_HOME/maelstrom/config.toml`, defaulting to `~/.config/maelstrom/config.toml`.
 The preferences schema permits only `schema_version = 1`, `numerical_mode`, `backend`, `threads`,
 `device` and `block_size`. Explicit execution selection takes precedence; these
-backend preferences do not alter physical inputs. `numerical_mode` selects `fast` (the default)
-or `reference` (`scene` preserves a saved custom schedule); its scheduling preset overrides scene/configuration scheduling fields,
+backend preferences do not alter physical inputs. `numerical_mode` selects `reference` (the default)
+or the opt-in `fast` mode (`scene` preserves a saved custom schedule); its scheduling preset overrides scene/configuration scheduling fields,
 while explicit `--set` values take precedence. For example:
 
 ```toml

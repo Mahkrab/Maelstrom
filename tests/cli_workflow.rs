@@ -249,7 +249,10 @@ fn bundled_scenes_and_defaults_are_discoverable_outside_the_checkout() {
         let side: usize = name.rsplit('-').next().unwrap().parse().unwrap();
         assert_eq!(input["scene"]["particle_count"], side.pow(3));
         assert_eq!(input["configuration"]["name"], format!("{name}-model"));
-        assert_eq!(input["configuration"]["numerical"]["relaxation_scale"], 2.0);
+        assert_eq!(
+            input["configuration"]["numerical"]["relaxation_scale"],
+            20.0
+        );
     }
     let defaults = cli(&["inspect", "--format", "json"]);
     success(&defaults);
@@ -264,7 +267,7 @@ fn bundled_scenes_and_defaults_are_discoverable_outside_the_checkout() {
     );
     assert_eq!(
         document(&defaults)["configuration"]["numerical"]["relaxation_scale"],
-        2.0
+        20.0
     );
 }
 
@@ -297,7 +300,7 @@ fn historical_configuration_replays_its_recorded_values_after_defaults_change() 
                 "--config",
                 "historical.toml",
                 "--numerical-mode",
-                "reference",
+                "scene",
                 "--format",
                 "json",
                 "--output",
@@ -325,7 +328,7 @@ fn historical_configuration_replays_its_recorded_values_after_defaults_change() 
         let current = document(&current);
         assert_eq!(
             current["input"]["configuration"]["numerical"]["relaxation_scale"],
-            2.0
+            20.0
         );
         assert_ne!(
             state_bits(&current["final_snapshot"]),
@@ -386,9 +389,9 @@ fn timestep_refinement_matches_explicit_values_and_replays_without_the_recipe() 
         "--steps",
         "4",
         "--set",
-        "fixed_timestep_s=0.0020833334",
+        "fixed_timestep_s=0.0010416666666666667",
         "--set",
-        "correction_scale=0.125",
+        "correction_scale=0.015625",
         "--format",
         "json",
     ]);

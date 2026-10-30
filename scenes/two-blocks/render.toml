@@ -2,7 +2,7 @@ schema_version = 2
 width = 1280
 height = 720
 format = "png"
-step_stride = 4
+step_stride = 8
 camera_mode = "fit"
 
 [particles]

@@ -1,6 +1,6 @@
 schema_version = 2
 name = "falling-block-10-playground"
-description = "Editable compact drop with a shared fast configuration"
+description = "Editable compact drop with a shared reference configuration"
 randomness = "none"
 
 [configuration]

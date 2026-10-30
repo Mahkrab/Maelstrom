@@ -84,7 +84,7 @@ pub(super) fn resolve_in(inputs: &Inputs, storage: &Storage) -> Result<ResolvedI
             .numerical_mode
             .as_deref()
             .or(preferences.numerical_mode.as_deref())
-            .unwrap_or("fast");
+            .unwrap_or("reference");
         let mode = name
             .parse::<maelstrom::config::NumericalMode>()
             .map_err(|e| CliError::usage(e.to_string()))?;

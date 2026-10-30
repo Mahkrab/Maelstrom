@@ -1,7 +1,7 @@
 # Built-in scene packages
 
 Every built-in is a self-contained directory with `scene.toml` (geometry and run
-limit), `config.toml` (schema-2 fast numerical inputs) and `render.toml` (presentation).
+limit), `config.toml` (schema-2 reference numerical inputs) and `render.toml` (presentation).
 The build embeds all three; installed binaries never read the source checkout.
 Use `maelstrom scenes list`, then `maelstrom view builtin:NAME` to start paused or
 `maelstrom compile builtin:NAME --output DIR` to start a fresh three-second simulation.
@@ -10,8 +10,9 @@ All packages use fit-camera over the finite container and kinetic energy per par
 in joules. Colour intervals are fixed in each render document, so colours remain
 comparable between frames rather than being rescaled to each frame's maximum.
 The interval is chosen from the scene's particle mass/height scale, not a claim of
-physical accuracy. At the default fast rate, `step_stride = 4` gives 60 Hz output.
-Reference mode remains available; use stride 8 for 60 Hz at its 480 Hz step rate.
+physical accuracy. At the default reference rate, `step_stride = 8` gives 60 Hz output.
+Fast mode is opt-in with `--numerical-mode fast`; use `--frame-stride 4` when
+compiling for 60 Hz output at its 240 Hz step rate.
 
 | Selector | Particles | Initial condition and boundaries |
 | --- | ---: | --- |
