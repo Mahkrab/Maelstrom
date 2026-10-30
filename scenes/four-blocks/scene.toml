@@ -1,0 +1,54 @@
+schema_version = 2
+name = "four-blocks"
+description = "Four separated blocks converge from different heights and directions"
+randomness = "none"
+
+[configuration]
+source = "file"
+path = "config.toml"
+
+[run]
+duration_s = 3.0
+
+[container]
+min_m = [0.0, 0.0, 0.0]
+max_m = [1.8, 1.6, 1.8]
+
+[particles]
+construction = "groups"
+
+[[particles.groups]]
+name = "west"
+construction = "lattice"
+origin_m = [0.08, 0.75, 0.7]
+counts = [10, 10, 10]
+endpoint_rule = "counted_half_open"
+order = "x_then_y_then_z"
+initial_velocity_m_s = [0.8, 0.0, 0.0]
+
+[[particles.groups]]
+name = "east"
+construction = "lattice"
+origin_m = [1.36, 0.9, 0.7]
+counts = [10, 10, 10]
+endpoint_rule = "counted_half_open"
+order = "x_then_y_then_z"
+initial_velocity_m_s = [-0.8, 0.0, 0.0]
+
+[[particles.groups]]
+name = "north"
+construction = "lattice"
+origin_m = [0.7, 0.5, 0.08]
+counts = [10, 10, 10]
+endpoint_rule = "counted_half_open"
+order = "x_then_y_then_z"
+initial_velocity_m_s = [0.0, 0.0, 0.8]
+
+[[particles.groups]]
+name = "south"
+construction = "lattice"
+origin_m = [0.7, 1.15, 1.36]
+counts = [10, 10, 10]
+endpoint_rule = "counted_half_open"
+order = "x_then_y_then_z"
+initial_velocity_m_s = [0.0, 0.0, -0.8]

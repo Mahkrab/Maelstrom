@@ -40,6 +40,9 @@ pub(super) fn configuration_source(
         CliError::input("bundled scene configuration: file source requires path".into())
     })?;
     let mut path = PathBuf::from("scenes");
+    if RENDERS.iter().any(|(key, _)| *key == document.name) {
+        path.push(&document.name);
+    }
     for component in Path::new(reference).components() {
         match component {
             Component::Normal(name) => path.push(name),
@@ -60,6 +63,13 @@ pub(super) fn configuration_source(
     Ok(Some(source))
 }
 
+pub(super) fn render(name: &str) -> Option<&'static str> {
+    RENDERS
+        .iter()
+        .find(|(key, _)| *key == name)
+        .map(|(_, source)| *source)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,13 +81,13 @@ mod tests {
     #[test]
     fn references_resolve_without_access_to_the_source_tree() {
         let mut scene = document();
-        scene.configuration.path = Some("./../config/./defaults-v4.toml".into());
+        scene.configuration.path = Some("./../../config/./defaults-v4.toml".into());
         let config = configuration(&scene)
             .unwrap_or_else(|e| panic!("{}", e.message))
             .unwrap();
         assert_eq!(config.name, "maelstrom-defaults-v4");
         for path in [
-            "../../config/defaults-v4.toml",
+            "../../../config/defaults-v4.toml",
             "/config/defaults-v4.toml",
             "../config/missing.toml",
             "",

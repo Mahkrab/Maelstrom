@@ -18,7 +18,7 @@ use maelstrom::{
 };
 
 const DEFAULTS_TOML: &str = include_str!("../config/defaults-v4.toml");
-const EXTERNAL_SCENE_TOML: &str = include_str!("../scenes/falling-block-06.toml");
+const EXTERNAL_SCENE_TOML: &str = include_str!("../reference/scenes/falling-block-06.toml");
 static CURRENT_DIRECTORY_LOCK: Mutex<()> = Mutex::new(());
 
 struct CurrentDirectoryGuard {

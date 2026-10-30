@@ -851,7 +851,8 @@ fn grid_numerical_and_plane_failures_preserve_every_accepted_bit() {
 #[test]
 fn repeated_scene_runs_and_input_permutations_are_bitwise_identical() {
     let scene = load_resolved_scene(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scenes/falling-block-04.toml"),
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("reference/scenes/falling-block-04.toml"),
         None,
     )
     .unwrap();

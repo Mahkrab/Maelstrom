@@ -1,0 +1,12 @@
+schema_version = 2
+name = "experimental-pbf-production-control"
+description = "Explicit resolved production comparison policy; defaults are unchanged"
+
+[numerical]
+refine_timestep = 1
+fixed_timestep_s = 0.0020833333333333333
+solver_iterations = 8
+correction_scale = 0.0625
+relaxation_scale = 20.0
+xsph_viscosity_enabled = false
+vorticity_confinement_enabled = false

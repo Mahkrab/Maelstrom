@@ -23,6 +23,7 @@ pub(super) fn paths(cli: &Cli, storage: &Storage) -> Result<u8, CliError> {
 pub(super) fn config(cli: &Cli, storage: &Storage) -> Result<u8, CliError> {
     let p = storage.preferences()?;
     let value = json!({"schema_version":1,"path":storage.preferences,"exists":storage.preferences.exists(),
+        "numerical_mode":p.numerical_mode.as_deref().unwrap_or("fast"),
         "backend":p.backend.as_deref().unwrap_or("auto"),"threads":p.threads,"device":p.device,"block_size":p.block_size,
         "precedence":"explicit command selection > application preferences > built-in auto policy; scene physics is separate"});
     super::print_document(

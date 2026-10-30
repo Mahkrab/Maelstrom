@@ -1,0 +1,11 @@
+schema_version = 2
+width = 1280
+height = 720
+format = "png"
+step_stride = 4
+camera_mode = "fit"
+
+[particles]
+colour_mode = "kinetic_energy"
+min_energy_j = 0.0
+max_energy_j = 1.96200000

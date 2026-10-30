@@ -234,7 +234,7 @@ fn regularised_defaults_prevent_catastrophic_collapse_in_small_falling_scenes() 
     for name in ["falling-block-04.toml", "falling-block-06.toml"] {
         let scene = load_resolved_scene(
             &Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("scenes")
+                .join("reference/scenes")
                 .join(name),
             None,
         )

@@ -1,0 +1,27 @@
+schema_version = 2
+name = "dam-break"
+description = "A tall released slab spreads along a long rectangular basin"
+randomness = "none"
+
+[configuration]
+source = "file"
+path = "config.toml"
+
+[run]
+duration_s = 3.0
+
+[container]
+min_m = [0.0, 0.0, 0.0]
+max_m = [2.4, 1.6, 1.0]
+
+[particles]
+construction = "groups"
+
+[[particles.groups]]
+name = "reservoir"
+construction = "lattice"
+origin_m = [0.08, 0.04, 0.08]
+counts = [12, 24, 18]
+endpoint_rule = "counted_half_open"
+order = "x_then_y_then_z"
+initial_velocity_m_s = [0.0, 0.0, 0.0]

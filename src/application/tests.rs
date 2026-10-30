@@ -7,8 +7,11 @@ use super::*;
 
 fn spec() -> RunSpec {
     RunSpec {
-        scene: crate::scene::load_resolved_scene(Path::new("scenes/falling-block-04.toml"), None)
-            .unwrap(),
+        scene: crate::scene::load_resolved_scene(
+            Path::new("reference/scenes/falling-block-04.toml"),
+            None,
+        )
+        .unwrap(),
         backend: SearchBackend::UniformGrid,
         execution: ExecutionMode::Serial,
         steps: 2,
@@ -19,7 +22,10 @@ fn spec() -> RunSpec {
 #[test]
 fn supported_scene_versions_construct_and_unknown_versions_fail_explicitly() {
     let mut controller = Controller::new().unwrap();
-    for path in ["scenes/falling-block-04.toml", "scenes/two-blocks.toml"] {
+    for path in [
+        "reference/scenes/falling-block-04.toml",
+        "reference/scenes/two-blocks.toml",
+    ] {
         let scene = crate::scene::load_resolved_scene(Path::new(path), None).unwrap();
         let mut expected = crate::simulation::Simulation::from_scene_with_execution(
             &scene,

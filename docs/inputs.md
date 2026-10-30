@@ -36,9 +36,11 @@ Compiled runs are a different library: `$XDG_DATA_HOME/maelstrom/runs`, overridd
 by `MAELSTROM_RUNS_DIR` or `--runs-dir`. See [compiled output](export.md).
 `maelstrom config show` displays application preferences from
 `$XDG_CONFIG_HOME/maelstrom/config.toml`, defaulting to `~/.config/maelstrom/config.toml`.
-The preferences schema permits only `schema_version = 1`, `backend`, `threads`,
+The preferences schema permits only `schema_version = 1`, `numerical_mode`, `backend`, `threads`,
 `device` and `block_size`. Explicit execution selection takes precedence; these
-preferences never override scene physics. For example:
+backend preferences do not alter physical inputs. `numerical_mode` selects `fast` (the default)
+or `reference` (`scene` preserves a saved custom schedule); its scheduling preset overrides scene/configuration scheduling fields,
+while explicit `--set` values take precedence. For example:
 
 ```toml
 schema_version = 1
@@ -49,7 +51,7 @@ threads = 4
 Storage environment overrides must be absolute. Relative explicit CLI paths are
 resolved against the invocation directory. Invalid/relative XDG roots use the normal
 HOME fallback. Unknown preference fields and schema versions fail rather than changing
-the numerical model implicitly.
+physical parameters such as geometry, density and gravity.
 
 ## Configuration resolution
 
@@ -306,7 +308,7 @@ maelstrom view collision
 
 Viewing starts a fresh simulation. The copy keeps the example's groups, shared numerical configuration
 and saved run limit; `inspect collision` shows their effective values. Its
-[scene document](../scenes/two-blocks.toml) shows the complete format. The renderer fits the finite
+[scene document](../scenes/two-blocks/scene.toml) shows the complete format. The renderer fits the finite
 container by default.
 
 Schema 2 accepts `particles.construction = "groups"` followed by `[[particles.groups]]` tables.

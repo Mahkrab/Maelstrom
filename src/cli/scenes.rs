@@ -46,6 +46,7 @@ pub(super) fn list(cli: &Cli, storage: &Storage) -> Result<u8, CliError> {
                 config: None,
                 overrides: vec![],
                 refine_timestep: None,
+                numerical_mode: None,
             },
             storage,
         )?;
@@ -69,6 +70,7 @@ pub(super) fn create(cli: &Cli, storage: &Storage, name: &str, from: &str) -> Re
         config: None,
         overrides: vec![],
         refine_timestep: None,
+        numerical_mode: None,
     };
     let resolved = inputs::resolve_in(&selection, storage)?;
     let presentation = super::presentation::resolve(Some(&resolved), &Default::default())?;

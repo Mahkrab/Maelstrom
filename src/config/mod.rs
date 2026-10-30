@@ -12,6 +12,7 @@
 
 mod document;
 mod inspection;
+mod mode;
 mod resolution;
 mod resolved;
 mod serialisation;
@@ -21,6 +22,7 @@ pub use document::{
     ConfigurationDocument, ConfigurationOverlay, DerivedAssertions, NumericalOverrides,
     load_configuration, parse_configuration, parse_configuration_overlay,
 };
+pub use mode::NumericalMode;
 pub use resolution::{Refinement, resolve_configuration_for_schema};
 pub use resolved::{
     BOUNDARY_MODEL, CONFIG_SCHEMA_VERSION, COORDINATE_SYSTEM, CORRECTION_KERNEL,

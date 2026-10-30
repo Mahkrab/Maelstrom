@@ -1,0 +1,31 @@
+schema_version = 2
+name = "slope-slide"
+description = "A block drops onto a diagonal half-space and slides downhill"
+randomness = "none"
+
+[configuration]
+source = "file"
+path = "config.toml"
+
+[run]
+duration_s = 3.0
+
+[container]
+min_m = [0.0, 0.0, 0.0]
+max_m = [2.0, 1.5, 0.9]
+
+[particles]
+construction = "groups"
+
+[[particles.groups]]
+name = "block"
+construction = "lattice"
+origin_m = [0.12, 0.9, 0.15]
+counts = [12, 10, 14]
+endpoint_rule = "counted_half_open"
+order = "x_then_y_then_z"
+initial_velocity_m_s = [0.0, 0.0, 0.0]
+
+[[planes]]
+normal = [0.6, 0.8, 0.0]
+offset_m = 0.4

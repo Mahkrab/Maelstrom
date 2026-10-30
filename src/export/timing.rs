@@ -1,4 +1,4 @@
-//! Export intervals account for synchronous work before manifest construction.
+//! Export-thread intervals are disjoint; CPU encoder work overlaps those intervals.
 //! Final manifest publication, caller output and teardown belong to command wall
 //! time; the manifest cannot contain a measurement of its own completed write.
 
@@ -12,6 +12,7 @@ pub(super) struct FrameTimings {
     pub graphics_readback: Duration,
     pub png_encoding: Duration,
     pub publication: Duration,
+    pub output_wait: Duration,
     pub hashing: Duration,
 }
 
@@ -34,9 +35,8 @@ impl ExportTimings {
             ("comparison", self.comparison),
             ("frame_particle_copy", self.frames.particle_copy),
             ("graphics_readback", self.frames.graphics_readback),
-            ("png_encoding", self.frames.png_encoding),
+            ("frame_output_wait", self.frames.output_wait),
             ("frame_publication", self.frames.publication),
-            ("frame_hashing", self.frames.hashing),
             ("progress", self.progress),
         ];
         let accounted: Duration = components.iter().map(|(_, time)| *time).sum();
@@ -49,7 +49,12 @@ impl ExportTimings {
             .collect();
         seconds.insert("other".into(), json!(other.as_secs_f64()));
         Ok(json!({
-            "schema_version": 1,
+            "schema_version": 2,
+            "worker_components_s": {
+                "png_encoding": self.frames.png_encoding.as_secs_f64(),
+                "frame_hashing": self.frames.hashing.as_secs_f64(),
+            },
+            "worker_boundary": "encoding_and_hashing; overlaps_export_thread",
             "boundary": "export_entry_to_before_manifest",
             "total_s": elapsed.as_secs_f64(),
             "components_s": seconds,
@@ -75,13 +80,13 @@ mod tests {
             ..Default::default()
         };
         let profile = timings.profile(Duration::from_secs(31)).unwrap();
-        assert_eq!(profile["schema_version"], 1);
+        assert_eq!(profile["schema_version"], 2);
         assert_eq!(profile["boundary"], "export_entry_to_before_manifest");
         assert_eq!(profile["total_s"], 31.0);
         assert_eq!(profile["components_s"]["frame_publication"], 5.0);
-        assert_eq!(profile["components_s"]["frame_hashing"], 7.0);
+        assert_eq!(profile["worker_components_s"]["frame_hashing"], 7.0);
         assert_eq!(profile["components_s"]["progress"], 11.0);
-        assert_eq!(profile["components_s"]["other"], 3.0);
-        assert!(timings.profile(Duration::from_secs(27)).is_err());
+        assert_eq!(profile["components_s"]["other"], 10.0);
+        assert!(timings.profile(Duration::from_secs(20)).is_err());
     }
 }

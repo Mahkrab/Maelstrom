@@ -1,0 +1,29 @@
+schema_version = 1
+name = "maelstrom-defaults-v1"
+description = "Position-Based Fluids numerical defaults"
+
+[numerical]
+scalar_precision = "binary32"
+coordinate_system = "right_handed_y_up_metres_seconds_kilograms"
+timestep_policy = "fixed"
+density_kernel = "poly6"
+correction_kernel = "spiky"
+solver_update_policy = "jacobi_immutable_snapshot"
+external_acceleration_m_s2 = [0.0, -9.81, 0.0]
+fixed_timestep_s = 0.008333334
+cfl_factor = 0.4
+particle_spacing_m = 0.05
+support_radius_ratio = 2.0
+physical_rest_density_kg_m3 = 1000.0
+solver_iterations = 4
+relaxation_scale = 0.000001
+artificial_pressure_enabled = true
+artificial_pressure_strength_scale = 0.1
+artificial_pressure_reference_separation_ratio = 0.2
+artificial_pressure_exponent = 4.0
+support_policy = "strict_less_than"
+boundary_model = "static_plane_projection"
+neighbour_rebuild_policy = "once_after_prediction"
+particle_order_policy = "ascending_particle_identity"
+xsph_viscosity_enabled = false
+vorticity_confinement_enabled = false

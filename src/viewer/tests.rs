@@ -16,6 +16,7 @@ fn draft() -> Draft {
         scene: "falling-block-04".into(),
         config: String::new(),
         mode: "serial-grid".into(),
+        numerical_mode: String::new(),
         workers: "2".into(),
         device: "0".into(),
         block_size: "128".into(),
@@ -27,7 +28,8 @@ fn spec(d: &Draft) -> Result<RunSpec, String> {
         return Err("selected scene failed validation".into());
     }
     Ok(RunSpec {
-        scene: load_resolved_scene(Path::new("scenes/falling-block-04.toml"), None).unwrap(),
+        scene: load_resolved_scene(Path::new("reference/scenes/falling-block-04.toml"), None)
+            .unwrap(),
         steps: d.steps.parse().map_err(|_| "invalid steps")?,
         backend: if d.mode == "brute-force" {
             SearchBackend::BruteForce

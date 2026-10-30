@@ -1,0 +1,27 @@
+schema_version = 2
+name = "falling-block-10"
+description = "10 cubed particles falling into a closed box"
+randomness = "none"
+
+[configuration]
+source = "file"
+path = "config.toml"
+
+[run]
+duration_s = 3.0
+
+[container]
+min_m = [0.0, 0.0, 0.0]
+max_m = [1.4, 1.6, 1.4]
+
+[particles]
+construction = "groups"
+
+[[particles.groups]]
+name = "block"
+construction = "lattice"
+origin_m = [0.2, 0.4, 0.2]
+counts = [10, 10, 10]
+endpoint_rule = "counted_half_open"
+order = "x_then_y_then_z"
+initial_velocity_m_s = [0.0, 0.0, 0.0]

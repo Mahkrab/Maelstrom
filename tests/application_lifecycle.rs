@@ -18,7 +18,8 @@ use maelstrom::{
 
 fn spec(steps: u64) -> RunSpec {
     RunSpec {
-        scene: load_resolved_scene(Path::new("scenes/falling-block-04.toml"), None).unwrap(),
+        scene: load_resolved_scene(Path::new("reference/scenes/falling-block-04.toml"), None)
+            .unwrap(),
         backend: SearchBackend::UniformGrid,
         execution: ExecutionMode::Serial,
         steps,

@@ -78,6 +78,23 @@ pub(super) fn resolve_in(inputs: &Inputs, storage: &Storage) -> Result<ResolvedI
         overlay.numerical.refine_timestep = Some(factor);
     }
     let mut documents = Vec::new();
+    let preferences = storage.preferences()?;
+    {
+        let name = inputs
+            .numerical_mode
+            .as_deref()
+            .or(preferences.numerical_mode.as_deref())
+            .unwrap_or("fast");
+        let mode = name
+            .parse::<maelstrom::config::NumericalMode>()
+            .map_err(|e| CliError::usage(e.to_string()))?;
+        mode.fill_overrides(&mut overlay.numerical);
+        // The preset is provenance, not a replay instruction. Resolved primary
+        // values remain the sole numerical inputs when a record is rerun.
+        if mode != maelstrom::config::NumericalMode::Scene {
+            documents.push(identity("numerical_mode", name.into(), name));
+        }
+    }
     let explicit = inputs
         .config
         .as_ref()

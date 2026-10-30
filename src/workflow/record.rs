@@ -6,6 +6,10 @@ use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(any(feature = "render", test))]
+#[path = "snapshot_json.rs"]
+mod snapshot_json;
+
 use crate::{
     boundary::Plane,
     config::{

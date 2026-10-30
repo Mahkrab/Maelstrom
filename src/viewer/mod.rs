@@ -320,7 +320,7 @@ impl Viewer {
                 Ok(())
             }
             Key::Named(NamedKey::Tab) => {
-                self.field = (self.field + 1) % 7;
+                self.field = (self.field + 1) % self.model.draft.fields().len();
                 Ok(())
             }
             Key::Named(NamedKey::Enter) => {
@@ -447,6 +447,14 @@ impl Viewer {
                     },
                     |i| format!("{:?} / {:?}", i.backend, i.execution)
                 )
+            ));
+            let numerical = &s.spec.scene.configuration.numerical;
+            lines.push(format!(
+                "Numerics: {:.1} Hz | Jacobi {} | correction {} | relaxation {}",
+                1.0 / numerical.fixed_timestep_s,
+                numerical.solver_iterations,
+                numerical.correction_scale,
+                numerical.relaxation_scale
             ));
             if o.snapshot.is_none() {
                 lines.push(format!(

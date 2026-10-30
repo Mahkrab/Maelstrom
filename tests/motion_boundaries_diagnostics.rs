@@ -305,3 +305,41 @@ fn cfl_rejects_invalid_domains_and_non_finite_speeds_or_limits() {
         Err(NumericalError::NonFiniteResult { .. })
     ));
 }
+
+#[test]
+fn inclined_contacts_repair_roundoff_without_relaxing_containment() {
+    let mut repaired = 0;
+    for normal in [
+        Vec3::new(0.6, 0.8, 0.0),
+        Vec3::new(-0.6, 0.8, 0.0),
+        Vec3::new(0.0, 0.8, -0.6),
+    ] {
+        for offset in [-0.36, 0.0, 0.4] {
+            let plane = Plane::new(normal, offset, 1e-6).unwrap();
+            for i in 0..1024 {
+                let point = Vec3::new(i as f32 * 0.013 - 4.0, i as f32 * -0.007, 0.37);
+                let constraint = plane.constraint(point).unwrap();
+                let original = if constraint < 0.0 {
+                    point - normal * constraint
+                } else {
+                    point
+                };
+                let actual = plane.project(point).unwrap();
+                assert!(
+                    plane.contains(actual).unwrap(),
+                    "{normal:?}, {offset}, {point:?}"
+                );
+                assert_eq!(plane.project(actual).unwrap(), actual);
+                if plane.contains(original).unwrap() {
+                    assert_eq!(actual, original);
+                } else {
+                    repaired += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        repaired > 0,
+        "the grid must exercise the observed round-off defect"
+    );
+}

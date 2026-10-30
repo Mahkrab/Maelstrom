@@ -14,6 +14,8 @@ pub struct Draft {
     pub config: String,
     /// brute-force, serial-grid, threaded-grid or cuda-grid.
     pub mode: String,
+    /// reference, fast, scene, or blank to use the application default/preference.
+    pub numerical_mode: String,
     /// Threaded CPU pool size.
     pub workers: String,
     /// CUDA ordinal.
@@ -24,15 +26,19 @@ pub struct Draft {
     pub steps: String,
 }
 impl Draft {
-    pub(crate) fn fields(&self) -> [(&'static str, &str); 7] {
+    pub(crate) fn fields(&self) -> [(&'static str, &str); 8] {
         [
             ("Scene", &self.scene),
             ("Config (blank = scene)", &self.config),
-            ("Mode", &self.mode),
+            ("Backend", &self.mode),
             ("Workers", &self.workers),
             ("CUDA device", &self.device),
             ("CUDA block", &self.block_size),
             ("Steps", &self.steps),
+            (
+                "Numerics (default / reference / fast / scene)",
+                &self.numerical_mode,
+            ),
         ]
     }
     pub(crate) fn field_mut(&mut self, index: usize) -> &mut String {
@@ -43,7 +49,8 @@ impl Draft {
             3 => &mut self.workers,
             4 => &mut self.device,
             5 => &mut self.block_size,
-            _ => &mut self.steps,
+            6 => &mut self.steps,
+            _ => &mut self.numerical_mode,
         }
     }
 }

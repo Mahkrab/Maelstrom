@@ -75,6 +75,64 @@ maelstrom run builtin:falling-block-04 --backend threaded-grid --threads 3 --ste
 maelstrom inspect builtin:falling-block-04 --backend cuda --format json
 ```
 
+## Numerical modes
+
+`run`, `view`, `compile`, `inspect` and `validate` accept
+`--numerical-mode fast` or `--numerical-mode reference`. **Fast is the default.**
+Select reference explicitly with `--numerical-mode reference`, or set
+`numerical_mode = "reference"` in the application preferences at
+`$XDG_CONFIG_HOME/maelstrom/config.toml` (normally `~/.config/maelstrom/config.toml`):
+
+```toml
+schema_version = 1
+numerical_mode = "reference"
+```
+
+The command-line mode overrides that preference. Explicit `--set` values override
+the preset. Use `--numerical-mode scene` (or `numerical_mode = "scene"` in preferences)
+to preserve a custom scene/configuration schedule without a preset. Reruns retain their recorded numerical values. The presets change only timestep,
+Jacobi count, correction scale and relaxation scale; geometry, mass, gravity,
+kernel support and velocity-effect settings retain their existing ownership.
+Enabled velocity effects keep their coefficients; changing the step rate also
+changes how often those effects are applied per simulated second.
+
+| Mode | Steps / simulated second | Jacobi iterations / step | Correction scale | Relaxation scale |
+|---|---:|---:|---:|---:|
+| `reference` | 480 | 8 | 0.0625 | 20 |
+| `fast` | 240 | 8 | 0.5 | 2 |
+
+Fast mode reduces numerical work and changes the physical trajectory. It is a
+throughput/quality trade-off, not a promise of the same fluid response. Both modes
+retain the existing PBF physical limitations. Fast mode can improve compression
+and separation while adding projection energy or changing shear response.
+
+These commands start new simulations. The first runs five simulated seconds;
+the second starts a fresh reference run as an explicit fallback:
+
+```sh
+maelstrom run builtin:falling-block-20 --numerical-mode fast --duration 5 --unpaced
+maelstrom run builtin:falling-block-20 --numerical-mode reference --duration 5 --unpaced
+```
+
+Explicit `--set` values take precedence over a preset. Presets reset inherited
+timestep refinement to one; an explicit `--refine-timestep N` still divides the
+selected timestep by N and its correction scale by N². For example, fast mode
+with refinement two runs at 480 Hz with correction 0.125 and relaxation 2. Inspect
+the resolved values before comparing a modified preset. CFL remains a warning;
+it neither inserts timesteps nor switches modes. Numerical errors and cancellation
+retain the last accepted state through the existing transaction boundary.
+
+The viewer's **Numerics** draft field accepts `fast`, `reference`, or blank for
+the application default/preference. `scene` explicitly preserves the selected
+scene/configuration schedule. Apply the draft to start a new generation. Editing the
+field does not modify an active run. The entered step count stays fixed: five
+simulated seconds require 1,200 fast steps or 2,400 reference steps. The selected
+generation displays its effective rate, iterations, correction and relaxation.
+
+Recorded runs store resolved numerical values and selection provenance. `rerun`
+recomputes those recorded values from zero, even if current mode defaults change;
+it does not turn a fast recording into a reference run. Playback uses saved images.
+
 ## Limits, pacing and results
 
 Fresh execution uses the saved scene limit unless `--steps N` or `--duration SECONDS` replaces it.

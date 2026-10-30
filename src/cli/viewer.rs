@@ -52,6 +52,7 @@ pub(super) fn launch(view: &View, storage: &super::storage::Storage) -> Result<u
                 .as_ref()
                 .map_or_else(String::new, |p| p.to_string_lossy().into()),
             mode: mode.into(),
+            numerical_mode: view.inputs.numerical_mode.clone().unwrap_or_default(),
             workers: workers.to_string(),
             device: device.to_string(),
             block_size: block_size.to_string(),
@@ -103,9 +104,15 @@ fn resolve_presentation(
         .transpose()
         .map_err(|e| format!("selected scene directory: {}", e.kind()))?;
     let directory = path.as_deref().and_then(std::path::Path::parent);
-    let presentation = super::presentation::resolve_directory(directory, options)
-        .map_err(|e| redact(e.message, draft))?
-        .effective;
+    let presentation = match directory {
+        Some(directory) => super::presentation::resolve_directory(Some(directory), options),
+        None => super::presentation::resolve_bundled(
+            draft.scene.strip_prefix("builtin:").unwrap_or(&draft.scene),
+            options,
+        ),
+    }
+    .map_err(|e| redact(e.message, draft))?
+    .effective;
     let camera_save = directory
         .map(|directory| {
             let default = directory.join("render.toml");
@@ -172,6 +179,7 @@ fn resolve_in(
         config: (!draft.config.is_empty()).then(|| draft.config.clone().into()),
         overrides: overrides.to_vec(),
         refine_timestep: refinement,
+        numerical_mode: (!draft.numerical_mode.is_empty()).then(|| draft.numerical_mode.clone()),
     };
     let resolved = inputs::resolve_in(&selected, storage).map_err(|e| redact(e.message, draft))?;
     let scene = resolved.scene.ok_or_else(|| "select a scene".to_owned())?;
@@ -270,6 +278,7 @@ mod tests {
             scene: "falling-block-04".into(),
             config: String::new(),
             mode: "serial-grid".into(),
+            numerical_mode: String::new(),
             workers: "2".into(),
             device: "0".into(),
             block_size: "128".into(),
@@ -277,15 +286,52 @@ mod tests {
         }
     }
     #[test]
+    fn draft_numerical_mode_is_validated_and_refines_once() {
+        let mut d = draft();
+        d.numerical_mode = "fast".into();
+        let fast = resolve(&d, &[], None).unwrap();
+        assert_eq!(
+            fast.scene.configuration.numerical.fixed_timestep_s,
+            1.0 / 240.0
+        );
+        assert_eq!(fast.scene.configuration.numerical.correction_scale, 0.5);
+        assert_eq!(fast.scene.configuration.numerical.relaxation_scale, 2.0);
+        let refined = resolve(&d, &[], Some(2)).unwrap();
+        assert_eq!(
+            refined.scene.configuration.numerical.correction_scale,
+            0.125
+        );
+        assert_eq!(
+            refined.scene.configuration.numerical.fixed_timestep_s,
+            1.0 / 480.0
+        );
+        d.numerical_mode = "reference".into();
+        let reference = resolve(&d, &[], None).unwrap();
+        assert_eq!(
+            reference.scene.configuration.numerical.correction_scale,
+            0.0625
+        );
+        assert_eq!(
+            reference.scene.configuration.numerical.relaxation_scale,
+            20.0
+        );
+        d.numerical_mode = "unknown".into();
+        assert!(
+            resolve(&d, &[], None)
+                .unwrap_err()
+                .contains("reference or fast")
+        );
+    }
+    #[test]
     fn external_and_bundled_selection_share_precedence_and_identity() {
         let overrides = vec!["cfl_factor=0.1".into()];
         let mut d = draft();
         let bundled = resolve(&d, &overrides, None).unwrap();
-        d.scene = "scenes/falling-block-04.toml".into();
+        d.scene = "scenes/falling-block-04/scene.toml".into();
         let external = resolve(&d, &overrides, None).unwrap();
         assert_eq!(external.scene, bundled.scene);
         assert_eq!(external.scene.configuration.numerical.cfl_factor, 0.1);
-        d.config = "config/defaults-v4.toml".into();
+        d.config = "scenes/falling-block-04/config.toml".into();
         let selected = resolve(&d, &overrides, None).unwrap();
         assert_eq!(
             selected.scene.configuration.comparison_key(),
@@ -318,7 +364,7 @@ mod tests {
         ));
         fs::create_dir(&directory).unwrap();
         let path = directory.join("scene.toml");
-        let source = include_str!("../../scenes/falling-block-04.toml")
+        let source = include_str!("../../reference/scenes/falling-block-04.toml")
             .replace("../config/defaults-v4.toml", "missing-config.toml");
         fs::write(&path, source).unwrap();
         let mut d = draft();

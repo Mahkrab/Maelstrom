@@ -222,11 +222,8 @@ fn bundled_scenes_and_defaults_are_discoverable_outside_the_checkout() {
     let mut expected: Vec<_> = fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("scenes"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "toml")
-        })
-        .map(|path| path.file_stem().unwrap().to_str().unwrap().to_owned())
+        .filter(|path| path.join("scene.toml").is_file())
+        .map(|path| path.file_name().unwrap().to_str().unwrap().to_owned())
         .collect();
     expected.sort();
     let discovered: Vec<_> = scenes["scenes"]
@@ -251,11 +248,8 @@ fn bundled_scenes_and_defaults_are_discoverable_outside_the_checkout() {
         let input = document(&output);
         let side: usize = name.rsplit('-').next().unwrap().parse().unwrap();
         assert_eq!(input["scene"]["particle_count"], side.pow(3));
-        assert_eq!(input["configuration"]["name"], "maelstrom-defaults-v4");
-        assert_eq!(
-            input["configuration"]["numerical"]["relaxation_scale"],
-            20.0
-        );
+        assert_eq!(input["configuration"]["name"], format!("{name}-model"));
+        assert_eq!(input["configuration"]["numerical"]["relaxation_scale"], 2.0);
     }
     let defaults = cli(&["inspect", "--format", "json"]);
     success(&defaults);
@@ -270,7 +264,7 @@ fn bundled_scenes_and_defaults_are_discoverable_outside_the_checkout() {
     );
     assert_eq!(
         document(&defaults)["configuration"]["numerical"]["relaxation_scale"],
-        20.0
+        2.0
     );
 }
 
@@ -292,14 +286,18 @@ fn historical_configuration_replays_its_recorded_values_after_defaults_change() 
     ] {
         let dir = Directory::new();
         let config = dir.write("historical.toml", source);
+        let legacy = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("reference/scenes/falling-block-04.toml");
         let original = command(&dir.0)
             .args([
                 "run",
-                "falling-block-04",
+                legacy.to_str().unwrap(),
                 "--steps",
                 "4",
                 "--config",
                 "historical.toml",
+                "--numerical-mode",
+                "reference",
                 "--format",
                 "json",
                 "--output",
@@ -327,7 +325,7 @@ fn historical_configuration_replays_its_recorded_values_after_defaults_change() 
         let current = document(&current);
         assert_eq!(
             current["input"]["configuration"]["numerical"]["relaxation_scale"],
-            20.0
+            2.0
         );
         assert_ne!(
             state_bits(&current["final_snapshot"]),
@@ -388,9 +386,9 @@ fn timestep_refinement_matches_explicit_values_and_replays_without_the_recipe() 
         "--steps",
         "4",
         "--set",
-        "fixed_timestep_s=0.004166667",
+        "fixed_timestep_s=0.0020833334",
         "--set",
-        "correction_scale=0.25",
+        "correction_scale=0.125",
         "--format",
         "json",
     ]);
@@ -501,13 +499,13 @@ fn external_scene_configuration_precedence_and_relative_paths_are_explicit() {
     );
     assert_eq!(
         effective["configuration"]["provenance"]["solver_iterations"],
-        "built_in_default"
+        "command_line"
     );
     let without_cli = cli(&["inspect", path.to_str().unwrap(), "--format", "json"]);
     success(&without_cli);
     assert_eq!(
         document(&without_cli)["configuration"]["provenance"]["fixed_timestep_s"],
-        "scene"
+        "command_line"
     );
 }
 
@@ -542,14 +540,14 @@ fn explicit_config_replaces_scene_selection_but_preserves_scene_values() {
         assert_eq!(document(&output)["configuration"]["name"], "selected");
         assert_eq!(
             document(&output)["configuration"]["provenance"]["fixed_timestep_s"],
-            "scene"
+            "command_line"
         );
     }
 }
 
 #[test]
 fn named_and_external_inputs_produce_identical_physical_results() {
-    let external = Path::new(env!("CARGO_MANIFEST_DIR")).join("scenes/falling-block-04.toml");
+    let external = Path::new(env!("CARGO_MANIFEST_DIR")).join("scenes/falling-block-04/scene.toml");
     let named = cli(&[
         "run",
         "falling-block-04",
@@ -663,6 +661,8 @@ fn supplied_scene_and_selected_configuration_replay_without_original_files() {
             "./scene.toml",
             "--config",
             "selected.toml",
+            "--set",
+            "fixed_timestep_s=0.125",
             "--steps",
             "1",
             "--checkpoints",
@@ -686,12 +686,16 @@ fn supplied_scene_and_selected_configuration_replay_without_original_files() {
         result["final_snapshot"]["particles"][0]["position_m"]["y"],
         -0.125
     );
+    let legacy =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("reference/scenes/falling-block-04.toml");
     let named = command(&dir.0)
         .args([
             "run",
-            "falling-block-04",
+            legacy.to_str().unwrap(),
             "--config",
             "selected.toml",
+            "--set",
+            "fixed_timestep_s=0.125",
             "--steps",
             "1",
             "--format",
@@ -800,7 +804,7 @@ fn invalid_use_has_actionable_stderr_and_no_result_stdout() {
     for args in [
         vec![],
         vec!["rn"],
-        vec!["run", "falling-block-04"],
+        vec!["run", "falling-block-04", "--steps", "1", "--duration", "1"],
         vec!["run", "--steps", "1"],
         vec![
             "run",

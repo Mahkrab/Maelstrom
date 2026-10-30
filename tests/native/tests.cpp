@@ -1,6 +1,6 @@
 // Faults replace driver functions inside this test executable only. These
 // assertions prove ownership transitions, not recovery from actual device loss.
-#include "bridge.cpp"
+#include "../../native/bridge.cpp"
 #include <cassert>
 #include <cstdio>
 #include <cstring>

@@ -22,12 +22,37 @@ pub(super) fn resolve(
     inputs: Option<&ResolvedInputs>,
     options: &PresentationOptions,
 ) -> Result<ResolvedPresentation, CliError> {
-    resolve_directory(inputs.and_then(|i| i.directory.as_deref()), options)
+    let directory = inputs.and_then(|i| i.directory.as_deref());
+    let embedded = if directory.is_none() {
+        inputs
+            .and_then(|i| i.document.as_ref())
+            .and_then(|d| super::bundled::render(&d.name))
+    } else {
+        None
+    };
+    resolve_selected(directory, options, embedded)
 }
 
+#[cfg(feature = "viewer")]
 pub(super) fn resolve_directory(
     directory: Option<&Path>,
     options: &PresentationOptions,
+) -> Result<ResolvedPresentation, CliError> {
+    resolve_selected(directory, options, None)
+}
+
+#[cfg(feature = "viewer")]
+pub(super) fn resolve_bundled(
+    name: &str,
+    options: &PresentationOptions,
+) -> Result<ResolvedPresentation, CliError> {
+    resolve_selected(None, options, super::bundled::render(name))
+}
+
+fn resolve_selected(
+    directory: Option<&Path>,
+    options: &PresentationOptions,
+    embedded: Option<&str>,
 ) -> Result<ResolvedPresentation, CliError> {
     let implicit = directory.map(|dir| dir.join("render.toml"));
     let selected = options.render_config.as_deref().or(implicit.as_deref());
@@ -58,6 +83,12 @@ pub(super) fn resolve_directory(
                 )));
             }
         }
+    }
+    if selected.is_none()
+        && let Some(source) = embedded
+    {
+        effective = Presentation::parse(source).map_err(|e| CliError::input(e.to_string()))?;
+        document = Some(identity("render", "render.toml".into(), source));
     }
     let mut provenance = BTreeMap::new();
     for field in [

@@ -515,45 +515,45 @@ const QUANTITIES: [&str; 71] = [
 ];
 
 #[cfg(test)]
-#[path = "solver_tests.rs"]
+#[path = "../../tests/unit/cuda/solver_tests.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "residency_tests.rs"]
+#[path = "../../tests/unit/cuda/residency_tests.rs"]
 mod residency_tests;
 
 #[cfg(test)]
-#[path = "correction_tests.rs"]
+#[path = "../../tests/unit/cuda/correction_tests.rs"]
 mod correction_tests;
 
 #[cfg(test)]
-#[path = "search_tests.rs"]
+#[path = "../../tests/unit/cuda/search_tests.rs"]
 mod search_tests;
 
 #[cfg(test)]
-#[path = "vorticity_tests.rs"]
+#[path = "../../tests/unit/cuda/vorticity_tests.rs"]
 mod vorticity_tests;
 
 #[cfg(test)]
-#[path = "spatial_sort_tests.rs"]
+#[path = "../../tests/unit/cuda/spatial_sort_tests.rs"]
 mod spatial_sort_tests;
 
 #[cfg(test)]
-#[path = "observation_tests.rs"]
+#[path = "../../tests/unit/cuda/observation_tests.rs"]
 mod observation_tests;
 
 #[cfg(test)]
-#[path = "active_tests.rs"]
+#[path = "../../tests/unit/cuda/active_tests.rs"]
 mod active_tests;
 
 #[cfg(test)]
-#[path = "density_tests.rs"]
+#[path = "../../tests/unit/cuda/density_tests.rs"]
 mod density_tests;
 
 #[cfg(test)]
-#[path = "plane_tests.rs"]
+#[path = "../../tests/unit/cuda/plane_tests.rs"]
 mod plane_tests;
 
 #[cfg(test)]
-#[path = "mirror_tests.rs"]
+#[path = "../../tests/unit/cuda/mirror_tests.rs"]
 mod mirror_tests;

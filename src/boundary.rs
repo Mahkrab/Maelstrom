@@ -86,7 +86,8 @@ impl Plane {
     /// Points already inside or exactly on the plane are returned unchanged.
     /// For exact coordinate-axis normals, contact is represented directly by the
     /// signed offset. This avoids subtraction cancellation leaving a projected
-    /// point outside the wall. Other normals use the ordered vector formula.
+    /// point outside the wall. Other normals use the ordered vector formula,
+    /// then repair any residual penetration along the largest normal component.
     /// All correction and projection arithmetic remains checked for finiteness.
     ///
     /// ### Errors
@@ -108,39 +109,61 @@ impl Plane {
         // Axis-aligned contact has an exactly representable coordinate. Preserve
         // the checked arithmetic and transverse coordinates without relying on
         // cancellation to recover the wall offset from a distant candidate.
-        let contact = match self.normal {
+        let mut contact = match self.normal {
             Vec3 {
                 x: 1.0,
                 y: 0.0,
                 z: 0.0,
-            } => Vec3::new(self.offset, projected.y, projected.z),
+            } => return Ok(Vec3::new(self.offset, projected.y, projected.z)),
             Vec3 {
                 x: -1.0,
                 y: 0.0,
                 z: 0.0,
-            } => Vec3::new(-self.offset, projected.y, projected.z),
+            } => return Ok(Vec3::new(-self.offset, projected.y, projected.z)),
             Vec3 {
                 x: 0.0,
                 y: 1.0,
                 z: 0.0,
-            } => Vec3::new(projected.x, self.offset, projected.z),
+            } => return Ok(Vec3::new(projected.x, self.offset, projected.z)),
             Vec3 {
                 x: 0.0,
                 y: -1.0,
                 z: 0.0,
-            } => Vec3::new(projected.x, -self.offset, projected.z),
+            } => return Ok(Vec3::new(projected.x, -self.offset, projected.z)),
             Vec3 {
                 x: 0.0,
                 y: 0.0,
                 z: 1.0,
-            } => Vec3::new(projected.x, projected.y, self.offset),
+            } => return Ok(Vec3::new(projected.x, projected.y, self.offset)),
             Vec3 {
                 x: 0.0,
                 y: 0.0,
                 z: -1.0,
-            } => Vec3::new(projected.x, projected.y, -self.offset),
+            } => return Ok(Vec3::new(projected.x, projected.y, -self.offset)),
             _ => projected,
         };
+        // Cancellation can leave an inclined contact just outside. Move the
+        // dominant coordinate inward, rounding away from the forbidden side;
+        // leave every already-contained result bit-for-bit unchanged.
+        let n = self.normal;
+        let mut residual = self.constraint(contact)?;
+        while residual < 0.0 {
+            let (coordinate, component) = if n.x.abs() >= n.y.abs() && n.x.abs() >= n.z.abs() {
+                (&mut contact.x, n.x)
+            } else if n.y.abs() >= n.z.abs() {
+                (&mut contact.y, n.y)
+            } else {
+                (&mut contact.z, n.z)
+            };
+            let corrected = *coordinate - residual / component;
+            *coordinate = if component > 0.0 {
+                corrected.next_up()
+            } else {
+                corrected.next_down()
+            };
+            validation::finite_vector("plane-projected position", contact)?;
+            residual = self.constraint(contact)?;
+        }
         Ok(contact)
     }
 

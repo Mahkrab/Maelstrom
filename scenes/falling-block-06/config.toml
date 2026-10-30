@@ -1,0 +1,13 @@
+schema_version = 2
+name = "falling-block-06-model"
+description = "Fast numerical model for falling-block-06; spacing is inherited by every particle group"
+
+[numerical]
+particle_spacing_m = 0.05
+fixed_timestep_s = 0.004166666666666667
+solver_iterations = 8
+correction_scale = 0.5
+relaxation_scale = 2.0
+external_acceleration_m_s2 = [0.0, -9.81, 0.0]
+xsph_viscosity_enabled = false
+vorticity_confinement_enabled = false

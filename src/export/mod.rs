@@ -1,6 +1,7 @@
-//! Offline sequences sample accepted step indices. A synchronous frame boundary
-//! applies backpressure without giving graphics any control over numerical work.
+//! Offline sequences sample accepted step indices. One CPU frame job overlaps
+//! later simulation and drawing; ordered publication applies bounded backpressure.
 
+mod encoding;
 mod offscreen;
 mod source;
 mod timing;
@@ -30,12 +31,12 @@ fn fail(error: impl fmt::Display) -> ExportError {
     ExportError(error.to_string())
 }
 fn hash(bytes: &[u8]) -> String {
+    format_digest(Sha256::digest(bytes).into())
+}
+fn format_digest(bytes: [u8; 32]) -> String {
     format!(
         "sha256:{}",
-        Sha256::digest(bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
+        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
     )
 }
 
@@ -254,6 +255,7 @@ fn export_using(
             dt,
             destination: request.destination,
             timings: timing::FrameTimings::default(),
+            worker: encoding::Worker::new()?,
         };
         let mut diagnostics = Vec::new();
         let start = Instant::now();
@@ -312,14 +314,15 @@ fn export_using(
             }
             timings.comparison += start.elapsed();
             if schedule.steps.get(next) == Some(&step) {
-                let frame = writer.write(&snapshot, next)?;
-                frames.push(frame);
+                queue_frame(
+                    &mut writer,
+                    &snapshot,
+                    next,
+                    &mut frames,
+                    &mut progress,
+                    &mut timings.progress,
+                )?;
                 next += 1;
-                let start = Instant::now();
-                progress["frames"] = serde_json::to_value(&frames).map_err(fail)?;
-                progress["accepted_steps"] = json!(step.to_string());
-                write_progress(request.destination, &progress)?;
-                timings.progress += start.elapsed();
             }
         }
         if mode == "saved" {
@@ -334,14 +337,22 @@ fn export_using(
                     .snapshots
                     .get(step)
                     .ok_or_else(|| fail("missing saved frame"))?;
-                frames.push(writer.write(snapshot, index)?);
-                let start = Instant::now();
-                progress["frames"] = serde_json::to_value(&frames).map_err(fail)?;
-                progress["accepted_steps"] = json!(step.to_string());
-                write_progress(request.destination, &progress)?;
-                timings.progress += start.elapsed();
+                queue_frame(
+                    &mut writer,
+                    snapshot,
+                    index,
+                    &mut frames,
+                    &mut progress,
+                    &mut timings.progress,
+                )?;
             }
         }
+        collect_frame(
+            &mut writer,
+            &mut frames,
+            &mut progress,
+            &mut timings.progress,
+        )?;
         if frames.len() != schedule.steps.len() {
             return Err(fail("incomplete frame schedule"));
         }
@@ -380,6 +391,44 @@ fn export_using(
         }
     }
     result
+}
+
+fn queue_frame(
+    writer: &mut offscreen::FrameWriter<'_>,
+    snapshot: &SnapshotRecord,
+    index: usize,
+    frames: &mut Vec<Frame>,
+    progress: &mut Value,
+    progress_time: &mut std::time::Duration,
+) -> Result<(), ExportError> {
+    // Prepare this image while the preceding one encodes. Collect the preceding
+    // result even if drawing failed, retaining its closed, ordered output prefix.
+    let prepared = writer.prepare(snapshot, index);
+    collect_frame(writer, frames, progress, progress_time)?;
+    writer.submit(prepared?)?;
+    if index == 0 {
+        collect_frame(writer, frames, progress, progress_time)?;
+    }
+    Ok(())
+}
+
+fn collect_frame(
+    writer: &mut offscreen::FrameWriter<'_>,
+    frames: &mut Vec<Frame>,
+    progress: &mut Value,
+    progress_time: &mut std::time::Duration,
+) -> Result<(), ExportError> {
+    if let Some(frame) = writer.collect()? {
+        if progress["source_mode"] == "saved" || progress.get("accepted_steps").is_none() {
+            progress["accepted_steps"] = json!(frame.step);
+        }
+        frames.push(frame);
+        let start = Instant::now();
+        progress["frames"] = serde_json::to_value(&frames).map_err(fail)?;
+        write_progress(writer.destination, progress)?;
+        *progress_time += start.elapsed();
+    }
+    Ok(())
 }
 
 fn write_progress(directory: &Path, progress: &Value) -> Result<(), ExportError> {

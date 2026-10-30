@@ -1,0 +1,36 @@
+schema_version = 2
+name = "opposing-jets"
+description = "Two finite narrow columns strike each other; no continuous inlet"
+randomness = "none"
+
+[configuration]
+source = "file"
+path = "config.toml"
+
+[run]
+duration_s = 3.0
+
+[container]
+min_m = [0.0, 0.0, 0.0]
+max_m = [2.4, 1.2, 1.0]
+
+[particles]
+construction = "groups"
+
+[[particles.groups]]
+name = "west"
+construction = "lattice"
+origin_m = [0.12, 0.55, 0.2]
+counts = [6, 6, 14]
+endpoint_rule = "counted_half_open"
+order = "x_then_y_then_z"
+initial_velocity_m_s = [2.0, 0.0, 0.0]
+
+[[particles.groups]]
+name = "east"
+construction = "lattice"
+origin_m = [2.04, 0.55, 0.2]
+counts = [6, 6, 14]
+endpoint_rule = "counted_half_open"
+order = "x_then_y_then_z"
+initial_velocity_m_s = [-2.0, 0.0, 0.0]

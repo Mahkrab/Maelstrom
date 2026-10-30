@@ -17,7 +17,7 @@ use maelstrom::{
 use std::{path::Path, time::Duration};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let scene = load_resolved_scene(Path::new("scenes/falling-block-04.toml"), None)?;
+    let scene = load_resolved_scene(Path::new("scenes/falling-block-04/scene.toml"), None)?;
     let mut controller = Controller::new()?;
     let (run, started) = controller.start(RunSpec {
         scene,

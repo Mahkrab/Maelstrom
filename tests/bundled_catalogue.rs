@@ -89,3 +89,21 @@ fn symbolic_links_cannot_pull_external_inputs_into_the_binary() {
         std::io::ErrorKind::InvalidInput
     );
 }
+
+#[test]
+fn complete_packages_embed_configuration_and_render_and_reject_missing_members() {
+    let inputs = Inputs::new();
+    let package = inputs.0.join("scenes/water");
+    fs::create_dir(&package).unwrap();
+    fs::write(package.join("scene.toml"), "scene").unwrap();
+    fs::write(package.join("config.toml"), "configuration").unwrap();
+    assert!(bundled::generate(&inputs.0).is_err());
+    fs::write(package.join("render.toml"), "render").unwrap();
+    let generated = bundled::generate(&inputs.0).unwrap();
+    for path in ["scene.toml", "config.toml", "render.toml"] {
+        assert!(generated.contains(package.join(path).to_str().unwrap()));
+    }
+    assert!(generated.contains("scenes/water/config.toml"));
+    fs::write(inputs.0.join("scenes/water.toml"), "ambiguous").unwrap();
+    assert!(bundled::generate(&inputs.0).is_err());
+}

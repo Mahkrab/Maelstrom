@@ -153,6 +153,9 @@ pub(super) struct Inputs {
     pub scene: Option<String>,
     #[arg(long, value_name = "FILE")]
     pub config: Option<PathBuf>,
+    /// Numerical preset (default: fast, or application preference). Explicit --set values win
+    #[arg(long, value_parser = ["reference", "fast", "scene"])]
+    pub numerical_mode: Option<String>,
     /// Primary numerical override expressed as a TOML literal
     #[arg(long = "set", value_name = "FIELD=VALUE")]
     pub overrides: Vec<String>,

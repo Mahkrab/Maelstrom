@@ -117,7 +117,7 @@ pub(super) fn encode(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, Ex
     Ok(bytes)
 }
 
-type EncodePng = fn(u32, u32, &[u8]) -> Result<Vec<u8>, ExportError>;
+pub(super) type EncodePng = fn(u32, u32, &[u8]) -> Result<Vec<u8>, ExportError>;
 
 /// The two fallible frame stages are kept separate so sequence recovery can be
 /// checked with real encoder and device failures before publication.
@@ -145,13 +145,14 @@ pub(super) struct FrameWriter<'a> {
     pub dt: f64,
     pub destination: &'a std::path::Path,
     pub timings: FrameTimings,
+    pub worker: super::encoding::Worker,
 }
 impl FrameWriter<'_> {
-    pub fn write(
+    pub fn prepare(
         &mut self,
         snapshot: &SnapshotRecord,
         index: usize,
-    ) -> Result<super::Frame, ExportError> {
+    ) -> Result<super::encoding::Job, ExportError> {
         let start = std::time::Instant::now();
         let particles: Vec<_> = snapshot.particles().iter().map(|p| p.particle()).collect();
         self.timings.particle_copy += start.elapsed();
@@ -171,25 +172,42 @@ impl FrameWriter<'_> {
         )?;
         self.timings.graphics_readback += start.elapsed();
         let start = std::time::Instant::now();
-        let bytes = (self.operations.encode_png)(self.settings.width, self.settings.height, &rgba)?;
-        self.timings.png_encoding += start.elapsed();
-        let start = std::time::Instant::now();
-        let file = format!("frame-{index:08}.png");
-        publish_bytes(&self.destination.join(&file), &bytes)
-            .map_err(|e| fail(format!("frame {index} publication: {}", e.kind())))?;
-        self.timings.publication += start.elapsed();
-        let start = std::time::Instant::now();
-        let frame = super::Frame {
+        let job = super::encoding::Job {
+            snapshot: snapshot.clone(),
+            rgba,
+            width: self.settings.width,
+            height: self.settings.height,
             index,
-            step: snapshot.completed_steps().to_string(),
-            simulated_seconds: snapshot.completed_steps() as f64 * self.dt,
-            file,
-            png_sha256: super::hash(&bytes),
-            rgba_sha256: super::hash(&rgba),
-            snapshot_sha256: super::hash(snapshot.to_json().map_err(fail)?.as_bytes()),
+            dt: self.dt,
+            encode: self.operations.encode_png,
         };
-        self.timings.hashing += start.elapsed();
-        Ok(frame)
+        self.timings.particle_copy += start.elapsed();
+        Ok(job)
+    }
+
+    pub fn submit(&mut self, job: super::encoding::Job) -> Result<(), ExportError> {
+        self.worker.submit(job)
+    }
+
+    pub fn collect(&mut self) -> Result<Option<super::Frame>, ExportError> {
+        let start = std::time::Instant::now();
+        let encoded = self.worker.collect()?;
+        self.timings.output_wait += start.elapsed();
+        let Some(encoded) = encoded else {
+            return Ok(None);
+        };
+        self.timings.png_encoding += encoded.timings.png_encoding;
+        self.timings.hashing += encoded.timings.hashing;
+        let start = std::time::Instant::now();
+        publish_bytes(&self.destination.join(&encoded.frame.file), &encoded.png).map_err(|e| {
+            fail(format!(
+                "frame {} publication: {}",
+                encoded.frame.index,
+                e.kind()
+            ))
+        })?;
+        self.timings.publication += start.elapsed();
+        Ok(Some(encoded.frame))
     }
 }
 

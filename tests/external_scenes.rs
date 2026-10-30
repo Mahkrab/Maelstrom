@@ -72,7 +72,7 @@ const SCENE_CASES: [SceneCase; 7] = [
 
 fn scene_path(file_name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("scenes")
+        .join("reference/scenes")
         .join(file_name)
 }
 

@@ -52,7 +52,15 @@ fn path(relative: &str) -> PathBuf {
 }
 
 fn manifest() -> Manifest {
-    serde_json::from_str(include_str!("../reference/manifest.json")).unwrap()
+    let mut manifest: Manifest =
+        serde_json::from_str(include_str!("../reference/manifest.json")).unwrap();
+    // The manifest and fixture bytes stay frozen; only their checkout location moved.
+    for case in &mut manifest.cases {
+        if case.scene.starts_with("scenes/") {
+            case.scene = format!("reference/{}", case.scene);
+        }
+    }
+    manifest
 }
 
 fn scene(case: &Case) -> ResolvedScene {

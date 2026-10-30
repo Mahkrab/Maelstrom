@@ -219,8 +219,11 @@ fn cuda_worker_snapshots_draw_on_an_independent_graphics_device() {
         scene::load_resolved_scene,
         simulation::Simulation,
     };
-    let scene =
-        load_resolved_scene(std::path::Path::new("scenes/falling-block-04.toml"), None).unwrap();
+    let scene = load_resolved_scene(
+        std::path::Path::new("reference/scenes/falling-block-04.toml"),
+        None,
+    )
+    .unwrap();
     let mass = scene.configuration.derived.particle_mass_kg;
     let colours = maelstrom::presentation::ParticleColours::default();
     let mut direct = Simulation::from_scene_with_execution(

@@ -1,0 +1,36 @@
+schema_version = 2
+name = "two-blocks"
+description = "Two finite blocks collide head-on and fall into a wide box"
+randomness = "none"
+
+[configuration]
+source = "file"
+path = "config.toml"
+
+[run]
+duration_s = 3.0
+
+[container]
+min_m = [0.0, 0.0, 0.0]
+max_m = [1.8, 1.2, 1.0]
+
+[particles]
+construction = "groups"
+
+[[particles.groups]]
+name = "left"
+construction = "lattice"
+origin_m = [0.12, 0.55, 0.25]
+counts = [12, 12, 12]
+endpoint_rule = "counted_half_open"
+order = "x_then_y_then_z"
+initial_velocity_m_s = [1.0, 0.0, 0.0]
+
+[[particles.groups]]
+name = "right"
+construction = "lattice"
+origin_m = [1.24, 0.55, 0.25]
+counts = [12, 12, 12]
+endpoint_rule = "counted_half_open"
+order = "x_then_y_then_z"
+initial_velocity_m_s = [-1.0, 0.0, 0.0]

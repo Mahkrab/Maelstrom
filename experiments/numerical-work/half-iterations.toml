@@ -1,0 +1,12 @@
+schema_version = 2
+name = "experimental-pbf-half-iterations"
+description = "480 Hz four-iteration throughput control; not qualified for practical fluid use"
+
+[numerical]
+refine_timestep = 1
+fixed_timestep_s = 0.0020833333333333333
+solver_iterations = 4
+correction_scale = 0.5
+relaxation_scale = 2.0
+xsph_viscosity_enabled = false
+vorticity_confinement_enabled = false

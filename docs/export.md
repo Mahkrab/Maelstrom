@@ -105,19 +105,31 @@ appears only after all frames succeed. A cancelled or failed compilation retains
 `progress.json` and any published prefix, explicitly incomplete; it is not normal
 playback input. Never infer completion from a directory or a few images alone.
 
-Compilation uses a lossless synchronous frame boundary, unlike the live viewer's
-coalesced observations. Numerical outcome and image publication are distinct.
+Compilation retains every scheduled observation. One CPU worker encodes and hashes
+an owned frame while the export thread advances the solver and prepares the next
+image. Publication stays ordered on the export thread. The initial image closes
+before stepping; cancellation joins pending CPU work without publishing it.
+Storage is bounded to one outstanding encoding job and one prepared image, in
+addition to the solver and retained frame metadata. Numerical outcome and image publication are distinct.
 Solver work, graphics/readback and PNG encoding have separate manifest timings;
 total wall time includes additional work and is not an interchangeable solver benchmark.
 
-New manifests also contain `timing_profile` schema 1. Its disjoint `components_s` cover
+New manifests contain `timing_profile` schema 2. Its disjoint `components_s` cover
 setup, solver steps, snapshot capture, checkpoint comparison, frame particle copying,
-graphics/readback, PNG encoding, frame publication, frame hashing, progress updates and
+graphics/readback, waiting for CPU frame output, frame publication, progress updates and
 an explicit `other` remainder. `total_s` ends before manifest construction, as indicated
 by `boundary = "export_entry_to_before_manifest"`. It excludes final manifest publication,
 CLI output and teardown; measure whole-command wall time for the full cost. Graphics/readback
-includes CPU packing and driver waits. Frame hashing includes portable snapshot JSON encoding.
+includes CPU packing and driver waits. `worker_components_s` separately records PNG encoding
+and frame hashing, including portable snapshot JSON encoding. Those worker intervals overlap
+the export thread and must not be added to `components_s` to reconstruct elapsed time.
 The existing three `timing_seconds` fields retain their meanings, and older bundles remain valid.
+
+Snapshot provenance hashes consume the same standalone pretty JSON representation as
+`SnapshotRecord::to_json`. Compilation streams that fixed schema through a 64 KiB
+hash buffer, retaining field order, whitespace, decimal identities and serde_json's
+numeric formatting. It does not allocate a complete JSON document for each frame or
+change the snapshot hash format. Validation still precedes serialisation.
 
 The default stride is 1: every accepted timestep produces an image, including when
 the timestep has been refined. For example, `--steps 480 --frame-stride 4` stores

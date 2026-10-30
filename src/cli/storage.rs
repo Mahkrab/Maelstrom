@@ -19,6 +19,7 @@ pub(super) struct Storage {
 pub(super) struct Preferences {
     pub schema_version: u32,
     pub backend: Option<String>,
+    pub numerical_mode: Option<String>,
     pub threads: Option<usize>,
     pub device: Option<u32>,
     pub block_size: Option<u32>,
@@ -63,6 +64,14 @@ impl Storage {
             .contains(&v)
         }) {
             return Err(CliError::input("application preferences: backend must be auto, brute-force, serial-grid, threaded-grid or cuda".into()));
+        }
+        if p.numerical_mode
+            .as_deref()
+            .is_some_and(|v| !["reference", "fast", "scene"].contains(&v))
+        {
+            return Err(CliError::input(
+                "application preferences: numerical_mode must be reference, fast or scene".into(),
+            ));
         }
         if p.threads.is_some_and(|n| !(1..=256).contains(&n)) {
             return Err(CliError::input(

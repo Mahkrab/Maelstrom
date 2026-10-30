@@ -54,7 +54,8 @@ fn reject(json: &str, last_step: Option<u64>, stride: u64) -> String {
 }
 #[test]
 fn saved_mode_never_invents_missing_initial_or_intermediate_observations() {
-    let scene = load_resolved_scene(Path::new("scenes/falling-block-04.toml"), None).unwrap();
+    let scene =
+        load_resolved_scene(Path::new("reference/scenes/falling-block-04.toml"), None).unwrap();
     let result = run(
         &scene,
         RunRequest {
@@ -85,7 +86,8 @@ fn saved_mode_never_invents_missing_initial_or_intermediate_observations() {
 }
 #[test]
 fn saved_records_reject_malformed_and_conflicting_accepted_history() {
-    let scene = load_resolved_scene(Path::new("scenes/falling-block-04.toml"), None).unwrap();
+    let scene =
+        load_resolved_scene(Path::new("reference/scenes/falling-block-04.toml"), None).unwrap();
     let result = run(
         &scene,
         RunRequest {

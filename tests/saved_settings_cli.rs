@@ -18,6 +18,13 @@ impl Library {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&path).unwrap();
+        // These fixtures exercise saved custom schedules, independently of the application preset.
+        fs::create_dir_all(path.join("preferences/maelstrom")).unwrap();
+        fs::write(
+            path.join("preferences/maelstrom/config.toml"),
+            "schema_version=1\nnumerical_mode='scene'\n",
+        )
+        .unwrap();
         Self(path)
     }
     fn scenes(&self) -> PathBuf {
@@ -380,7 +387,7 @@ fn migration_preserves_effective_physics_and_created_spacing_is_editable() {
     }
     let text = fs::read_to_string(lib.package().join("scene.toml")).unwrap();
     assert!(!text.contains("spacing_m") && !text.contains("overrides"));
-    assert_eq!(migrated["run_defaults"]["duration_s"], 1.0);
+    assert_eq!(migrated["run_defaults"]["duration_s"], 3.0);
     assert!(lib.package().join("render.toml").is_file());
     lib.config("particle_spacing_m=0.04");
     assert!(lib.run(&["validate", "user:water"]).status.success());

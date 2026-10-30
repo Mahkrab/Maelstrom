@@ -237,6 +237,21 @@ extern "C" __global__ void solver(SolverBuffers b, SolverSettings s, unsigned in
                 if (n.y==0 && n.z==0 && (n.x==1 || n.x==-1)) point.x=n.x==1 ? plane.offset : -plane.offset;
                 else if (n.x==0 && n.z==0 && (n.y==1 || n.y==-1)) point.y=n.y==1 ? plane.offset : -plane.offset;
                 else if (n.x==0 && n.y==0 && (n.z==1 || n.z==-1)) point.z=n.z==1 ? plane.offset : -plane.offset;
+                else {
+                // Repair only residual penetration from inclined contact. The
+                // dominant coordinate and directed rounding match the CPU.
+                float residual=c.scalar(c.scalar(dot(n,point),45)-plane.offset,46);
+                while (residual<0 && !c.error) {
+                    float *coordinate; float component;
+                    if (fabsf(n.x)>=fabsf(n.y) && fabsf(n.x)>=fabsf(n.z)) { coordinate=&point.x; component=n.x; }
+                    else if (fabsf(n.y)>=fabsf(n.z)) { coordinate=&point.y; component=n.y; }
+                    else { coordinate=&point.z; component=n.z; }
+                    float corrected=*coordinate-__fdiv_rn(residual,component);
+                    *coordinate=nextafterf(corrected,component>0 ? INFINITY : -INFINITY);
+                    point=c.vector(point,48);
+                    residual=c.scalar(c.scalar(dot(n,point),45)-plane.offset,46);
+                }
+                }
             }
         }
         b.position[i]=point;

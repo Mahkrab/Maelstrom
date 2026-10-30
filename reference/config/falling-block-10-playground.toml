@@ -1,0 +1,9 @@
+schema_version = 1
+name = "falling-block-10-playground-config"
+description = "Editable numerical overrides for falling-block-10-playground"
+
+[numerical]
+# Increase this to experiment with stronger anti-clumping pressure.
+artificial_pressure_strength_scale = 0.1
+relaxation_scale = 0.0001
+external_acceleration_m_s2 = [0.0, 0.0, 1.0]

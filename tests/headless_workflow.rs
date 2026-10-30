@@ -291,7 +291,7 @@ fn earlier_cfl_warning_survives_later_unbounded_steps_and_summary() {
 #[test]
 fn observation_and_output_selection_leave_every_accepted_checkpoint_bitwise_unchanged() {
     let input = load_resolved_scene(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("scenes/falling-block-04.toml"),
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("reference/scenes/falling-block-04.toml"),
         None,
     )
     .unwrap();
@@ -459,7 +459,7 @@ fn audit_failure_does_not_reject_or_corrupt_the_last_accepted_state() {
 #[test]
 fn full_record_replays_identical_bits_with_names_and_provenance_preserved() {
     let input = load_resolved_scene(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("scenes/falling-block-04.toml"),
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("reference/scenes/falling-block-04.toml"),
         None,
     )
     .unwrap();
@@ -810,7 +810,7 @@ fn cpu_workflow_cancellation_retains_its_own_prior_work_in_all_modes() {
         workflow::{ExecutionOptions, MeasurementMode, run_with_options},
     };
     let input = load_resolved_scene(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("scenes/falling-block-04.toml"),
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("reference/scenes/falling-block-04.toml"),
         None,
     )
     .unwrap();

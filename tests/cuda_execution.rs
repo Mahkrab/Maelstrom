@@ -182,47 +182,57 @@ mod hardware {
     #[test]
     #[ignore = "requires an explicitly selected CUDA hardware test run"]
     fn all_cancellation_polls_rollback_after_acceptance_and_retry_with_no_stale_buffers() {
-        let config = configuration("");
-        let initial = vec![
-            particle(u64::MAX, Vec3::new(0.0, 0.5, 0.0)),
-            particle(42, Vec3::new(0.05, 0.5, 0.0)),
-            particle(0, Vec3::new(0.0, 0.55, 0.0)),
-        ];
-        let mut cpu = Simulation::new(&config, initial.clone(), vec![]).unwrap();
-        let mut polls = 0;
-        let expected = cpu
-            .step_with_cancellation(|| {
-                polls += 1;
-                false
-            })
-            .unwrap();
-        for profile in [None, Some(false), Some(true)] {
-            for cancel_at in 1..=polls {
-                let mut solver = gpu(&config, initial.clone(), vec![], 128);
-                let _ = solver.step().unwrap();
-                let before = bits(solver.snapshot());
-                let caller = std::thread::current().id();
-                let mut seen = 0;
-                let mut cancelled = || {
-                    assert_eq!(std::thread::current().id(), caller);
-                    seen += 1;
-                    seen == cancel_at
-                };
-                let error = match profile {
-                    None => solver.step_with_cancellation(&mut cancelled).unwrap_err(),
-                    Some(stages) => solver
-                        .step_measured_with_cancellation(stages, &mut cancelled)
-                        .unwrap_err(),
-                };
-                assert!(matches!(error, StepError::Cancelled));
-                assert_eq!(seen, cancel_at);
-                assert_eq!(bits(solver.snapshot()), before);
-                assert_eq!(solver.snapshot().completed_steps(), 1);
-                let _ = solver.step().unwrap();
-                let mut control = Simulation::new(&config, initial.clone(), vec![]).unwrap();
-                let _ = control.run_steps(2).unwrap();
-                assert_eq!(bits(solver.snapshot()), bits(control.snapshot()));
-                assert_eq!(expected.completed_steps, 1);
+        for mode in [
+            None,
+            Some(maelstrom::config::NumericalMode::Reference),
+            Some(maelstrom::config::NumericalMode::Fast),
+        ] {
+            let mut overlay = maelstrom::config::ConfigurationOverlay::default();
+            if let Some(mode) = mode {
+                mode.fill_overrides(&mut overlay.numerical);
+            }
+            let config = resolve_effective_configuration(None, None, Some(&overlay)).unwrap();
+            let initial = vec![
+                particle(u64::MAX, Vec3::new(0.0, 0.5, 0.0)),
+                particle(42, Vec3::new(0.05, 0.5, 0.0)),
+                particle(0, Vec3::new(0.0, 0.55, 0.0)),
+            ];
+            let mut cpu = Simulation::new(&config, initial.clone(), vec![]).unwrap();
+            let mut polls = 0;
+            let expected = cpu
+                .step_with_cancellation(|| {
+                    polls += 1;
+                    false
+                })
+                .unwrap();
+            for profile in [None, Some(false), Some(true)] {
+                for cancel_at in 1..=polls {
+                    let mut solver = gpu(&config, initial.clone(), vec![], 128);
+                    let _ = solver.step().unwrap();
+                    let before = bits(solver.snapshot());
+                    let caller = std::thread::current().id();
+                    let mut seen = 0;
+                    let mut cancelled = || {
+                        assert_eq!(std::thread::current().id(), caller);
+                        seen += 1;
+                        seen == cancel_at
+                    };
+                    let error = match profile {
+                        None => solver.step_with_cancellation(&mut cancelled).unwrap_err(),
+                        Some(stages) => solver
+                            .step_measured_with_cancellation(stages, &mut cancelled)
+                            .unwrap_err(),
+                    };
+                    assert!(matches!(error, StepError::Cancelled));
+                    assert_eq!(seen, cancel_at);
+                    assert_eq!(bits(solver.snapshot()), before);
+                    assert_eq!(solver.snapshot().completed_steps(), 1);
+                    let _ = solver.step().unwrap();
+                    let mut control = Simulation::new(&config, initial.clone(), vec![]).unwrap();
+                    let _ = control.run_steps(2).unwrap();
+                    assert_eq!(bits(solver.snapshot()), bits(control.snapshot()));
+                    assert_eq!(expected.completed_steps, 1);
+                }
             }
         }
     }

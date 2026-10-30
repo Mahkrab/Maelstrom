@@ -255,3 +255,50 @@ fn hardware_deferred_plane_failures_keep_error_priority_cancellation_and_retry()
         }
     }
 }
+
+#[test]
+#[ignore = "requires an explicitly selected CUDA hardware test run"]
+fn hardware_inclined_contact_repair_matches_cpu_bits() {
+    let config = crate::config::resolve_effective_configuration(None, None, None).unwrap();
+    let points: Vec<_> = (0..1024)
+        .map(|i| Vec3::new(i as f32 * 0.013 - 4.0, i as f32 * -0.007, 0.37))
+        .collect();
+    let particles: Vec<_> = points
+        .iter()
+        .enumerate()
+        .map(|(i, &position_m)| Particle {
+            identity: i as u64,
+            position_m,
+            velocity_m_s: Vec3::ZERO,
+        })
+        .collect();
+    for threads in [32, 64, 128, 256] {
+        let mut gpu = CudaSolver::new(0, threads).unwrap();
+        for normal in [
+            Vec3::new(0.6, 0.8, 0.0),
+            Vec3::new(-0.6, 0.8, 0.0),
+            Vec3::new(0.0, 0.8, -0.6),
+        ] {
+            for offset in [-0.36, 0.0, 0.4] {
+                let plane = Plane::new(normal, offset, 1e-6).unwrap();
+                let s = settings(&config, points.len(), 1).unwrap();
+                gpu.prepare(s, &particles, &[plane]).unwrap();
+                gpu.context
+                    .inner
+                    .upload(8, &points.iter().copied().map(array).collect::<Vec<_>>())
+                    .unwrap();
+                gpu.operation(s, 10).unwrap();
+                let actual = gpu
+                    .context
+                    .inner
+                    .download::<[f32; 3]>(2, points.len())
+                    .unwrap();
+                for (point, actual) in points.iter().zip(actual) {
+                    let expected = plane.project(*point).unwrap();
+                    assert_eq!(actual.map(f32::to_bits), array(expected).map(f32::to_bits));
+                    assert!(plane.contains(expected).unwrap());
+                }
+            }
+        }
+    }
+}

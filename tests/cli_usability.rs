@@ -63,6 +63,150 @@ impl Drop for Library {
 }
 
 #[test]
+fn fast_is_default_and_reference_can_be_selected_by_flag_or_preferences() {
+    let lib = Library::new();
+    let args = [
+        "run",
+        "builtin:falling-block-04",
+        "--backend",
+        "serial-grid",
+        "--steps",
+        "3",
+        "--unpaced",
+    ];
+    let custom = lib.0.join("custom.toml");
+    fs::write(&custom,"schema_version=2\nname='custom'\ndescription='custom schedule'\n[numerical]\nfixed_timestep_s=0.125\n").unwrap();
+    let configured_scene = lib.json(&[
+        "inspect",
+        "builtin:falling-block-04",
+        "--config",
+        custom.to_str().unwrap(),
+        "--numerical-mode",
+        "scene",
+    ]);
+    assert_eq!(
+        configured_scene["configuration"]["numerical"]["fixed_timestep_s"],
+        0.125
+    );
+    let implicit = lib.json(&args);
+    let mut fast_args = args.to_vec();
+    fast_args.extend(["--numerical-mode", "fast"]);
+    let fast = lib.json(&fast_args);
+    assert_eq!(implicit["input"], fast["input"]);
+    assert_eq!(implicit["final_snapshot"], fast["final_snapshot"]);
+    let mut reference_args = args.to_vec();
+    reference_args.extend(["--numerical-mode", "reference"]);
+    let reference = lib.json(&reference_args);
+    assert_ne!(
+        reference["input"]["configuration"]["numerical"],
+        fast["input"]["configuration"]["numerical"]
+    );
+    let directory = lib.0.join("settings/maelstrom");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(
+        directory.join("config.toml"),
+        "schema_version=1\nnumerical_mode='reference'\n",
+    )
+    .unwrap();
+    let configured = lib.json(&args);
+    assert_eq!(configured["input"], reference["input"]);
+    assert_eq!(configured["final_snapshot"], reference["final_snapshot"]);
+    assert_eq!(lib.json(&fast_args)["input"], fast["input"]);
+    assert_eq!(lib.json(&["config", "show"])["numerical_mode"], "reference");
+    let recorded = lib.0.join("recorded-reference.json");
+    fs::write(&recorded, serde_json::to_vec(&reference).unwrap()).unwrap();
+    fs::remove_file(directory.join("config.toml")).unwrap();
+    assert_eq!(
+        lib.json(&["rerun", recorded.to_str().unwrap()])["final_snapshot"],
+        reference["final_snapshot"]
+    );
+}
+
+#[test]
+fn numerical_modes_match_explicit_values_and_preserve_physics_and_replay() {
+    let lib = Library::new();
+    for (name, timestep, correction, relaxation) in [
+        ("fast", "0.004166666666666667", "0.5", "2.0"),
+        ("reference", "0.0020833333333333333", "0.0625", "20.0"),
+    ] {
+        let base = [
+            "run",
+            "builtin:falling-block-04",
+            "--backend",
+            "serial-grid",
+            "--steps",
+            "3",
+            "--unpaced",
+        ];
+        let mut selected = base.to_vec();
+        selected.extend(["--numerical-mode", name]);
+        let actual = lib.json(&selected);
+        let dt = format!("fixed_timestep_s={timestep}");
+        let scale = format!("correction_scale={correction}");
+        let epsilon = format!("relaxation_scale={relaxation}");
+        let mut explicit = base.to_vec();
+        explicit.extend([
+            "--refine-timestep",
+            "1",
+            "--set",
+            &dt,
+            "--set",
+            &scale,
+            "--set",
+            &epsilon,
+            "--set",
+            "solver_iterations=8",
+        ]);
+        let expected = lib.json(&explicit);
+        assert_eq!(
+            actual["input"]["configuration"]["numerical"],
+            expected["input"]["configuration"]["numerical"]
+        );
+        assert_eq!(actual["final_snapshot"], expected["final_snapshot"]);
+        assert_eq!(actual["steps"], expected["steps"]);
+        let path = lib.0.join(format!("{name}.json"));
+        fs::write(&path, serde_json::to_vec(&actual).unwrap()).unwrap();
+        let replay = lib.json(&["rerun", path.to_str().unwrap()]);
+        assert_eq!(replay["final_snapshot"], actual["final_snapshot"]);
+        assert_eq!(replay["steps"], actual["steps"]);
+    }
+    let selected = lib.json(&[
+        "inspect",
+        "builtin:falling-block-04",
+        "--numerical-mode",
+        "fast",
+        "--refine-timestep",
+        "2",
+        "--set",
+        "solver_iterations=3",
+        "--set",
+        "external_acceleration_m_s2=[0.0,0.0,0.0]",
+        "--set",
+        "xsph_viscosity_enabled=true",
+    ]);
+    let n = &selected["configuration"]["numerical"];
+    assert_eq!(n["solver_iterations"], 3);
+    assert_eq!(n["correction_scale"], 0.125);
+    assert_eq!(
+        n["fixed_timestep_s"].as_f64().unwrap() as f32,
+        1.0_f32 / 480.0
+    );
+    assert_eq!(n["relaxation_scale"], 2.0);
+    assert_eq!(n["external_acceleration_m_s2"]["y"], 0.0);
+    assert_eq!(n["xsph_viscosity_enabled"], true);
+    assert!(
+        !lib.run(&[
+            "inspect",
+            "builtin:falling-block-04",
+            "--numerical-mode",
+            "unknown"
+        ])
+        .status
+        .success()
+    );
+}
+
+#[test]
 fn help_is_example_free_and_legacy_commands_are_not_advertised() {
     let lib = Library::new();
     let top = lib.run(&["--help"]);
@@ -206,8 +350,47 @@ fn every_bundled_scene_matches_its_file_and_copies_its_own_configuration() {
         let selector = entry["selector"].as_str().unwrap();
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("scenes")
-            .join(format!("{name}.toml"));
+            .join(name)
+            .join("scene.toml");
         let bundled = lib.json(&["inspect", selector, "--backend", "serial-grid"]);
+        assert_eq!(
+            bundled["presentation"]["effective"]["camera_mode"], "fit",
+            "{name}"
+        );
+        assert_eq!(
+            bundled["presentation"]["effective"]["particles"]["colour_mode"], "kinetic_energy",
+            "{name}"
+        );
+        assert_eq!(
+            bundled["configuration"]["numerical"]["relaxation_scale"], 2.0,
+            "{name}"
+        );
+        assert_eq!(
+            bundled["configuration"]["numerical"]["correction_scale"], 0.5,
+            "{name}"
+        );
+        let copied = format!("copy-{name}");
+        assert!(
+            lib.run(&["scenes", "create", &copied, "--from", selector])
+                .status
+                .success()
+        );
+        let copied = lib.json(&[
+            "inspect",
+            &format!("user:{copied}"),
+            "--backend",
+            "serial-grid",
+        ]);
+        for field in ["numerical", "derived", "comparison_key"] {
+            assert_eq!(
+                bundled["configuration"][field], copied["configuration"][field],
+                "{name}: copied {field}"
+            );
+        }
+        assert_eq!(
+            bundled["presentation"]["effective"], copied["presentation"]["effective"],
+            "{name}: copied presentation"
+        );
         let file = lib.json(&[
             "inspect",
             path.to_str().unwrap(),
@@ -280,7 +463,8 @@ fn every_bundled_scene_matches_its_file_and_copies_its_own_configuration() {
     for field in ["particle_count", "planes"] {
         assert_eq!(source["scene"][field], copy["scene"][field], "{field}");
     }
-    let replacement = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/defaults-v4.toml");
+    let replacement =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scenes/falling-block-04/config.toml");
     let replaced = lib.json(&[
         "inspect",
         "builtin:falling-block-10-playground",
@@ -289,10 +473,10 @@ fn every_bundled_scene_matches_its_file_and_copies_its_own_configuration() {
         "--backend",
         "serial-grid",
     ]);
-    assert_eq!(replaced["configuration"]["name"], "maelstrom-defaults-v4");
+    assert_eq!(replaced["configuration"]["name"], "falling-block-04-model");
     assert_eq!(
         replaced["configuration"]["numerical"]["relaxation_scale"],
-        20.0
+        2.0
     );
 }
 #[test]
@@ -318,6 +502,7 @@ fn preferences_are_explicit_and_cannot_change_scene_physics() {
     assert_eq!(lib.run(&["config", "show"]).status.code(), Some(3));
     for invalid in [
         "backend='unknown'",
+        "numerical_mode='unknown'",
         "threads=0",
         "threads=257",
         "block_size=33",

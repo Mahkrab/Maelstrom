@@ -1019,7 +1019,8 @@ fn hardware_components_preserve_ordered_cpu_arithmetic() {
     };
     let overlay = parse_configuration_overlay("[numerical]\nrefine_timestep=4").unwrap();
     let scene = load_resolved_scene(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scenes/falling-block-04.toml"),
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("reference/scenes/falling-block-04.toml"),
         Some(&overlay),
     )
     .unwrap();

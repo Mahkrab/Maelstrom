@@ -81,3 +81,66 @@ fn stage_failures_retain_closed_frames_and_incomplete_progress() {
         fs::remove_dir_all(directory).unwrap();
     }
 }
+
+#[test]
+#[ignore = "requires explicitly available software Vulkan"]
+fn cancellation_joins_pending_encoding_without_publishing_it() {
+    static PIXELS: AtomicUsize = AtomicUsize::new(0);
+    static FINISHED: AtomicUsize = AtomicUsize::new(0);
+    fn read(g: &Graphics, scene: &crate::render::DrawScene<'_>) -> Result<Vec<u8>, ExportError> {
+        let pixels = offscreen::pixels(g, scene)?;
+        PIXELS.fetch_add(1, Ordering::SeqCst);
+        Ok(pixels)
+    }
+    fn encode(width: u32, height: u32, pixels: &[u8]) -> Result<Vec<u8>, ExportError> {
+        let png = offscreen::encode(width, height, pixels)?;
+        FINISHED.fetch_add(1, Ordering::SeqCst);
+        Ok(png)
+    }
+    let mut scene =
+        crate::scene::load_resolved_scene(Path::new("reference/small-lattice.toml"), None).unwrap();
+    scene.particles.clear();
+    scene.planes.clear();
+    let directory =
+        std::env::temp_dir().join(format!("maelstrom-pending-cancel-{}", std::process::id()));
+    let error = export_using(
+        ExportRequest {
+            source: Source::Direct {
+                scene: &scene,
+                steps: 3,
+                options: Default::default(),
+            },
+            settings: Settings {
+                width: 17,
+                height: 19,
+                ..Default::default()
+            },
+            graphics: GraphicsSelection {
+                index: 0,
+                software: true,
+            },
+            fit_camera: true,
+            destination: &directory,
+        },
+        || PIXELS.load(Ordering::SeqCst) >= 2,
+        offscreen::FrameOperations {
+            read_pixels: read,
+            encode_png: encode,
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("cancelled"));
+    assert_eq!(
+        FINISHED.load(Ordering::SeqCst),
+        2,
+        "pending worker must be joined"
+    );
+    assert!(directory.join("frame-00000000.png").exists());
+    assert!(!directory.join("frame-00000001.png").exists());
+    assert!(!directory.join("manifest.json").exists());
+    let progress: Value =
+        serde_json::from_slice(&fs::read(directory.join("progress.json")).unwrap()).unwrap();
+    assert_eq!(progress["complete"], false);
+    assert_eq!(progress["frames"].as_array().unwrap().len(), 1);
+    fs::remove_dir_all(directory).unwrap();
+}

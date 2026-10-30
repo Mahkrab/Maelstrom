@@ -1,0 +1,44 @@
+schema_version = 2
+name = "v-channel"
+description = "Two blocks move along a channel formed by two inclined planes"
+randomness = "none"
+
+[configuration]
+source = "file"
+path = "config.toml"
+
+[run]
+duration_s = 3.0
+
+[container]
+min_m = [0.0, 0.0, 0.0]
+max_m = [2.4, 1.5, 1.2]
+
+[particles]
+construction = "groups"
+
+[[particles.groups]]
+name = "west"
+construction = "lattice"
+origin_m = [0.12, 0.75, 0.4]
+counts = [10, 12, 10]
+endpoint_rule = "counted_half_open"
+order = "x_then_y_then_z"
+initial_velocity_m_s = [0.8, 0.0, 0.0]
+
+[[particles.groups]]
+name = "east"
+construction = "lattice"
+origin_m = [1.84, 0.85, 0.4]
+counts = [10, 12, 10]
+endpoint_rule = "counted_half_open"
+order = "x_then_y_then_z"
+initial_velocity_m_s = [-0.8, 0.0, 0.0]
+
+[[planes]]
+normal = [0.0, 0.8, 0.6]
+offset_m = 0.36
+
+[[planes]]
+normal = [0.0, 0.8, -0.6]
+offset_m = -0.36
