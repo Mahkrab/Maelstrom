@@ -14,7 +14,7 @@ pub struct Draft {
     pub config: String,
     /// brute-force, serial-grid, threaded-grid or cuda-grid.
     pub mode: String,
-    /// reference, fast, scene, or blank to use the application default/preference.
+    /// reference, fast, experimental, scene, or blank to use the application default/preference.
     pub numerical_mode: String,
     /// Threaded CPU pool size.
     pub workers: String,
@@ -36,7 +36,7 @@ impl Draft {
             ("CUDA block", &self.block_size),
             ("Steps", &self.steps),
             (
-                "Numerics (default / reference / fast / scene)",
+                "Numerics (default / reference / fast / experimental / scene)",
                 &self.numerical_mode,
             ),
         ]

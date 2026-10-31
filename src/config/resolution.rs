@@ -99,9 +99,11 @@ pub fn resolve_configuration_for_schema(
     if factor != 1 {
         let n = factor as f32;
         numerical.fixed_timestep_s /= n;
-        numerical.correction_scale /= n * n;
         sources.insert("fixed_timestep_s", factor_source);
-        sources.insert("correction_scale", factor_source);
+        if numerical.pbf_formulation == super::PbfFormulation::Empirical {
+            numerical.correction_scale /= n * n;
+            sources.insert("correction_scale", factor_source);
+        }
     }
     validate_model(&numerical)?;
     let derived = derive_values(&numerical)?;

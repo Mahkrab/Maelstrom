@@ -75,6 +75,9 @@ pub type ValueSources = BTreeMap<&'static str, FieldSource>;
 #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NumericalModel {
+    /// Mass and correction-refinement convention, retained independently of presets.
+    #[serde(default)]
+    pub pbf_formulation: super::PbfFormulation,
     /// Scalar representation used by every numerical value.
     pub scalar_precision: String,
     /// Coordinate and unit convention used by configuration and scenes.
@@ -414,12 +417,13 @@ fn apply_layer(
         if factor != 1 {
             let factor = factor as f32;
             let squared = factor * factor;
-            // Keep the empirical positional response comparable as step length
-            // changes. Every resulting value is validated and recorded normally.
+            // Refinement preserves the historical response calibration only for
+            // empirical inputs. Published corrections have no timestep factor.
             numerical.fixed_timestep_s /= factor;
-            numerical.correction_scale /= squared;
-            for field in ["fixed_timestep_s", "correction_scale"] {
-                sources.insert(field, source);
+            sources.insert("fixed_timestep_s", source);
+            if numerical.pbf_formulation == super::PbfFormulation::Empirical {
+                numerical.correction_scale /= squared;
+                sources.insert("correction_scale", source);
             }
         }
     }
@@ -443,6 +447,15 @@ pub(super) fn apply_overrides(
         };
     }
     apply!(scalar_precision);
+    if let Some(formulation) = overrides.pbf_formulation {
+        model.pbf_formulation = formulation;
+        // Historical records omit the empirical default, including provenance.
+        if formulation == super::PbfFormulation::Paper2013 {
+            sources.insert("pbf_formulation", source);
+        } else {
+            sources.remove("pbf_formulation");
+        }
+    }
     apply!(coordinate_system);
     apply!(timestep_policy);
     apply!(density_kernel);
@@ -476,6 +489,7 @@ pub(super) fn apply_overrides(
 
 pub(super) fn default_model() -> NumericalModel {
     NumericalModel {
+        pbf_formulation: super::PbfFormulation::Empirical,
         scalar_precision: SCALAR_PRECISION.to_owned(),
         coordinate_system: COORDINATE_SYSTEM.to_owned(),
         timestep_policy: TIMESTEP_POLICY.to_owned(),

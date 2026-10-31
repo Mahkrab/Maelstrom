@@ -181,11 +181,53 @@ mod hardware {
 
     #[test]
     #[ignore = "requires an explicitly selected CUDA hardware test run"]
+    fn published_full_corrections_and_contact_match_independent_equations() {
+        let mut overlay = maelstrom::config::ConfigurationOverlay::default();
+        maelstrom::config::NumericalMode::PaperBaseline.fill_overrides(&mut overlay.numerical);
+        // The independent position oracle ends at velocity reconstruction. The
+        // enabled-effect path is compared bitwise in the cancellation test below.
+        overlay.numerical.xsph_viscosity_enabled = Some(false);
+        let config = resolve_effective_configuration(None, None, Some(&overlay)).unwrap();
+        let initial = vec![
+            particle(0, Vec3::new(0.0, 0.005, 0.0)),
+            particle(1, Vec3::new(0.04, 0.015, 0.0)),
+            particle(2, Vec3::new(0.07, 0.005, 0.02)),
+        ];
+        let expected = oracle::step(
+            &initial,
+            &config,
+            &[([0.0, 1.0, 0.0], 0.0)],
+            3,
+            Default::default(),
+        );
+        let planes = vec![Plane::new(Vec3::new(0.0, 1.0, 0.0), 0.0, 0.0).unwrap()];
+        let mut cpu = Simulation::new(&config, initial.clone(), planes.clone()).unwrap();
+        let _ = cpu.step().unwrap();
+        let mut device = gpu(&config, initial, planes, 128);
+        let _ = device.step().unwrap();
+        assert_eq!(bits(cpu.snapshot()), bits(device.snapshot()));
+        for ((p, &position), &velocity) in device
+            .snapshot()
+            .particles()
+            .iter()
+            .zip(&expected.positions)
+            .zip(&expected.velocities)
+        {
+            support::assert_vec_absolute(p.position_m, position, 5e-6);
+            support::assert_vec_absolute(p.velocity_m_s, velocity, 0.002);
+            assert!(p.position_m.y >= 0.0);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly selected CUDA hardware test run"]
     fn all_cancellation_polls_rollback_after_acceptance_and_retry_with_no_stale_buffers() {
         for mode in [
             None,
             Some(maelstrom::config::NumericalMode::Reference),
             Some(maelstrom::config::NumericalMode::Fast),
+            Some(maelstrom::config::NumericalMode::Experimental),
+            Some(maelstrom::config::NumericalMode::PaperBaseline),
         ] {
             let mut overlay = maelstrom::config::ConfigurationOverlay::default();
             if let Some(mode) = mode {

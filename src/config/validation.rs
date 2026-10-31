@@ -74,6 +74,12 @@ pub(super) fn validate_model(model: &NumericalModel) -> Result<(), ConfigError> 
     }
     positive("relaxation_scale", model.relaxation_scale)?;
     positive("correction_scale", model.correction_scale)?;
+    if model.pbf_formulation == super::PbfFormulation::Paper2013 && model.correction_scale != 1.0 {
+        return Err(ConfigError::InvalidField {
+            field: "correction_scale",
+            reason: "paper2013 requires the full published position update (1.0)".into(),
+        });
+    }
     if model.correction_scale > 1.0 {
         return Err(ConfigError::InvalidField {
             field: "correction_scale",
@@ -151,11 +157,31 @@ pub(super) fn derive_values(model: &NumericalModel) -> Result<ResolvedDerivedVal
     )
     .map_err(ConfigError::Numerical)?;
 
+    // The paper assumes equal masses without fixing their value. Nominal cubic
+    // particle volume makes mass independent of a discrete kernel calibration.
+    let (rest_density, mass) = if model.pbf_formulation == super::PbfFormulation::Paper2013 {
+        let volume = model.particle_spacing_m * model.particle_spacing_m * model.particle_spacing_m;
+        let rest = validation::finite_result("nominal rest density", 1.0 / volume)
+            .map_err(ConfigError::Numerical)?;
+        let mass = validation::finite_result(
+            "nominal particle mass",
+            model.physical_rest_density_kg_m3 * volume,
+        )
+        .map_err(ConfigError::Numerical)?;
+        positive("nominal rest density", rest)?;
+        positive("nominal particle mass", mass)?;
+        (rest, mass)
+    } else {
+        (
+            equilibrium.normalised_rest_density,
+            equilibrium.particle_mass,
+        )
+    };
     Ok(ResolvedDerivedValues {
         particle_diameter_m: model.particle_spacing_m,
         support_radius_m,
-        normalised_rest_density_per_m3: equilibrium.normalised_rest_density,
-        particle_mass_kg: equilibrium.particle_mass,
+        normalised_rest_density_per_m3: rest_density,
+        particle_mass_kg: mass,
         relaxation_per_m2,
         artificial_pressure_strength_m2,
         artificial_pressure_reference_separation_m,

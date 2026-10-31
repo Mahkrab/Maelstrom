@@ -541,7 +541,7 @@ fn compilation_uses_saved_limit_dimensions_and_stride_and_publishes_playable_ima
         "schema_version=2\nwidth=32\nheight=24\nstep_stride=2",
     )
     .unwrap();
-    let report = lib.json(&[
+    let output = lib.run(&[
         "compile",
         "user:water",
         "--backend",
@@ -550,7 +550,35 @@ fn compilation_uses_saved_limit_dimensions_and_stride_and_publishes_playable_ima
         "--output",
         "bundle",
     ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let diagnostics = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        diagnostics.contains("Expected 2 frames @8.000 Hz"),
+        "{diagnostics}"
+    );
+    assert!(!diagnostics.contains('\x1b'));
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["frame_count"], 2);
+    let last_path = lib.0.join("runs/last.json");
+    let last: PathBuf = serde_json::from_slice(&fs::read(&last_path).unwrap()).unwrap();
+    assert_eq!(last, fs::canonicalize(lib.0.join("bundle")).unwrap());
+    let failed = lib.run(&[
+        "compile",
+        "user:water",
+        "--backend",
+        "serial-grid",
+        "--software",
+        "--output",
+        "bundle",
+    ]);
+    assert!(!failed.status.success());
+    let retained: PathBuf = serde_json::from_slice(&fs::read(&last_path).unwrap()).unwrap();
+    assert_eq!(retained, last);
+
     let manifest: Value =
         serde_json::from_slice(&fs::read(lib.0.join("bundle/manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["render"]["width"], 32);
@@ -622,4 +650,56 @@ fn compilation_records_colours_with_identical_physical_observations() {
         assert_eq!(first["snapshot_sha256"], second["snapshot_sha256"]);
         assert_ne!(first["rgba_sha256"], second["rgba_sha256"]);
     }
+}
+
+#[test]
+fn adjacent_config_is_discovered_without_links_or_a_numerical_preference() {
+    let lib = Library::new();
+    lib.seed();
+    fs::remove_file(lib.0.join("preferences/maelstrom/config.toml")).unwrap();
+    let path = lib.package().join("scene.toml");
+    let source = fs::read_to_string(&path).unwrap();
+    fs::write(
+        &path,
+        source.replace(
+            "source='file'\npath='config.toml'",
+            "source='built_in_defaults'",
+        ),
+    )
+    .unwrap();
+    let inspected = lib.inspect();
+    assert_eq!(
+        inspected["configuration"]["numerical"]["fixed_timestep_s"],
+        0.0625
+    );
+    let run = lib.json(&["run", "user:water", "--backend", "serial-grid", "--unpaced"]);
+    assert_eq!(run["completed_steps"], "2");
+    assert_eq!(
+        run["final_snapshot"]["particles"][0]["velocity_m_s"]["y"],
+        -0.25
+    );
+    lib.config("fixed_timestep_s='invalid'");
+    assert!(!lib.run(&["inspect", "user:water"]).status.success());
+    let replacement = lib.0.join("replacement.toml");
+    fs::write(&replacement, "schema_version=2\nname='replacement'\ndescription='explicit'\n[numerical]\nfixed_timestep_s=0.25\n").unwrap();
+    let explicit = lib.json(&[
+        "inspect",
+        "user:water",
+        "--config",
+        replacement.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        explicit["configuration"]["numerical"]["fixed_timestep_s"],
+        0.25
+    );
+}
+
+#[cfg(feature = "viewer")]
+#[test]
+fn last_playback_requires_a_completed_compile_and_conflicts_with_a_selector() {
+    let lib = Library::new();
+    let missing = lib.run(&["play", "--last"]);
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("no last compiled run"));
+    let conflict = lib.run(&["play", "some-run", "--last"]);
+    assert_eq!(conflict.status.code(), Some(2));
 }

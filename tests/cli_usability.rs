@@ -130,9 +130,10 @@ fn reference_is_default_and_fast_is_opt_in_by_flag_or_preferences() {
 #[test]
 fn numerical_modes_match_explicit_values_and_preserve_physics_and_replay() {
     let lib = Library::new();
-    for (name, timestep, correction, relaxation) in [
-        ("fast", "0.004166666666666667", "0.5", "2.0"),
-        ("reference", "0.0020833333333333333", "0.0625", "20.0"),
+    for (name, timestep, correction, relaxation, iterations) in [
+        ("fast", "0.004166666666666667", "0.5", "2.0", "8"),
+        ("experimental", "0.004166666666666667", "0.25", "20.0", "8"),
+        ("reference", "0.0020833333333333333", "0.0625", "20.0", "8"),
     ] {
         let base = [
             "run",
@@ -149,6 +150,7 @@ fn numerical_modes_match_explicit_values_and_preserve_physics_and_replay() {
         let dt = format!("fixed_timestep_s={timestep}");
         let scale = format!("correction_scale={correction}");
         let epsilon = format!("relaxation_scale={relaxation}");
+        let passes = format!("solver_iterations={iterations}");
         let mut explicit = base.to_vec();
         explicit.extend([
             "--refine-timestep",
@@ -160,7 +162,7 @@ fn numerical_modes_match_explicit_values_and_preserve_physics_and_replay() {
             "--set",
             &epsilon,
             "--set",
-            "solver_iterations=8",
+            &passes,
         ]);
         let expected = lib.json(&explicit);
         assert_eq!(
@@ -420,6 +422,8 @@ fn every_bundled_scene_matches_its_file_and_copies_its_own_configuration() {
         let file = lib.json(&[
             "inspect",
             path.to_str().unwrap(),
+            "--numerical-mode",
+            "reference",
             "--backend",
             "serial-grid",
         ]);
@@ -774,5 +778,48 @@ fn compiled_runs_relocate_validate_and_rerun_without_original_scenes() {
             .status
             .code(),
         Some(3)
+    );
+}
+
+#[test]
+fn paper_baseline_records_its_equations_and_reruns_resolved_inputs() {
+    let lib = Library::new();
+    let actual = lib.json(&[
+        "run",
+        "builtin:falling-block-04",
+        "--backend",
+        "serial-grid",
+        "--numerical-mode",
+        "paper-baseline",
+        "--steps",
+        "3",
+        "--unpaced",
+        "--refine-timestep",
+        "2",
+    ]);
+    let n = &actual["input"]["configuration"]["numerical"];
+    assert_eq!(n["pbf_formulation"], "paper2013");
+    assert_eq!(n["solver_iterations"], 3);
+    assert!(n.get("correction_scale").is_none());
+    assert_eq!(n["xsph_viscosity_enabled"], true);
+    assert_eq!(
+        n["fixed_timestep_s"].as_f64().unwrap() as f32,
+        1.0_f32 / 480.0
+    );
+    let path = lib.0.join("paper.json");
+    fs::write(&path, serde_json::to_vec(&actual).unwrap()).unwrap();
+    let replay = lib.json(&["rerun", path.to_str().unwrap()]);
+    assert_eq!(replay["final_snapshot"], actual["final_snapshot"]);
+    assert_eq!(replay["steps"], actual["steps"]);
+    assert!(
+        !lib.run(&[
+            "inspect",
+            "--numerical-mode",
+            "paper-baseline",
+            "--set",
+            "correction_scale=0.25"
+        ])
+        .status
+        .success()
     );
 }

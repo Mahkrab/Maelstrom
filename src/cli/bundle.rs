@@ -235,7 +235,19 @@ pub(super) fn compile(cli: &Cli, storage: &Storage, args: &Compile) -> Result<u8
     let signal = Arc::clone(&cancel);
     ctrlc::set_handler(move || signal.store(true, Ordering::Relaxed))
         .map_err(|e| CliError::input(e.to_string()))?;
-    let exported = maelstrom::export::export(
+    let schedule = maelstrom::export::FrameSchedule::new(steps, settings.step_stride)
+        .map_err(|e| CliError::input(e.to_string()))?;
+    let hz = 1.0
+        / (f64::from(resolved.configuration.numerical.fixed_timestep_s)
+            * settings.step_stride as f64);
+    eprintln!(
+        "Expected {} frames @{hz:.3} Hz (initial and final states included)",
+        schedule.steps.len()
+    );
+    use std::io::{IsTerminal, Write};
+    let terminal = std::io::stderr().is_terminal();
+    let mut last_update = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let exported = maelstrom::export::export_with_progress(
         ExportRequest {
             source: Source::Direct {
                 scene,
@@ -251,7 +263,29 @@ pub(super) fn compile(cli: &Cli, storage: &Storage, args: &Compile) -> Result<u8
             destination: &destination,
         },
         || cancel.load(Ordering::Relaxed),
+        |done, total| {
+            if terminal && last_update.elapsed() >= std::time::Duration::from_millis(100) {
+                let filled = done * 30 / total;
+                eprint!(
+                    "\r\x1b[2K[{}{}] {done}/{total} frames",
+                    "=".repeat(filled),
+                    " ".repeat(30 - filled)
+                );
+                let _ = std::io::stderr().flush();
+                last_update = std::time::Instant::now();
+            }
+        },
     );
+    if terminal {
+        eprintln!(
+            "\r\x1b[2K{}",
+            if exported.is_ok() {
+                "[==============================] Complete"
+            } else {
+                "Compile stopped"
+            }
+        );
+    }
     let mut manifest = match exported {
         Ok(v) => v,
         Err(e) => {
@@ -273,7 +307,6 @@ pub(super) fn compile(cli: &Cli, storage: &Storage, args: &Compile) -> Result<u8
     maelstrom::playback::Sequence::open(&destination)
         .map_err(|e| CliError::output(format!("compiled manifest is not playable: {e}")))?;
     let label = json!({"schema_version":1,"label":args.name,"id":destination.file_name().map(|s|s.to_string_lossy())});
-    use std::io::Write;
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -284,6 +317,19 @@ pub(super) fn compile(cli: &Cli, storage: &Storage, args: &Compile) -> Result<u8
     )
     .and_then(|_| file.sync_all())
     .map_err(|e| CliError::output(e.to_string()))?;
+    fs::create_dir_all(&storage.runs)
+        .map_err(|e| CliError::output(format!("create run library: {e}")))?;
+    let completed_path =
+        fs::canonicalize(&destination).map_err(|e| CliError::output(e.to_string()))?;
+    let temporary = storage
+        .runs
+        .join(format!(".last-{}.tmp", std::process::id()));
+    fs::write(
+        &temporary,
+        serde_json::to_vec(&completed_path).map_err(|e| CliError::output(e.to_string()))?,
+    )
+    .and_then(|_| fs::rename(&temporary, storage.runs.join("last.json")))
+    .map_err(|e| CliError::output(format!("remember last compile: {e}")))?;
     manifest["bundle"] = label;
     super::print_document(
         cli.format,

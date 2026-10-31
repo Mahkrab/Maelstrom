@@ -8,6 +8,7 @@ use serde::{Serialize, Serializer, ser::SerializeStruct};
 impl Serialize for NumericalModel {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let correction = self.correction_scale != 1.0;
+        let paper = self.pbf_formulation == super::PbfFormulation::Paper2013;
         let smoothing = self.xsph_viscosity_enabled
             || self.xsph_viscosity_coefficient.to_bits()
                 != DEFAULT_XSPH_VISCOSITY_COEFFICIENT.to_bits();
@@ -16,7 +17,10 @@ impl Serialize for NumericalModel {
                 != super::DEFAULT_VORTICITY_CONFINEMENT_STRENGTH_M_S.to_bits();
         let mut record = serializer.serialize_struct(
             "NumericalModel",
-            24 + usize::from(correction) + usize::from(smoothing) + usize::from(confinement),
+            24 + usize::from(paper)
+                + usize::from(correction)
+                + usize::from(smoothing)
+                + usize::from(confinement),
         )?;
         macro_rules! field {
             ($name:ident) => {
@@ -24,6 +28,9 @@ impl Serialize for NumericalModel {
             };
         }
         field!(scalar_precision);
+        if paper {
+            field!(pbf_formulation);
+        }
         field!(coordinate_system);
         field!(timestep_policy);
         field!(density_kernel);

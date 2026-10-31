@@ -65,12 +65,18 @@ impl Storage {
         }) {
             return Err(CliError::input("application preferences: backend must be auto, brute-force, serial-grid, threaded-grid or cuda".into()));
         }
-        if p.numerical_mode
-            .as_deref()
-            .is_some_and(|v| !["reference", "fast", "scene"].contains(&v))
-        {
+        if p.numerical_mode.as_deref().is_some_and(|v| {
+            ![
+                "reference",
+                "fast",
+                "experimental",
+                "paper-baseline",
+                "scene",
+            ]
+            .contains(&v)
+        }) {
             return Err(CliError::input(
-                "application preferences: numerical_mode must be reference, fast or scene".into(),
+                "application preferences: numerical_mode must be reference, fast, experimental, paper-baseline or scene".into(),
             ));
         }
         if p.threads.is_some_and(|n| !(1..=256).contains(&n)) {

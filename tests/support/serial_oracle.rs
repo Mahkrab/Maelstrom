@@ -163,6 +163,10 @@ pub fn step(
             }
         }
     }
+    if model.pbf_formulation == maelstrom::config::PbfFormulation::Paper2013 {
+        // Nominal cubic volume is independent of the discrete kernel sum.
+        rest = 1.0 / spacing.powi(3);
+    }
     let epsilon = f64::from(model.relaxation_scale) / h.powi(2);
     let pressure = if model.artificial_pressure_enabled {
         f64::from(model.artificial_pressure_strength_scale) * h.powi(2)

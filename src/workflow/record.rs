@@ -309,6 +309,14 @@ impl RecordedInput {
             );
         }
         registry.remove("correction_scale");
+        if self.configuration.numerical.pbf_formulation == crate::config::PbfFormulation::Paper2013
+            || self
+                .configuration
+                .provenance
+                .contains_key("pbf_formulation")
+        {
+            registry.insert("pbf_formulation", FieldSource::BuiltInDefault);
+        }
         registry.remove("xsph_viscosity_coefficient");
         if self.configuration.numerical.xsph_viscosity_enabled
             || self

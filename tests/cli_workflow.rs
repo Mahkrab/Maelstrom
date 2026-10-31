@@ -502,13 +502,13 @@ fn external_scene_configuration_precedence_and_relative_paths_are_explicit() {
     );
     assert_eq!(
         effective["configuration"]["provenance"]["solver_iterations"],
-        "command_line"
+        "built_in_default"
     );
     let without_cli = cli(&["inspect", path.to_str().unwrap(), "--format", "json"]);
     success(&without_cli);
     assert_eq!(
         document(&without_cli)["configuration"]["provenance"]["fixed_timestep_s"],
-        "command_line"
+        "scene"
     );
 }
 
@@ -543,7 +543,7 @@ fn explicit_config_replaces_scene_selection_but_preserves_scene_values() {
         assert_eq!(document(&output)["configuration"]["name"], "selected");
         assert_eq!(
             document(&output)["configuration"]["provenance"]["fixed_timestep_s"],
-            "command_line"
+            "scene"
         );
     }
 }
@@ -564,6 +564,8 @@ fn named_and_external_inputs_produce_identical_physical_results() {
     let supplied = cli(&[
         "run",
         external.to_str().unwrap(),
+        "--numerical-mode",
+        "reference",
         "--steps",
         "6",
         "--checkpoints",

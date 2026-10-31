@@ -127,10 +127,34 @@ pub fn export(
     export_using(request, cancelled, offscreen::FrameOperations::default())
 }
 
+/// Exports with a notification of closed frames and the total scheduled count.
+/// Notifications run synchronously and must return promptly.
+pub fn export_with_progress(
+    request: ExportRequest<'_>,
+    cancelled: impl FnMut() -> bool,
+    progress: impl FnMut(usize, usize),
+) -> Result<Value, ExportError> {
+    export_notifying(
+        request,
+        cancelled,
+        offscreen::FrameOperations::default(),
+        progress,
+    )
+}
+
 fn export_using(
+    request: ExportRequest<'_>,
+    cancelled: impl FnMut() -> bool,
+    operations: offscreen::FrameOperations,
+) -> Result<Value, ExportError> {
+    export_notifying(request, cancelled, operations, |_, _| {})
+}
+
+fn export_notifying(
     request: ExportRequest<'_>,
     mut cancelled: impl FnMut() -> bool,
     operations: offscreen::FrameOperations,
+    mut notify: impl FnMut(usize, usize),
 ) -> Result<Value, ExportError> {
     let started = Instant::now();
     let mut timings = timing::ExportTimings::default();
@@ -178,6 +202,7 @@ fn export_using(
         ));
     }
     let schedule = FrameSchedule::new(last_step, settings.step_stride)?;
+    notify(0, schedule.steps.len());
     let dt = f64::from(scene.configuration.numerical.fixed_timestep_s);
     if schedule.steps.iter().any(|s| !(*s as f64 * dt).is_finite()) {
         return Err(fail("simulated timestamp overflow"));
@@ -322,6 +347,7 @@ fn export_using(
                     &mut progress,
                     &mut timings.progress,
                 )?;
+                notify(frames.len(), schedule.steps.len());
                 next += 1;
             }
         }
@@ -345,6 +371,7 @@ fn export_using(
                     &mut progress,
                     &mut timings.progress,
                 )?;
+                notify(frames.len(), schedule.steps.len());
             }
         }
         collect_frame(
@@ -353,6 +380,7 @@ fn export_using(
             &mut progress,
             &mut timings.progress,
         )?;
+        notify(frames.len(), schedule.steps.len());
         if frames.len() != schedule.steps.len() {
             return Err(fail("incomplete frame schedule"));
         }

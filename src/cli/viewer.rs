@@ -315,17 +315,34 @@ mod tests {
             reference.scene.configuration.numerical.relaxation_scale,
             20.0
         );
+        d.numerical_mode = "experimental".into();
+        let experimental = resolve(&d, &[], None).unwrap();
+        assert_eq!(
+            experimental.scene.configuration.numerical.solver_iterations,
+            8
+        );
+        assert_eq!(
+            experimental.scene.configuration.numerical.relaxation_scale,
+            20.0
+        );
+        assert_eq!(
+            experimental.scene.configuration.numerical.correction_scale,
+            0.25
+        );
         d.numerical_mode = "unknown".into();
         assert!(
             resolve(&d, &[], None)
                 .unwrap_err()
-                .contains("reference or fast")
+                .contains("must be reference, fast")
         );
     }
     #[test]
     fn external_and_bundled_selection_share_precedence_and_identity() {
         let overrides = vec!["cfl_factor=0.1".into()];
         let mut d = draft();
+        // Saved local scenes keep their numerics by default. Select the same
+        // explicit policy before comparing full provenance across both routes.
+        d.numerical_mode = "reference".into();
         let bundled = resolve(&d, &overrides, None).unwrap();
         d.scene = "scenes/falling-block-04/scene.toml".into();
         let external = resolve(&d, &overrides, None).unwrap();

@@ -78,7 +78,7 @@ maelstrom inspect builtin:falling-block-04 --backend cuda --format json
 ## Numerical modes
 
 `run`, `view`, `compile`, `inspect` and `validate` accept
-`--numerical-mode fast` or `--numerical-mode reference`. **Reference is the default.**
+`--numerical-mode reference`, `fast`, `experimental`, `paper-baseline` or `scene`. **Local scenes use their saved numerical settings by default; built-in scenes default to reference.**
 Opt into fast with `--numerical-mode fast`, or save
 `numerical_mode = "fast"` in the application preferences at
 `$XDG_CONFIG_HOME/maelstrom/config.toml` (normally `~/.config/maelstrom/config.toml`):
@@ -90,7 +90,7 @@ numerical_mode = "fast"
 
 The command-line mode overrides that preference. Explicit `--set` values override
 the preset. Use `--numerical-mode scene` (or `numerical_mode = "scene"` in preferences)
-to preserve a custom scene/configuration schedule without a preset. Reruns retain their recorded numerical values. The presets change only timestep,
+to preserve a custom scene/configuration schedule without a preset. Reruns retain their recorded numerical values. Reference, fast and experimental change only timestep,
 Jacobi count, correction scale and relaxation scale; geometry, mass, gravity,
 kernel support and velocity-effect settings retain their existing ownership.
 Enabled velocity effects keep their coefficients; changing the step rate also
@@ -100,11 +100,37 @@ changes how often those effects are applied per simulated second.
 |---|---:|---:|---:|---:|
 | `reference` | 480 | 8 | 0.0625 | 20 |
 | `fast` | 240 | 8 | 0.5 | 2 |
+| `experimental` | 240 | 8 | 0.25 | 20 |
+| `paper-baseline` | 240 | 3 | 1.0 | 20 |
 
 Fast mode reduces numerical work and changes the physical trajectory. It is a
 throughput/quality trade-off, not a promise of the same fluid response. Both modes
 retain the existing PBF physical limitations. Fast mode can improve compression
 and separation while adding projection energy or changing shear response.
+
+Experimental mode retains reference regularisation and Jacobi count while halving the step rate. It matches the approximate response `iterations × correction_scale / dt²`
+of reference, using four times the correction per pass. This is an empirical visual
+calibration, not a convergence law: impact detail and trajectories differ, and
+legacy refinement still scales timestep and correction together. Its qualification
+uses disabled velocity effects; enabled effects need separate calibration.
+
+`--numerical-mode paper-baseline` starts a separate published-equation PBF policy:
+240 Hz, three Jacobi passes, full position corrections and nominal equal particle
+mass `rho0 * spacing^3`. XSPH is enabled at rest-volume coefficient 0.01; vorticity
+confinement is optional and disabled initially. The selected regularisation is
+`20/h^2` and artificial pressure is `0.1*h^2`, with reference separation `0.2*h`
+and exponent four. These dimensional choices are Maelstrom calibration, not
+numerical constants fully specified by the paper. Reference remains the default.
+
+For this formulation `--refine-timestep N` changes only timestep; it never
+attenuates position corrections. `--set correction_scale` must remain 1.0.
+Resolved records retain `pbf_formulation = "paper2013"`, so reruns use their
+recorded equations and constants. Existing reference, fast and experimental
+inputs retain their historical mass and refinement policy.
+
+The assessed three-pass baseline remains a comparison option: large impact leaves
+more persistent overlaps and fast outliers. Experimental remains the practical
+candidate for the tested mixture of scenes.
 
 These commands start new simulations for five simulated seconds. The first uses
 reference mode unless an application preference selects another mode; the second
@@ -117,17 +143,18 @@ maelstrom run builtin:falling-block-20 --numerical-mode fast --duration 5 --unpa
 
 Built-in scenes also save the reference schedule in their configuration files.
 Their output stride is eight, giving 60 Hz at 480 steps per simulated second.
-For 60 Hz output with fast mode, add `--frame-stride 4` to `compile`.
+For 60 Hz output with fast or experimental mode, add `--frame-stride 4` to `compile`.
 
 Explicit `--set` values take precedence over a preset. Presets reset inherited
 timestep refinement to one; an explicit `--refine-timestep N` still divides the
-selected timestep by N and its correction scale by N². For example, fast mode
+selected timestep by N and, for empirical formulations, its correction scale by N². For example, fast mode
 with refinement two runs at 480 Hz with correction 0.125 and relaxation 2. Inspect
 the resolved values before comparing a modified preset. CFL remains a warning;
 it neither inserts timesteps nor switches modes. Numerical errors and cancellation
 retain the last accepted state through the existing transaction boundary.
 
-The viewer's **Numerics** draft field accepts `fast`, `reference`, or blank for
+The viewer's **Numerics** draft field accepts `fast`, `reference`, `experimental`,
+`paper-baseline`, or blank for
 the application default/preference. `scene` explicitly preserves the selected
 scene/configuration schedule. Apply the draft to start a new generation. Editing the
 field does not modify an active run. The entered step count stays fixed: five
@@ -205,3 +232,30 @@ and `cuda-check` remains a hidden compatibility command for `doctor cuda`. Old
 spellings remain accepted. Legacy `--execution` requests retain unpaced execution.
 New examples use only the shared backend vocabulary. Historical saved-result and
 image-manifest formats are unchanged.
+
+
+Local scene packages can be launched directly:
+
+```sh
+maelstrom view user:water
+maelstrom run user:water
+maelstrom compile user:water
+maelstrom play --last
+```
+
+The first three commands start fresh simulations from
+`~/.local/share/maelstrom/scenes/water/scene.toml` (or the selected scene library).
+An adjacent `config.toml` supplies the numerical configuration without a reference
+inside the scene, and `render.toml` supplies presentation settings automatically.
+An explicit `--config` takes priority over the adjacent file; without either,
+the scene's configuration reference or defaults apply. Scene overlays and explicit
+CLI overrides retain their precedence. An explicitly saved application numerical
+mode also applies; use `--numerical-mode scene` to select saved scene numerics.
+
+`play --last` plays saved images from the most recently completed compile,
+including a compile with an explicit output directory. Failed or cancelled compiles
+do not replace it. Playback does not run the simulation again.
+Compile reports the scheduled frame count and nominal render Hz, including initial
+and final states. A final short interval can differ from the nominal cadence.
+Interactive terminals show one updating progress bar on stderr; redirected output
+contains the diagnostics and final result without terminal control sequences.

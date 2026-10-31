@@ -68,6 +68,12 @@ impl ResolvedInputs {
 }
 
 pub(super) fn resolve_in(inputs: &Inputs, storage: &Storage) -> Result<ResolvedInputs, CliError> {
+    let local_path = inputs
+        .scene
+        .as_deref()
+        .map(|s| storage.scene(s))
+        .transpose()?
+        .flatten();
     let mut overlay = overrides(&inputs.overrides)?;
     if let Some(factor) = inputs.refine_timestep {
         if overlay.numerical.refine_timestep.is_some() {
@@ -84,7 +90,11 @@ pub(super) fn resolve_in(inputs: &Inputs, storage: &Storage) -> Result<ResolvedI
             .numerical_mode
             .as_deref()
             .or(preferences.numerical_mode.as_deref())
-            .unwrap_or("reference");
+            .unwrap_or(if local_path.is_some() {
+                "scene"
+            } else {
+                "reference"
+            });
         let mode = name
             .parse::<maelstrom::config::NumericalMode>()
             .map_err(|e| CliError::usage(e.to_string()))?;
@@ -117,7 +127,7 @@ pub(super) fn resolve_in(inputs: &Inputs, storage: &Storage) -> Result<ResolvedI
             selected_configuration: explicit,
         });
     };
-    let path = storage.scene(selection)?;
+    let path = local_path;
     let (source, directory, scene_label) = if let Some(path) = &path {
         let path =
             fs::canonicalize(path).map_err(|e| CliError::input(format!("scene: {}", e.kind())))?;
@@ -138,8 +148,20 @@ pub(super) fn resolve_in(inputs: &Inputs, storage: &Storage) -> Result<ResolvedI
     };
     documents.push(identity("scene", scene_label, &source));
     let document = parse_scene(&source).map_err(|e| CliError::input(format!("scene: {e}")))?;
+    let adjacent = directory.as_ref().map(|d| d.join("config.toml"));
+    let adjacent = adjacent.filter(
+        |p| !matches!(fs::symlink_metadata(p), Err(e) if e.kind() == std::io::ErrorKind::NotFound),
+    );
+    let replace_configuration = explicit.is_some() || adjacent.is_some();
     let selected = if let Some(explicit) = explicit {
         Some(explicit)
+    } else if let Some(path) = adjacent {
+        let source = read(&path, "scene configuration")?;
+        documents.push(identity("configuration", "config.toml".into(), &source));
+        Some(
+            parse_configuration(&source)
+                .map_err(|e| CliError::input(format!("scene configuration: {e}")))?,
+        )
     } else if let Some(directory) = &directory {
         if document.configuration.source == ConfigurationSource::File {
             let reference =
@@ -182,7 +204,7 @@ pub(super) fn resolve_in(inputs: &Inputs, storage: &Storage) -> Result<ResolvedI
         }
         selected
     };
-    let scene = if inputs.config.is_some() {
+    let scene = if replace_configuration {
         resolve_scene_with_configuration(
             &document,
             selected

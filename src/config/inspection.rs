@@ -19,6 +19,9 @@ impl ResolvedConfiguration {
         push_string(&mut output, "description", &self.description);
         output.push_str("\n[numerical]\n");
         let numerical = &self.numerical;
+        if numerical.pbf_formulation == super::PbfFormulation::Paper2013 {
+            push_string(&mut output, "pbf_formulation", "paper2013");
+        }
         push_string(&mut output, "scalar_precision", &numerical.scalar_precision);
         push_string(
             &mut output,
@@ -203,6 +206,9 @@ impl ResolvedConfiguration {
             d.artificial_pressure_reference_separation_m.to_bits(),
             d.lattice_offset_count,
         );
+        if n.pbf_formulation == super::PbfFormulation::Paper2013 {
+            key.push_str("|pbf-formulation:paper2013");
+        }
         if n.correction_scale != 1.0 {
             key.push_str(&format!(
                 "|correction-scale:{:08x}",

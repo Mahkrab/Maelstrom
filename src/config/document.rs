@@ -15,6 +15,8 @@ use super::{CURRENT_INPUT_SCHEMA_VERSION, ConfigError};
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NumericalOverrides {
+    /// Published full corrections or the historical empirical mass/refinement convention.
+    pub pbf_formulation: Option<super::PbfFormulation>,
     /// Scalar representation for all numerical inputs and derived values.
     pub scalar_precision: Option<String>,
     /// Coordinate and unit convention for configuration and scenes.
@@ -33,8 +35,8 @@ pub struct NumericalOverrides {
     pub external_acceleration_m_s2: Option<[f32; 3]>,
     /// Fixed timestep in seconds.
     pub fixed_timestep_s: Option<f32>,
-    /// Refines this layer's timestep and complete correction response by a factor
-    /// in `1..=16`, after its primary overrides and before derived assertions.
+    /// Refines this layer's timestep by a factor in `1..=16`. The empirical
+    /// formulation also attenuates correction by the square of that factor.
     /// The resolved configuration stores the resulting primary values.
     pub refine_timestep: Option<u32>,
     /// Dimensionless multiplier on the complete Jacobi position correction.
