@@ -170,6 +170,7 @@ fn panic_retains_active_snapshot_marks_queued_runs_and_join_reports_failure() {
             last_cfl: None,
             warning_count: 0,
             failure: None,
+            timings: WorkerTimings::default(),
         }),
         changed: Condvar::new(),
         cancelled: AtomicBool::new(false),

@@ -88,10 +88,13 @@ fn pause_step_resume_and_completion_preserve_every_accepted_bit() {
         let initial = handle.observe();
         assert_eq!(initial.snapshot.as_ref().unwrap().completed_steps(), 0);
         assert_eq!(initial.simulated_time_s(), Some(0.0));
+        assert_eq!(initial.timings.solver_s, 0.0);
+        assert_eq!(initial.timings.snapshot_s, 0.0);
         assert_eq!(initial.info.as_ref().unwrap().execution, execution);
         assert_eq!(initial.info.as_ref().unwrap().backend, backend);
         assert!(initial.info.as_ref().unwrap().device.is_none());
         assert_rejected(&controller, &handle, Action::Pause, RunStatus::Paused);
+        let mut previous_solver_s = 0.0;
         for index in 1..=3 {
             assert_eq!(
                 controller
@@ -102,6 +105,9 @@ fn pause_step_resume_and_completion_preserve_every_accepted_bit() {
                 RunStatus::Paused
             );
             let observed = handle.observe();
+            assert!(observed.timings.solver_s > previous_solver_s);
+            assert!(observed.timings.snapshot_s.is_finite());
+            previous_solver_s = observed.timings.solver_s;
             assert_eq!(observed.snapshot.as_ref().unwrap().completed_steps(), index);
             let prefix = direct(&request, index);
             assert_eq!(

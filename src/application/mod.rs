@@ -136,6 +136,17 @@ pub struct Observation {
     pub warning_count: u64,
     /// Sticky terminal failure, if any.
     pub failure: Option<Failure>,
+    /// Cumulative coordinator wall time; neither GPU time nor simulated time.
+    pub timings: WorkerTimings,
+}
+
+/// Successful solver calls and the host copies used to publish their observations.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WorkerTimings {
+    /// Complete successful step calls, including CUDA dispatch and waits.
+    pub solver_s: f64,
+    /// Copies of accepted snapshots, outside the solver call.
+    pub snapshot_s: f64,
 }
 
 impl Observation {
@@ -363,6 +374,7 @@ impl Controller {
                 last_cfl: None,
                 warning_count: 0,
                 failure: None,
+                timings: WorkerTimings::default(),
             }),
             changed: Condvar::new(),
             cancelled: AtomicBool::new(false),

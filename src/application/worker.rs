@@ -6,6 +6,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc::{Receiver, TryRecvError},
 };
+use std::time::Instant;
 
 use crate::simulation::{Simulation, StepError};
 
@@ -20,6 +21,53 @@ struct ActiveRun {
     status: RunStatus,
     target: u64,
     generation: u64,
+    acceptance_trace: Option<AcceptanceTrace>,
+}
+
+// Capacity qualification needs every accepted boundary, rather than coalesced
+// display observations. Buffer opt-in timestamps and write only during teardown.
+struct AcceptanceTrace {
+    file: std::fs::File,
+    origin: Instant,
+    rows: Vec<(u64, u128)>,
+}
+impl AcceptanceTrace {
+    fn open() -> Option<Self> {
+        let path = std::env::var_os("MAELSTROM_ACCEPTANCE_PROFILE")?;
+        match std::fs::File::create_new(path) {
+            Ok(file) => Some(Self {
+                file,
+                origin: Instant::now(),
+                rows: vec![(0, 0)],
+            }),
+            Err(error) => {
+                eprintln!("maelstrom acceptance profile unavailable: {error}");
+                None
+            }
+        }
+    }
+    fn record(&mut self, step: u64, at: Instant) {
+        if self.rows.len() < 1_000_000 {
+            self.rows
+                .push((step, at.duration_since(self.origin).as_nanos()));
+        }
+    }
+}
+impl Drop for AcceptanceTrace {
+    fn drop(&mut self) {
+        use std::io::Write;
+        let mut writer = std::io::BufWriter::new(&self.file);
+        let result = (|| -> std::io::Result<()> {
+            writeln!(writer, "step,wall_ns")?;
+            for (step, time) in &self.rows {
+                writeln!(writer, "{step},{time}")?;
+            }
+            writer.flush()
+        })();
+        if let Err(error) = result {
+            eprintln!("maelstrom acceptance profile write: {error}");
+        }
+    }
 }
 
 impl ActiveRun {
@@ -49,11 +97,16 @@ impl ActiveRun {
             return;
         };
         let shared = &self.shared;
+        let start = Instant::now();
         match solver.step_with_cancellation(|| {
             stopping.load(Ordering::Acquire) || shared.cancelled.load(Ordering::Acquire)
         }) {
             Ok(outcome) => {
+                let accepted_at = self.acceptance_trace.as_ref().map(|_| Instant::now());
+                let solver_s = start.elapsed().as_secs_f64();
+                let copy_start = Instant::now();
                 let snapshot = Arc::new(solver.snapshot().clone());
+                let snapshot_s = copy_start.elapsed().as_secs_f64();
                 if outcome.completed_steps == self.target {
                     self.status = RunStatus::Completed;
                 }
@@ -62,7 +115,12 @@ impl ActiveRun {
                     o.snapshot = Some(snapshot);
                     o.last_cfl = Some(outcome.cfl);
                     o.warning_count += u64::from(outcome.cfl.warning);
+                    o.timings.solver_s += solver_s;
+                    o.timings.snapshot_s += snapshot_s;
                 });
+                if let Some((trace, at)) = self.acceptance_trace.as_mut().zip(accepted_at) {
+                    trace.record(outcome.completed_steps, at);
+                }
                 if self.status.is_terminal() {
                     self.solver.take();
                 }
@@ -113,6 +171,7 @@ fn construct(spec: RunSpec, shared: Arc<SharedRun>, stopping: &AtomicBool) -> Ac
         status: RunStatus::Constructing,
         target: spec.steps,
         generation,
+        acceptance_trace: None,
     };
     if active.cancelled(stopping) {
         active.set_status(RunStatus::Cancelled);
@@ -144,6 +203,7 @@ fn construct(spec: RunSpec, shared: Arc<SharedRun>, stopping: &AtomicBool) -> Ac
                 o.snapshot = Some(snapshot);
             });
             active.solver = Some(solver);
+            active.acceptance_trace = AcceptanceTrace::open();
             active.set_status(if active.cancelled(stopping) {
                 RunStatus::Cancelled
             } else if spec.steps == 0 {

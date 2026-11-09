@@ -63,12 +63,15 @@ impl Drop for Library {
 }
 
 #[test]
-fn reference_is_default_and_fast_is_opt_in_by_flag_or_preferences() {
+fn experimental_is_default_and_explicit_modes_and_preferences_win() {
     let lib = Library::new();
-    assert_eq!(lib.json(&["config", "show"])["numerical_mode"], "reference");
+    assert_eq!(
+        lib.json(&["config", "show"])["numerical_mode"],
+        "experimental"
+    );
     assert_eq!(
         lib.json(&["inspect"])["configuration"],
-        lib.json(&["inspect", "--numerical-mode", "reference"])["configuration"]
+        lib.json(&["inspect", "--numerical-mode", "experimental"])["configuration"]
     );
     let args = [
         "run",
@@ -100,8 +103,19 @@ fn reference_is_default_and_fast_is_opt_in_by_flag_or_preferences() {
     let mut reference_args = args.to_vec();
     reference_args.extend(["--numerical-mode", "reference"]);
     let reference = lib.json(&reference_args);
-    assert_eq!(implicit["input"], reference["input"]);
-    assert_eq!(implicit["final_snapshot"], reference["final_snapshot"]);
+    let mut experimental_args = args.to_vec();
+    experimental_args.extend(["--numerical-mode", "experimental"]);
+    let experimental = lib.json(&experimental_args);
+    assert_eq!(implicit["input"], experimental["input"]);
+    assert_eq!(implicit["final_snapshot"], experimental["final_snapshot"]);
+    let numerical = &implicit["input"]["configuration"]["numerical"];
+    assert_eq!(
+        numerical["fixed_timestep_s"].as_f64().unwrap() as f32,
+        1.0_f32 / 240.0
+    );
+    assert_eq!(numerical["solver_iterations"], 8);
+    assert_eq!(numerical["correction_scale"], 0.25);
+    assert_eq!(numerical["relaxation_scale"], 20.0);
     assert_ne!(
         reference["input"]["configuration"]["numerical"],
         fast["input"]["configuration"]["numerical"]
@@ -373,12 +387,12 @@ fn every_bundled_scene_matches_its_file_and_copies_its_own_configuration() {
             "{name}"
         );
         assert_eq!(
-            bundled["configuration"]["numerical"]["correction_scale"], 0.0625,
+            bundled["configuration"]["numerical"]["correction_scale"], 0.25,
             "{name}"
         );
         assert_eq!(
             bundled["configuration"]["numerical"]["fixed_timestep_s"],
-            f64::from(1.0_f32 / 480.0),
+            f64::from(1.0_f32 / 240.0),
             "{name}"
         );
         assert_eq!(
@@ -389,12 +403,13 @@ fn every_bundled_scene_matches_its_file_and_copies_its_own_configuration() {
             bundled["presentation"]["effective"]["settings"]["step_stride"],
             8
         );
-        // Reading saved values directly prevents the default preset from hiding
-        // a scene package that still contains the old schedule.
+        // Compare stored inputs through scene mode; application defaults must
+        // not rewrite the reference schedule retained in bundled packages.
+        let stored = lib.json(&["inspect", selector, "--numerical-mode", "scene"]);
         let saved = maelstrom::scene::load_resolved_scene(&path, None).unwrap();
         assert_eq!(
             serde_json::to_value(&saved.configuration.numerical).unwrap(),
-            bundled["configuration"]["numerical"],
+            stored["configuration"]["numerical"],
             "{name}: saved schedule"
         );
         let copied = format!("copy-{name}");
@@ -423,7 +438,7 @@ fn every_bundled_scene_matches_its_file_and_copies_its_own_configuration() {
             "inspect",
             path.to_str().unwrap(),
             "--numerical-mode",
-            "reference",
+            "experimental",
             "--backend",
             "serial-grid",
         ]);

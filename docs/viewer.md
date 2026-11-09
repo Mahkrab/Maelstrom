@@ -135,6 +135,48 @@ time, particle count, CFL warnings and failures. Density auditing uses a separat
 snapshot; it is neither solver timing nor a redraw side effect. Display FPS is only
 presentation cadence, not solver throughput.
 
+For a live frame trace, set `MAELSTROM_VIEW_PROFILE` to a new CSV file before
+launching `view`. It records successful surface presentations, accepted step indices,
+simulated time, cumulative worker solver/snapshot-copy time and CPU graphics stages.
+The viewer retains up to one million frame rows in memory and writes them after
+cooperative shutdown. Use a bounded run for profiling; creating an existing output
+file fails without overwriting it. GPU execution and physical display scan-out are
+not measured by these CPU clocks. The parent repository's
+`tools.performance.live_viewer` runner keeps presentation cadence and accepted
+simulation advancement separate and collects whole-device GPU telemetry.
+
+For sustained-capacity measurements, `MAELSTROM_ACCEPTANCE_PROFILE` names a new CSV
+file recording every successful timestep's completion, before the observation copy.
+Its monotonic clock starts after construction; it includes pauses and time between
+steps. Use a fresh, unpaused, bounded run. The worker buffers at most one million
+rows, including step zero, and writes them during teardown. An unavailable output
+file produces a diagnostic and leaves the run operational; it is never overwritten.
+Only the first generation can create the named file. These clocks are measurement
+instruments, not simulation inputs or a pacing policy.
+
+## Particle rendering
+
+Live windows use analytic sphere impostors: two triangles bound each projected
+sphere, and the fragment shader reconstructs its curved silhouette, surface depth
+and existing opaque lighting. The accepted positions, radii and colours are unchanged.
+This reduces graphics contention with CUDA, especially in large scenes. It changes
+pixels slightly because the old mesh approximates a sphere with planar triangles.
+
+Set `MAELSTROM_PARTICLE_RENDERER` for a comparison or fallback before launching
+`view`: `indexed` uses the established 384-triangle sphere; `low` uses 96 triangles;
+`impostor` is the live default; `adaptive` chooses one sphere mesh for the whole
+frame from the largest projected particle radius (96 triangles up to 3 pixels,
+192 up to 6 pixels, otherwise 384). Selection is independent of numerical mode.
+Unknown or non-UTF-8 names report a graphics configuration error.
+
+The alternative representations automatically use indexed spheres for the whole
+frame when any sphere intersects the near or eye plane. Impostors also fall back
+when view coordinates are too large or a radius is too small relative to those
+coordinates for stable analytic reconstruction. This preserves clipping and views
+from inside a sphere. No particles are dropped or regrouped. Meshes and pipelines
+are created once per graphics device; per-frame instance uploads remain unchanged.
+Offline compilation retains indexed spheres by default.
+
 ## Limits and recovery
 
 Particles are opaque spheres, with static boundaries shown as lines; there is no

@@ -78,7 +78,7 @@ maelstrom inspect builtin:falling-block-04 --backend cuda --format json
 ## Numerical modes
 
 `run`, `view`, `compile`, `inspect` and `validate` accept
-`--numerical-mode reference`, `fast`, `experimental`, `paper-baseline` or `scene`. **Local scenes use their saved numerical settings by default; built-in scenes default to reference.**
+`--numerical-mode reference`, `fast`, `experimental`, `paper-baseline` or `scene`. **Local scenes use their saved numerical settings by default; built-in scenes default to experimental.**
 Opt into fast with `--numerical-mode fast`, or save
 `numerical_mode = "fast"` in the application preferences at
 `$XDG_CONFIG_HOME/maelstrom/config.toml` (normally `~/.config/maelstrom/config.toml`):
@@ -120,7 +120,7 @@ mass `rho0 * spacing^3`. XSPH is enabled at rest-volume coefficient 0.01; vortic
 confinement is optional and disabled initially. The selected regularisation is
 `20/h^2` and artificial pressure is `0.1*h^2`, with reference separation `0.2*h`
 and exponent four. These dimensional choices are Maelstrom calibration, not
-numerical constants fully specified by the paper. Reference remains the default.
+numerical constants fully specified by the paper. Experimental is the application default.
 
 For this formulation `--refine-timestep N` changes only timestep; it never
 attenuates position corrections. `--set correction_scale` must remain 1.0.
@@ -133,7 +133,7 @@ more persistent overlaps and fast outliers. Experimental remains the practical
 candidate for the tested mixture of scenes.
 
 These commands start new simulations for five simulated seconds. The first uses
-reference mode unless an application preference selects another mode; the second
+experimental mode unless an application preference selects another mode; the second
 explicitly selects fast:
 
 ```sh
@@ -143,7 +143,7 @@ maelstrom run builtin:falling-block-20 --numerical-mode fast --duration 5 --unpa
 
 Built-in scenes also save the reference schedule in their configuration files.
 Their output stride is eight, giving 60 Hz at 480 steps per simulated second.
-For 60 Hz output with fast or experimental mode, add `--frame-stride 4` to `compile`.
+For 60 Hz output with the default experimental mode or fast mode, add `--frame-stride 4` to `compile`.
 
 Explicit `--set` values take precedence over a preset. Presets reset inherited
 timestep refinement to one; an explicit `--refine-timestep N` still divides the

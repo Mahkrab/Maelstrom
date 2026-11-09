@@ -93,7 +93,7 @@ pub(super) fn resolve_in(inputs: &Inputs, storage: &Storage) -> Result<ResolvedI
             .unwrap_or(if local_path.is_some() {
                 "scene"
             } else {
-                "reference"
+                "experimental"
             });
         let mode = name
             .parse::<maelstrom::config::NumericalMode>()

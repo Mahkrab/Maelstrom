@@ -14,7 +14,7 @@ pub enum PbfFormulation {
     Paper2013,
 }
 
-/// Numerical presets selected by the application; reference is its default.
+/// Numerical presets selected by the application; experimental is its default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NumericalMode {
     /// Use the selected scene/configuration without applying a preset.

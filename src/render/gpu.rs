@@ -2,12 +2,26 @@
 //! view or a caller-owned texture view; window creation stays outside rendering.
 
 use super::{
-    BoundaryLines, Camera, RenderError,
+    BoundaryLines, Camera, ParticleRenderer, RenderError,
     camera::{dot, position, sub},
+    particle::{adaptive_level, projected_radius, sphere_mesh},
 };
 use crate::scene::Particle;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 use wgpu::util::DeviceExt;
+
+/// CPU wall intervals within one draw. Submission can include driver backpressure;
+/// these intervals do not measure GPU execution or display scan-out.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DrawTimings {
+    /// Camera conversion, validation, colours and particle packing.
+    pub prepare_s: f64,
+    /// Graphics buffer creation and upload calls.
+    pub upload_s: f64,
+    /// Command encoding, queue submission and asynchronous error polling.
+    pub submit_s: f64,
+}
 
 // Mesa's D3D12 driver registers thread-local cleanup callbacks. Keep its loader
 // alive until process exit so a rendering thread cannot unload those callbacks
@@ -56,10 +70,12 @@ pub struct Graphics {
     uniform: wgpu::Buffer,
     bind: wgpu::BindGroup,
     sphere: wgpu::RenderPipeline,
+    impostor: wgpu::RenderPipeline,
+    particle_renderer: ParticleRenderer,
     lines: wgpu::RenderPipeline,
     overlay: wgpu::RenderPipeline,
-    mesh: wgpu::Buffer,
-    mesh_count: u32,
+    meshes: [ParticleMesh; 3],
+    quad: ParticleMesh,
     failure: Arc<Mutex<Option<String>>>,
 }
 impl Graphics {
@@ -246,6 +262,12 @@ impl Graphics {
             "sphere",
             "particle_colour",
             wgpu::PrimitiveTopology::TriangleList,
+            &[Some(vertex.clone()), Some(instance_layout.clone())],
+        );
+        let impostor = make_pipeline(
+            "impostor",
+            "impostor_colour",
+            wgpu::PrimitiveTopology::TriangleList,
             &[Some(vertex.clone()), Some(instance_layout)],
         );
         let lines = make_pipeline(
@@ -283,13 +305,17 @@ impl Graphics {
             multiview_mask: None,
             cache: None,
         });
-        let mesh_data = sphere_mesh();
-        let mesh_count = (mesh_data.len() / 3) as u32;
-        let mesh = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("unit sphere, 16 longitudes x 12 latitudes"),
-            contents: &bytes(&mesh_data),
-            usage: wgpu::BufferUsages::VERTEX,
+        let meshes = [(16, 12), (12, 8), (8, 6)].map(|(lon, lat)| {
+            let (vertices, indices) = sphere_mesh(lon, lat);
+            ParticleMesh::new(&device, &vertices, &indices)
         });
+        let quad = ParticleMesh::new(
+            &device,
+            &[
+                -1.0, -1.0, 0.0, 1.0, -1.0, 0.0, -1.0, 1.0, 0.0, 1.0, 1.0, 0.0,
+            ],
+            &[0, 1, 2, 2, 1, 3],
+        );
         if let Some(error) = scope.pop().await {
             return Err(RenderError(format!("graphics pipeline: {error}")));
         }
@@ -301,12 +327,23 @@ impl Graphics {
             uniform,
             bind,
             sphere,
+            impostor,
+            particle_renderer: ParticleRenderer::Indexed,
             lines,
             overlay,
-            mesh,
-            mesh_count,
+            meshes,
+            quad,
             failure,
         })
+    }
+    /// Selects opaque particle geometry without changing accepted data or camera.
+    /// Graphics created for offscreen output retain indexed rendering unless selected.
+    pub fn set_particle_renderer(&mut self, renderer: ParticleRenderer) {
+        self.particle_renderer = renderer;
+    }
+    /// Current requested representation; near-plane intersections use the indexed fallback.
+    pub fn particle_renderer(&self) -> ParticleRenderer {
+        self.particle_renderer
     }
     /// Returns a retained asynchronous graphics failure, if one was reported.
     pub fn check(&self) -> Result<(), RenderError> {
@@ -356,6 +393,17 @@ impl Graphics {
         scene: &DrawScene<'_>,
         overlay: &[f32],
     ) -> Result<(), RenderError> {
+        self.draw_timed(target, depth, scene, overlay).map(|_| ())
+    }
+    /// Draws the same scene while reporting CPU stage intervals.
+    pub fn draw_timed(
+        &self,
+        target: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        scene: &DrawScene<'_>,
+        overlay: &[f32],
+    ) -> Result<DrawTimings, RenderError> {
+        let start = Instant::now();
         self.check()?;
         scene
             .camera
@@ -423,10 +471,40 @@ impl Graphics {
                 .checked_mul(4)
                 .ok_or_else(|| RenderError("particle draw capacity overflow".into()))?,
         );
+        let mut indexed_fallback = false;
+        let mut maximum_radius_px = 0.0_f64;
         for particle in scene.particles {
-            centres.extend(convert(position(particle))?);
+            let centre = convert(position(particle))?;
+            if self.particle_renderer != ParticleRenderer::Indexed {
+                indexed_fallback |= f64::from(centre[2] - radius) <= near;
+                if self.particle_renderer == ParticleRenderer::Impostor {
+                    let extent = centre.into_iter().map(f32::abs).fold(0.0, f32::max);
+                    indexed_fallback |= extent > 1e10 || radius <= extent * 1e-7;
+                }
+                if self.particle_renderer == ParticleRenderer::Adaptive {
+                    maximum_radius_px =
+                        maximum_radius_px.max(projected_radius(centre, radius, fy, scene.height));
+                }
+            }
+            centres.extend(centre);
             centres.push(colours.fraction(particle)?);
         }
+        let mesh_level = if indexed_fallback {
+            0
+        } else {
+            match self.particle_renderer {
+                ParticleRenderer::Indexed | ParticleRenderer::Impostor => 0,
+                ParticleRenderer::Low => 2,
+                ParticleRenderer::Adaptive => adaptive_level(maximum_radius_px),
+            }
+        };
+        let use_impostor =
+            self.particle_renderer == ParticleRenderer::Impostor && !indexed_fallback;
+        let particle_mesh = if use_impostor {
+            &self.quad
+        } else {
+            &self.meshes[mesh_level]
+        };
         let lines = scene
             .boundaries
             .vertices_m
@@ -453,9 +531,13 @@ impl Graphics {
                     usage: wgpu::BufferUsages::VERTEX,
                 }))
         };
+        let prepare_s = start.elapsed().as_secs_f64();
+        let upload_start = Instant::now();
         let centres_buffer = make_buffer("accepted centres", &centres)?;
         let line_buffer = make_buffer("plane outlines", &lines)?;
         let overlay_buffer = make_buffer("overlay", overlay)?;
+        let upload_s = upload_start.elapsed().as_secs_f64();
+        let submit_start = Instant::now();
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -485,11 +567,17 @@ impl Graphics {
                 ..Default::default()
             });
             pass.set_bind_group(0, &self.bind, &[]);
-            pass.set_pipeline(&self.sphere);
-            pass.set_vertex_buffer(0, self.mesh.slice(..));
+            pass.set_pipeline(if use_impostor {
+                &self.impostor
+            } else {
+                &self.sphere
+            });
+            pass.set_vertex_buffer(0, particle_mesh.vertices.slice(..));
             pass.set_vertex_buffer(1, centres_buffer.slice(..));
-            pass.draw(
-                0..self.mesh_count,
+            pass.set_index_buffer(particle_mesh.indices.slice(..), wgpu::IndexFormat::Uint16);
+            pass.draw_indexed(
+                0..particle_mesh.count,
+                0,
                 0..u32::try_from(scene.particles.len())
                     .map_err(|_| RenderError("particle draw count exceeds u32".into()))?,
             );
@@ -516,32 +604,78 @@ impl Graphics {
             pass.draw(0..(overlay.len() / 5) as u32, 0..1);
         }
         self.queue.submit([encoder.finish()]);
-        self.check()
+        self.check()?;
+        Ok(DrawTimings {
+            prepare_s,
+            upload_s,
+            submit_s: submit_start.elapsed().as_secs_f64(),
+        })
     }
 }
 fn bytes(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|x| x.to_ne_bytes()).collect()
 }
-fn sphere_mesh() -> Vec<f32> {
-    let point = |lat: u32, lon: u32| {
-        let t = std::f32::consts::PI * lat as f32 / 12.0;
-        let p = std::f32::consts::TAU * lon as f32 / 16.0;
-        [t.sin() * p.cos(), t.cos(), t.sin() * p.sin()]
-    };
-    let mut vertices = Vec::new();
-    for lat in 0..12 {
-        for lon in 0..16 {
-            for (a, b) in [
-                (lat, lon),
-                (lat + 1, lon),
-                (lat + 1, lon + 1),
-                (lat, lon),
-                (lat + 1, lon + 1),
-                (lat, lon + 1),
-            ] {
-                vertices.extend(point(a, b));
-            }
+struct ParticleMesh {
+    vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+    count: u32,
+}
+impl ParticleMesh {
+    fn new(device: &wgpu::Device, vertices: &[f32], indices: &[u16]) -> Self {
+        Self {
+            vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("particle mesh vertices"),
+                contents: &bytes(vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+            indices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("particle mesh indices"),
+                contents: &indices
+                    .iter()
+                    .flat_map(|x| x.to_ne_bytes())
+                    .collect::<Vec<_>>(),
+                usage: wgpu::BufferUsages::INDEX,
+            }),
+            count: indices.len() as u32,
         }
     }
-    vertices
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn indexed_sphere_preserves_every_triangle_coordinate_bit() {
+        let (vertices, indices) = super::sphere_mesh(16, 12);
+        assert_eq!(vertices.len(), 221 * 3);
+        assert_eq!(indices.len(), 1152);
+        let mut old = Vec::new();
+        for lat in 0..12 {
+            for lon in 0..16 {
+                for (a, b) in [
+                    (lat, lon),
+                    (lat + 1, lon),
+                    (lat + 1, lon + 1),
+                    (lat, lon),
+                    (lat + 1, lon + 1),
+                    (lat, lon + 1),
+                ] {
+                    let t = std::f32::consts::PI * a as f32 / 12.0;
+                    let p = std::f32::consts::TAU * b as f32 / 16.0;
+                    old.extend([t.sin() * p.cos(), t.cos(), t.sin() * p.sin()]);
+                }
+            }
+        }
+        let expanded = indices
+            .into_iter()
+            .flat_map(|i| {
+                vertices[usize::from(i) * 3..usize::from(i) * 3 + 3]
+                    .iter()
+                    .map(|x| x.to_bits())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            expanded,
+            old.iter().map(|x| x.to_bits()).collect::<Vec<_>>()
+        );
+    }
 }

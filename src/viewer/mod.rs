@@ -4,6 +4,7 @@
 
 mod model;
 mod overlay;
+mod profile;
 mod windowing;
 pub(crate) use windowing::create as create_event_loop;
 #[cfg(test)]
@@ -79,17 +80,20 @@ fn run_internal(
         model.fit(f64::from(settings.width) / f64::from(settings.height))?;
     }
     let mut app = Viewer::new(model, settings, graphics);
+    app.profile = profile::Profile::from_environment()?;
     let event_result = event_loop
         .run_app(&mut app)
         .map_err(|e| window_error("window event loop", e));
     // Event-loop failure still requests and joins worker teardown.
     app.model.request_shutdown();
     let joined = app.model.join();
+    let profile_result = app.profile.take().map_or(Ok(()), profile::Profile::finish);
     event_result?;
     joined?;
     if let Some(error) = app.error {
         return Err(error);
     }
+    profile_result?;
     Ok(())
 }
 pub(crate) fn window_error(context: &str, error: impl std::fmt::Display) -> RenderError {
@@ -161,7 +165,19 @@ impl Display {
             .copied()
             .find(|f| f.is_srgb())
             .ok_or_else(|| RenderError("selected surface has no supported sRGB format".into()))?;
-        let graphics = pollster::block_on(Graphics::from_adapter(adapter, Some(&surface), format))?;
+        let mut graphics =
+            pollster::block_on(Graphics::from_adapter(adapter, Some(&surface), format))?;
+        let renderer = match std::env::var("MAELSTROM_PARTICLE_RENDERER") {
+            Ok(value) => value.parse()?,
+            Err(std::env::VarError::NotPresent) => crate::render::ParticleRenderer::Impostor,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err(RenderError(
+                    "MAELSTROM_PARTICLE_RENDERER must contain a UTF-8 renderer name".into(),
+                ));
+            }
+        };
+        graphics.set_particle_renderer(renderer);
+        eprintln!("maelstrom particle renderer: {renderer:?}");
         eprintln!(
             "maelstrom graphics: {:?} {:?}; {}; driver {} {}; surface {:?}",
             graphics.adapter_info.backend,
@@ -246,6 +262,7 @@ struct Viewer {
     fps: f64,
     fps_start: Instant,
     next_redraw: Instant,
+    profile: Option<profile::Profile>,
 }
 impl Viewer {
     fn new(model: Model, settings: Settings, selection: GraphicsSelection) -> Self {
@@ -268,6 +285,7 @@ impl Viewer {
             fps: 0.0,
             fps_start: Instant::now(),
             next_redraw: Instant::now(),
+            profile: None,
         }
     }
 
@@ -490,12 +508,13 @@ impl Viewer {
         lines.push("Plane outlines are clipped depictions; metres, Y up".into());
         lines.push(self.model.audit_message.clone());
         lines.push(format!(
-            "Redraw FPS: {:.1} | solver timing and throughput not measured",
+            "Redraw FPS: {:.1} | independent of simulation speed",
             self.fps
         ));
         lines
     }
     fn redraw(&mut self) -> Result<(), RenderError> {
+        let frame_start = Instant::now();
         self.model.poll();
         let window = self
             .window
@@ -546,6 +565,7 @@ impl Viewer {
             self.refresh_surface = false;
         }
         let mut suboptimal = false;
+        let acquire_start = Instant::now();
         let frame = match display.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
@@ -568,15 +588,18 @@ impl Viewer {
                 return Err(RenderError("surface acquisition validation failed".into()));
             }
         };
+        let acquire_s = acquire_start.elapsed().as_secs_f64();
         let view = frame.texture.create_view(&Default::default());
         let depth = display.depth.create_view(&Default::default());
+        let draw;
+        let mut observed = None;
         if let Some(s) = self.model.displayed() {
             let observation = s.handle.observe();
             let particles = observation
                 .snapshot
                 .as_ref()
                 .map_or(&[][..], |s| s.particles());
-            display.graphics.draw(
+            draw = display.graphics.draw_timed(
                 &view,
                 &depth,
                 &DrawScene {
@@ -596,9 +619,10 @@ impl Viewer {
                 },
                 &overlay,
             )?;
+            observed = Some(observation);
         } else {
             let empty = crate::render::BoundaryLines::new(&[], &[], 0.05)?;
-            display.graphics.draw(
+            draw = display.graphics.draw_timed(
                 &view,
                 &depth,
                 &DrawScene {
@@ -614,8 +638,19 @@ impl Viewer {
                 &overlay,
             )?;
         }
+        let present_start = Instant::now();
         window.pre_present_notify();
         display.graphics.queue.present(frame);
+        let present_s = present_start.elapsed().as_secs_f64();
+        if let Some(profile) = &mut self.profile {
+            profile.record(
+                observed.as_ref(),
+                draw,
+                acquire_s,
+                present_s,
+                frame_start.elapsed().as_secs_f64(),
+            );
+        }
         if suboptimal {
             display.resize(size.width, size.height)?;
         }
