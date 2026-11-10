@@ -6,6 +6,7 @@
 
 pub mod application;
 pub mod boundary;
+pub mod cache;
 pub mod config;
 pub mod cuda;
 pub mod diagnostics;

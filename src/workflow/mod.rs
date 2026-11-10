@@ -11,7 +11,6 @@ mod output;
 mod record;
 
 pub use measurement::{MeasurementMode, RunMeasurements};
-#[cfg(feature = "render")]
 pub(crate) use output::publish_bytes;
 pub use output::{OutputError, OutputFormat};
 pub use record::{ParticleRecord, RecordError, RecordedInput, SCHEMA_VERSION, SnapshotRecord};
@@ -623,6 +622,8 @@ pub fn replay_execution(
 #[derive(Deserialize)]
 struct Replay {
     schema_version: u32,
+    #[serde(default)]
+    kind: Option<String>,
     backend: String,
     #[serde(default)]
     execution: ExecutionMode,
@@ -654,7 +655,9 @@ pub fn replay_options_from_reader(
 fn resolve_replay(
     replay: Replay,
 ) -> Result<(ResolvedScene, RunRequest, ExecutionOptions), RecordError> {
-    record::version(replay.schema_version)?;
+    if !(replay.schema_version == 2 && replay.kind.as_deref() == Some("maelstrom-cache-render")) {
+        record::version(replay.schema_version)?;
+    }
     let iterations = replay
         .input
         .as_ref()

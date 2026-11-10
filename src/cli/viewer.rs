@@ -13,6 +13,48 @@ use maelstrom::{
 use std::fs;
 
 pub(super) fn launch(view: &View, storage: &super::storage::Storage) -> Result<u8, CliError> {
+    if view.cache.is_none() && (view.allow_partial || view.cache_playback.is_some()) {
+        return Err(CliError::usage(
+            "--cache-playback and --allow-partial require --cache".into(),
+        ));
+    }
+    if let Some(path) = &view.cache {
+        let cache = maelstrom::cache::Cache::open(path, view.allow_partial)
+            .map_err(|e| CliError::input(e.to_string()))?;
+        let selected = super::presentation::resolve(
+            None,
+            &super::arguments::PresentationOptions {
+                render_config: view.render_config.clone(),
+                width: view.width,
+                height: view.height,
+                fit_camera: view.fit_camera,
+                no_fit_camera: view.no_fit_camera,
+                ..Default::default()
+            },
+        )?;
+        maelstrom::viewer::run_cache(
+            cache,
+            selected.effective.settings,
+            GraphicsSelection {
+                index: view.graphics_adapter,
+                software: view.software,
+            },
+            selected.effective.camera_mode == maelstrom::presentation::CameraMode::Fit,
+            view.paused,
+            view.cache_memory_mb,
+            view.camera_output.clone(),
+            view.preview_renderer
+                .parse()
+                .map_err(|e: maelstrom::render::RenderError| CliError::input(e.to_string()))?,
+            view.cache_playback
+                .as_deref()
+                .unwrap_or("real-time")
+                .parse()
+                .map_err(|e: maelstrom::render::RenderError| CliError::input(e.to_string()))?,
+        )
+        .map_err(|e| CliError::input(e.to_string()))?;
+        return Ok(0);
+    }
     let resolved = inputs::resolve_in(&view.inputs, storage)?;
     let options = super::selection::resolve(&view.selection, &storage.preferences()?)?;
     let steps = resolved.steps(&view.limit)?;

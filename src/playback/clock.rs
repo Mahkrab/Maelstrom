@@ -12,7 +12,7 @@ pub(super) struct Clock {
 }
 impl Clock {
     pub fn new(
-        times: Vec<f64>,
+        mut times: Vec<f64>,
         speed: f64,
         paused: bool,
         repeat: bool,
@@ -21,6 +21,13 @@ impl Clock {
             return Err(RenderError(
                 "playback speed must be finite and within 0.01..=100".into(),
             ));
+        }
+        // A cached excerpt may begin at a nonzero simulation time. Playback
+        // starts at the first image; the manifest keeps the original timestamps.
+        if let Some(origin) = times.first().copied() {
+            for time in &mut times {
+                *time -= origin;
+            }
         }
         let playing = !paused && times.len() > 1;
         Ok(Self {

@@ -96,6 +96,19 @@ fn pixels_load_without_physical_inputs_or_the_recorded_cuda_device() {
 }
 
 #[test]
+fn selected_excerpt_starts_playback_at_its_first_image() {
+    let mut clock = Clock::new(vec![10.0, 10.25, 10.5], 1.0, false, false).unwrap();
+    assert_eq!(clock.frame(), 0);
+    clock.advance(0.25);
+    assert_eq!(clock.frame(), 1);
+    clock.seek(2);
+    assert_eq!(clock.position, 0.5);
+    clock.restart();
+    assert_eq!(clock.position, 0.0);
+    assert_eq!(clock.frame(), 0);
+}
+
+#[test]
 fn large_particle_provenance_does_not_prevent_playing_existing_images() {
     use std::io::Write;
     let f = Fixture::new();

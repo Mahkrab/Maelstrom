@@ -1,6 +1,8 @@
 # View a live simulation
 
-`view` starts a **fresh simulation**. To watch something already compiled, use
+`view SCENE` starts a **fresh simulation**. `view --cache DIRECTORY` opens saved particles
+with 3D camera controls; see [interactive cache playback and video](video.md).
+To watch images already compiled, use
 [playback](export.md) instead. Install with `--features viewer`; a Vulkan or OpenGL ES driver,
 display and supported native keyboard libraries are required.
 

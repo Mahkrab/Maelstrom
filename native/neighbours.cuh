@@ -1,21 +1,33 @@
 // Prediction-time rows contain only actual neighbours, sorted by identity. The
 // count and fill passes share geometry; checked prefix totals determine storage.
+// Tiled rows interleave 32 identities without changing their logical sequence.
+// Their offsets occupy the cell sort's unused second half after sorting finishes.
 #pragma once
 #include "row_sort.cuh"
 
 struct Members {
     const std::uint32_t *indices;
     std::uint64_t cursor, stop;
-    unsigned int owner;
+    unsigned int owner, stride;
     bool include_self;
-    __device__ Members(SolverBuffers b, SolverSettings, unsigned int i, bool self=false)
-        :indices(b.neighbours),cursor(b.offsets[i]),stop(b.offsets[i+1]),owner(i),include_self(self) {}
+    __device__ Members(SolverBuffers b, SolverSettings s, unsigned int i, bool self=false)
+        :indices(b.neighbours),cursor(0),stop(b.offsets[i+1]-b.offsets[i]),owner(i),stride(1),include_self(self) {
+        // An empty tile can end at the allocation boundary (or have no
+        // allocation). Do not form a padded lane pointer for an empty row.
+        if (stop) {
+            if (s.neighbour_layout==1) {
+                const auto offsets=reinterpret_cast<const std::uint64_t *>(b.cells+s.padded);
+                indices=b.neighbours+offsets[i/32]+i%32;
+                stride=32;
+            } else indices=b.neighbours+b.offsets[i];
+        }
+    }
     __device__ unsigned int next(unsigned int end) {
-        if (include_self && (cursor==stop || owner<indices[cursor])) {
+        if (include_self && (cursor==stop || owner<indices[cursor*stride])) {
             include_self=false;
             return owner;
         }
-        return cursor==stop ? end : indices[cursor++];
+        return cursor==stop ? end : indices[(cursor++)*stride];
     }
 };
 
@@ -58,7 +70,12 @@ __device__ void discover_row(SolverBuffers b, SolverSettings s, unsigned int i,
                 if (i!=j && separation(b.position[i],b.position[j],c)<s.radius) {
                     if (fill) {
                         if (cursor==stop) { c.error=52; return; }
-                        b.neighbours[cursor]=j;
+                        auto target=cursor;
+                        if (s.neighbour_layout==1) {
+                            const auto offsets=reinterpret_cast<const std::uint64_t *>(b.cells+s.padded);
+                            target=offsets[i/32]+(cursor-start)*32+i%32;
+                        }
+                        b.neighbours[target]=j;
                     }
                     ++cursor;
                 }

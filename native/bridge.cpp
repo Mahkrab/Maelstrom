@@ -276,7 +276,8 @@ static Status solver(Resource &r, SolverSettings settings, unsigned int operatio
     if (r.poisoned) return {-3,14};
     const bool state=observation==Observation::State;
     const bool prefix=observation==Observation::CountPrefix || observation==Observation::Prefix;
-    if ((observation!=Observation::None && (!diagnostic || grouped)) ||
+    const bool tiled=settings.neighbour_layout==1;
+    if (settings.neighbour_layout>1 || (observation!=Observation::None && (!diagnostic || grouped)) ||
         (state && operation>1) || (prefix && operation!=4) ||
         (grouped && (!diagnostic || (operation!=5 && operation!=9))) ||
         (operation>17 && operation!=24) || ((operation==2 || (operation==4 && observation!=Observation::Prefix) || operation==12) && (!std::isfinite(settings.width) || settings.width<=0)) ||
@@ -348,8 +349,9 @@ static Status solver(Resource &r, SolverSettings settings, unsigned int operatio
                 function=r.prefix_counts;
                 settings.stride=observation==Observation::CountPrefix;
                 settings.span=static_cast<unsigned int>((static_cast<std::uint64_t>(settings.count)+threads)/threads);
-                for (kernel_operation=21;kernel_operation<=23;++kernel_operation) {
-                    count=kernel_operation==22 ? threads : static_cast<std::uint64_t>(settings.count)+1;
+                for (kernel_operation=21;kernel_operation<=(tiled ? 25U : 23U);++kernel_operation) {
+                    if (kernel_operation==24) continue;
+                    count=(kernel_operation==22 || kernel_operation==25) ? threads : static_cast<std::uint64_t>(settings.count)+1;
                     const auto status=launch();
                     if (status.code) return status;
                 }

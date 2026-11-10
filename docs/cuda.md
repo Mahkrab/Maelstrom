@@ -208,6 +208,16 @@ passes. Disabled or zero-strength effects launch none of their passes. Both effe
 fixed neighbour rows and strict final-distance support; no extra discovery or device allocation is
 introduced. Strengths and numerical revisions are part of recorded physical inputs.
 
+For inputs of at least 32,000 particles, neighbour rows are interleaved in tiles of
+32 identities. Each tile reserves its longest row for every lane; readers still
+visit exactly the original identity-sorted members, excluding padding. Compact
+CSR offsets retain logical row lengths, while a checked integer prefix supplies
+the physical allocation size. Tile offsets reuse the cell sort's finished scratch
+half. Cooperative row sorting uses the same network and unrestricted dense-row
+fallback with a stride of 32. Small inputs retain compact rows because their
+measured timestep saving did not repay tiled construction. This storage choice
+changes neither prediction membership nor the arithmetic/cancellation sequence.
+
 The exhaustive power check is a standalone CUDA test, separate from the Driver API
 solver and its production dependencies. It uses the toolkit's Runtime API only for
 test setup, launches and counters. Build it with the solver's precise flags; its

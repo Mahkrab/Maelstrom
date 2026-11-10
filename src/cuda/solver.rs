@@ -39,9 +39,10 @@ pub(super) struct Settings {
     entries: u64,
     xsph: f32,
     vorticity: f32,
+    neighbour_layout: u32,
 }
 const _: () = {
-    assert!(size_of::<Settings>() == 96 && align_of::<Settings>() == 8);
+    assert!(size_of::<Settings>() == 104 && align_of::<Settings>() == 8);
     assert!(std::mem::offset_of!(Settings, width) == 64);
 };
 
@@ -291,10 +292,17 @@ impl CudaSolver {
         }
         let record = self.context.inner.prefix(*s, self.threads, true)?;
         diagnostic_error(record, s.count)?;
-        s.entries = self
-            .context
-            .inner
-            .download_at::<u64>(13, s.count as usize, 1)?[0];
+        s.entries = if s.neighbour_layout == 1 {
+            self.context.inner.download_at::<u64>(
+                10,
+                s.padded as usize * 4 + (s.count as usize).div_ceil(32),
+                1,
+            )?[0]
+        } else {
+            self.context
+                .inner
+                .download_at::<u64>(13, s.count as usize, 1)?[0]
+        };
         let required = storage_sizes(*s)?[11];
         // Membership changes as the block moves. Geometric growth avoids a
         // device reallocation for every small increase, without capping a row.
@@ -376,6 +384,9 @@ impl CudaSolver {
         while s.width < minimum {
             s.width *= 2.0;
         }
+        // The PC comparison favours compact rows for small inputs. Larger
+        // inputs amortise tiled construction across repeated numerical passes.
+        s.neighbour_layout = u32::from(particles.len() >= 32_000);
         self.discover_with_width(&mut s)?;
         check_cancellation(cancelled)?;
         clock.mark(Stage::NeighbourSearch);
@@ -557,3 +568,7 @@ mod plane_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/cuda/mirror_tests.rs"]
 mod mirror_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/cuda/tiled_tests.rs"]
+mod tiled_tests;

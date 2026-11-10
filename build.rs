@@ -26,7 +26,6 @@ fn main() {
     let catalogue = bundled::generate(&root).expect("generate bundled scene catalogue");
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo OUT_DIR"));
     fs::write(out.join("bundled_inputs.rs"), catalogue).expect("write bundled scene catalogue");
-    #[cfg(feature = "render")]
     export_build_identity();
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_CUDA");
     if env::var_os("CARGO_FEATURE_CUDA").is_none() {
@@ -131,7 +130,6 @@ fn main() {
     println!("cargo:rustc-env=MAELSTROM_CUDA_ARCH={arch}");
 }
 
-#[cfg(feature = "render")]
 fn export_build_identity() {
     use sha2::{Digest, Sha256};
     fn hex(bytes: &[u8]) -> String {

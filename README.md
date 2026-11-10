@@ -46,8 +46,23 @@ to another machine to watch it there. See [compiled runs and playback](docs/expo
 
 For headless execution, use `maelstrom run water --steps 120`. It targets 1x simulated
 time; `--unpaced` removes waiting. A slow solver reports lag rather than skipping work.
-`view` starts a fresh live simulation; `rerun` recomputes recorded inputs from zero.
-Neither is saved playback.
+`view SCENE` starts a fresh live simulation; `rerun` recomputes recorded inputs from zero.
+`view --cache DIRECTORY` opens saved particle motion without a solver.
+
+To explore a cached simulation in 3D and export the chosen viewpoint:
+
+```sh
+# Starts a new simulation; subsequent commands use saved observations.
+maelstrom cache bake water --steps 480 --frame-stride 4 -o water-cache
+maelstrom view --cache water-cache --paused --camera-output chosen.toml
+# Press S in the window to save the camera, then export without simulating again.
+maelstrom video cache water-cache --render-config chosen.toml -o water.mp4
+```
+
+MP4 requires FFmpeg with libx264. `maelstrom video images <run-directory> -o water.mp4`
+also converts existing validated PNG sequences without a cache. See the
+[interactive cache and video guide](docs/video.md) for controls, camera portability,
+frame timing, quality and cancellation.
 
 ## Choose the next guide
 

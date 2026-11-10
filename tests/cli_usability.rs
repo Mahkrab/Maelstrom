@@ -838,3 +838,45 @@ fn paper_baseline_records_its_equations_and_reruns_resolved_inputs() {
         .success()
     );
 }
+
+#[test]
+fn cached_view_and_video_help_explain_saved_inputs() {
+    let binary = env!("CARGO_BIN_EXE_maelstrom");
+    for args in [["view", "--help"], ["video", "--help"]] {
+        let output = std::process::Command::new(binary)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(text.contains(if args[0] == "view" {
+            "--cache"
+        } else {
+            "images"
+        }));
+    }
+    let output = std::process::Command::new(binary)
+        .args(["view", "--cache", "missing", "--backend", "cuda"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let output = std::process::Command::new(binary)
+        .args(["video", "images", "missing"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(if cfg!(feature = "render") { 2 } else { 3 })
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(if cfg!(feature = "render") {
+            "--output"
+        } else {
+            "video requires"
+        })
+    );
+}

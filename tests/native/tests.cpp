@@ -586,11 +586,12 @@ static void submission_boundaries() {
 }
 
 static void compact_observation_failures() {
-    for (auto prefix : {false,true}) for (auto failure : {0,9,10,13,16}) {
-        const auto passes=prefix ? 4 : 1;
+    for (auto layout : {0U,1U}) for (auto prefix : {false,true}) for (auto failure : {0,9,10,13,16}) {
+        const auto passes=prefix ? 4+static_cast<int>(layout) : 1;
         for (int launch=1;launch<=passes;++launch) {
             observed={};Resource r;ready(r);
             SolverSettings s{};s.count=5;s.padded=8;s.width=1;
+            s.neighbour_layout=layout;
             for (unsigned int slot=0;slot<14;++slot)
                 assert(maelstrom_cuda_storage(&r,slot,nullptr,512,0).code==0);
             assert(maelstrom_cuda_begin_attempt(&r).code==0);
@@ -613,6 +614,10 @@ static void compact_observation_failures() {
                     assert(observed.launches[0].operation==4);
                     for (int pass=1;pass<4;++pass)
                         assert(observed.launches[pass].operation==20U+pass);
+                    if (layout) {
+                        assert(observed.launches[4].operation==25);
+                        assert(observed.launches[4].grid==1);
+                    }
                 }
             }
             if (failure) assert(maelstrom_cuda_prefix(&r,s,128,1,results).stage==14);

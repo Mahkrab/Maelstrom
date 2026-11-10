@@ -154,6 +154,26 @@ impl FrameWriter<'_> {
         index: usize,
     ) -> Result<super::encoding::Job, ExportError> {
         let start = std::time::Instant::now();
+        let observation = super::encoding::Observation::Recorded(snapshot.clone());
+        self.timings.particle_copy += start.elapsed();
+        self.prepare_observation(observation, index)
+    }
+
+    pub fn prepare_cached(
+        &mut self,
+        frame: crate::cache::ValidatedFrame,
+        index: usize,
+    ) -> Result<super::encoding::Job, ExportError> {
+        self.prepare_observation(super::encoding::Observation::Cached(frame), index)
+    }
+
+    fn prepare_observation(
+        &mut self,
+        observation: super::encoding::Observation,
+        index: usize,
+    ) -> Result<super::encoding::Job, ExportError> {
+        let snapshot = observation.snapshot();
+        let start = std::time::Instant::now();
         let particles: Vec<_> = snapshot.particles().iter().map(|p| p.particle()).collect();
         self.timings.particle_copy += start.elapsed();
         let start = std::time::Instant::now();
@@ -173,7 +193,7 @@ impl FrameWriter<'_> {
         self.timings.graphics_readback += start.elapsed();
         let start = std::time::Instant::now();
         let job = super::encoding::Job {
-            snapshot: snapshot.clone(),
+            observation,
             rgba,
             width: self.settings.width,
             height: self.settings.height,
@@ -189,13 +209,19 @@ impl FrameWriter<'_> {
         self.worker.submit(job)
     }
 
-    pub fn collect(&mut self) -> Result<Option<super::Frame>, ExportError> {
+    pub fn collect_with_cancellation(
+        &mut self,
+        cancelled: &mut impl FnMut() -> bool,
+    ) -> Result<Option<super::Frame>, ExportError> {
         let start = std::time::Instant::now();
         let encoded = self.worker.collect()?;
         self.timings.output_wait += start.elapsed();
         let Some(encoded) = encoded else {
             return Ok(None);
         };
+        if cancelled() {
+            return Err(fail("cached rendering cancelled before frame publication"));
+        }
         self.timings.png_encoding += encoded.timings.png_encoding;
         self.timings.hashing += encoded.timings.hashing;
         let start = std::time::Instant::now();

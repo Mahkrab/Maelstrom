@@ -9,8 +9,27 @@ use std::{
     time::Instant,
 };
 
+pub(super) enum Observation {
+    Recorded(SnapshotRecord),
+    Cached(crate::cache::ValidatedFrame),
+}
+impl Observation {
+    pub fn snapshot(&self) -> &SnapshotRecord {
+        match self {
+            Self::Recorded(s) => s,
+            Self::Cached(f) => f.snapshot(),
+        }
+    }
+    fn canonical(&self) -> Result<String, ExportError> {
+        match self {
+            Self::Recorded(s) => Ok(super::format_digest(s.canonical_sha256().map_err(fail)?)),
+            Self::Cached(f) => Ok(f.canonical_sha256()),
+        }
+    }
+}
+
 pub(super) struct Job {
-    pub snapshot: SnapshotRecord,
+    pub observation: Observation,
     pub rgba: Vec<u8>,
     pub width: u32,
     pub height: u32,
@@ -33,12 +52,12 @@ fn encode(job: Job) -> Result<Encoded, ExportError> {
     let start = Instant::now();
     let frame = Frame {
         index: job.index,
-        step: job.snapshot.completed_steps().to_string(),
-        simulated_seconds: job.snapshot.completed_steps() as f64 * job.dt,
+        step: job.observation.snapshot().completed_steps().to_string(),
+        simulated_seconds: job.observation.snapshot().completed_steps() as f64 * job.dt,
         file: format!("frame-{:08}.png", job.index),
         png_sha256: super::hash(&png),
         rgba_sha256: super::hash(&job.rgba),
-        snapshot_sha256: super::format_digest(job.snapshot.canonical_sha256().map_err(fail)?),
+        snapshot_sha256: job.observation.canonical()?,
     };
     timings.hashing = start.elapsed();
     Ok(Encoded {
@@ -119,10 +138,12 @@ mod tests {
 
     fn job() -> Job {
         Job {
-            snapshot: SnapshotRecord::from_json(
-                r#"{"schema_version":1,"completed_steps":"7","particles":[]}"#,
-            )
-            .unwrap(),
+            observation: Observation::Recorded(
+                SnapshotRecord::from_json(
+                    r#"{"schema_version":1,"completed_steps":"7","particles":[]}"#,
+                )
+                .unwrap(),
+            ),
             rgba: vec![16, 24, 32, 255],
             width: 1,
             height: 1,
@@ -137,7 +158,7 @@ mod tests {
         let request = job();
         let expected_png = (request.encode)(1, 1, &request.rgba).unwrap();
         let expected_snapshot_hash =
-            super::super::hash(request.snapshot.to_json().unwrap().as_bytes());
+            super::super::hash(request.observation.snapshot().to_json().unwrap().as_bytes());
         let mut worker = Worker::new().unwrap();
         assert!(worker.collect().unwrap().is_none());
         worker.submit(request).unwrap();

@@ -43,9 +43,9 @@ pub(super) fn source(storage: &Storage, selection: &Path) -> Result<String, CliE
 fn read(storage: &Storage, selection: &str) -> Result<Value, CliError> {
     let v: Value = serde_json::from_reader(open(storage, Path::new(selection))?)
         .map_err(|e| CliError::input(format!("run manifest: {e}")))?;
-    if v["schema_version"] != 1 || v["complete"] != true {
+    if !matches!(v["schema_version"].as_u64(), Some(1 | 2)) || v["complete"] != true {
         return Err(CliError::input(
-            "expected a completed schema-1 image manifest".into(),
+            "expected a completed image manifest".into(),
         ));
     }
     Ok(v)
@@ -87,7 +87,7 @@ pub(super) fn manage(cli: &Cli, storage: &Storage, command: &Runs) -> Result<u8,
                         serde_json::from_reader::<_, Completion>(reader)
                             .map_err(|e| CliError::input(e.to_string()))
                     }) {
-                        Ok(v) if v.schema_version == 1 && v.complete => {
+                        Ok(v) if matches!(v.schema_version, 1 | 2) && v.complete => {
                             (true, "completed; frame integrity not checked")
                         }
                         _ => (false, "invalid manifest"),
@@ -247,35 +247,80 @@ pub(super) fn compile(cli: &Cli, storage: &Storage, args: &Compile) -> Result<u8
     use std::io::{IsTerminal, Write};
     let terminal = std::io::stderr().is_terminal();
     let mut last_update = std::time::Instant::now() - std::time::Duration::from_secs(1);
-    let exported = maelstrom::export::export_with_progress(
-        ExportRequest {
-            source: Source::Direct {
+    let exported = if let Some(cache_path) = &args.cache_output {
+        if cache_path == &destination {
+            return Err(CliError::usage(
+                "--cache-output and --output must be different directories".into(),
+            ));
+        }
+        let baked = maelstrom::cache::bake(
+            maelstrom::cache::BakeRequest {
                 scene,
                 steps,
+                stride: settings.step_stride,
                 options,
+                destination: cache_path,
             },
-            settings,
-            graphics: GraphicsSelection {
-                index: args.graphics_adapter,
-                software: args.software,
+            || cancel.load(Ordering::Relaxed),
+            |_, _| {},
+        );
+        match baked {
+            Err(error) => Err(maelstrom::export::ExportError(error.to_string())),
+            Ok(_) => maelstrom::cache::Cache::open(cache_path, false)
+                .map_err(|e| maelstrom::export::ExportError(e.to_string()))
+                .and_then(|cache| {
+                    maelstrom::export::render_cache(
+                        maelstrom::export::CachedRenderRequest {
+                            selection: maelstrom::export::CacheSelection {
+                                first: 0,
+                                last: cache.frame_count() - 1,
+                                every: 1,
+                            },
+                            cache: &cache,
+                            settings,
+                            graphics: GraphicsSelection {
+                                index: args.graphics_adapter,
+                                software: args.software,
+                            },
+                            fit_camera,
+                            destination: &destination,
+                        },
+                        || cancel.load(Ordering::Relaxed),
+                        |_, _| {},
+                    )
+                }),
+        }
+    } else {
+        maelstrom::export::export_with_progress(
+            ExportRequest {
+                source: Source::Direct {
+                    scene,
+                    steps,
+                    options,
+                },
+                settings,
+                graphics: GraphicsSelection {
+                    index: args.graphics_adapter,
+                    software: args.software,
+                },
+                fit_camera,
+                destination: &destination,
             },
-            fit_camera,
-            destination: &destination,
-        },
-        || cancel.load(Ordering::Relaxed),
-        |done, total| {
-            if terminal && last_update.elapsed() >= std::time::Duration::from_millis(100) {
-                let filled = done * 30 / total;
-                eprint!(
-                    "\r\x1b[2K[{}{}] {done}/{total} frames",
-                    "=".repeat(filled),
-                    " ".repeat(30 - filled)
-                );
-                let _ = std::io::stderr().flush();
-                last_update = std::time::Instant::now();
-            }
-        },
-    );
+            || cancel.load(Ordering::Relaxed),
+            |done, total| {
+                if terminal && last_update.elapsed() >= std::time::Duration::from_millis(100) {
+                    let filled = done * 30 / total;
+                    eprint!(
+                        "\r\x1b[2K[{}{}] {done}/{total} frames",
+                        "=".repeat(filled),
+                        " ".repeat(30 - filled)
+                    );
+                    let _ = std::io::stderr().flush();
+                    last_update = std::time::Instant::now();
+                }
+            },
+        )
+    };
     if terminal {
         eprintln!(
             "\r\x1b[2K{}",

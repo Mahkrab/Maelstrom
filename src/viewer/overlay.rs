@@ -90,3 +90,26 @@ fn rect(out: &mut Vec<f32>, box_px: [f32; 4], colour: [f32; 3], width: u32, heig
         ]);
     }
 }
+
+/// A visible seek strip uses the same pixel coordinates as cached pointer input.
+pub(super) fn scrubber(out: &mut Vec<f32>, width: u32, height: u32, fraction: f64) {
+    rect(
+        out,
+        [0.0, height.saturating_sub(30) as f32, width as f32, 30.0],
+        [0.02, 0.03, 0.04],
+        width,
+        height,
+    );
+    rect(
+        out,
+        [
+            0.0,
+            height.saturating_sub(20) as f32,
+            (fraction.clamp(0.0, 1.0) * width as f64) as f32,
+            10.0,
+        ],
+        [0.1, 0.5, 0.8],
+        width,
+        height,
+    );
+}

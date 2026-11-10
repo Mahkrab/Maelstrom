@@ -104,6 +104,36 @@ extern "C" __global__ void prefix_counts(SolverBuffers b, SolverSettings s, unsi
     if (b.diagnostic[0]!=ULLONG_MAX) return;
     const auto lane=threadIdx.x;
     __shared__ std::uint64_t scan[256];
+    if (operation==25) {
+        // CSR offsets are complete and checked. Pad each group of 32 rows to
+        // its longest row, then scan tile sizes using contiguous lane-owned
+        // slices. The cell sort has finished with this second scratch half.
+        // A partial tile reserves all 32 lanes, so every numerical row uses
+        // the same stride without reading another row's padding.
+        if (blockIdx.x || b.diagnostic[1]!=ULLONG_MAX) return;
+        const auto tiles=(static_cast<std::uint64_t>(s.count)+31)/32;
+        auto *offsets=reinterpret_cast<std::uint64_t *>(b.cells+s.padded);
+        const auto chunk=(tiles+blockDim.x-1)/blockDim.x;
+        const auto first=lane*chunk, last=min(first+chunk,tiles);
+        std::uint64_t sum=0;
+        for (auto tile=first;tile<last;++tile) {
+            std::uint64_t largest=0;
+            for (auto i=tile*32;i<min((tile+1)*32,static_cast<std::uint64_t>(s.count));++i)
+                largest=max(largest,b.offsets[i+1]-b.offsets[i]);
+            offsets[tile]=largest*32;
+            sum+=largest*32;
+        }
+        scan[lane]=sum;
+        inclusive_block_prefix(scan);
+        auto carry=lane ? scan[lane-1] : 0;
+        for (auto tile=first;tile<last;++tile) {
+            const auto length=offsets[tile];
+            offsets[tile]=carry;
+            carry+=length;
+        }
+        if (lane==blockDim.x-1) offsets[tiles]=scan[lane];
+        return;
+    }
     const auto n=static_cast<std::uint64_t>(s.count)+1;
     auto *totals=reinterpret_cast<std::uint64_t *>(b.correction);
     if (operation==22) {

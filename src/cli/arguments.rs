@@ -90,7 +90,16 @@ pub(super) enum Command {
     Rerun(Replay),
     /// Simulate once and publish portable images for later playback
     Compile(Compile),
-    /// Start a fresh simulation with live visualisation
+    /// Bake, inspect or validate reusable particle observations
+    Cache {
+        #[command(subcommand)]
+        command: CacheCommand,
+    },
+    /// Render particle caches without executing fluid timesteps
+    Render(CacheRender),
+    /// Encode saved images or cached observations as H.264 MP4
+    Video(Video),
+    /// View a fresh simulation, or open saved observations with --cache
     View(View),
     /// Play existing images with no simulation or particle rendering
     Play(Play),
@@ -239,6 +248,9 @@ pub(super) struct Compile {
     /// New bundle directory; omitted selects a new ID in the run library
     #[arg(short, long)]
     pub output: Option<PathBuf>,
+    /// Bake a new reusable cache here, then render it; omitted keeps direct compilation
+    #[arg(long)]
+    pub cache_output: Option<PathBuf>,
     /// Human-readable catalogue label, not a lookup ID or overwrite permission
     #[arg(long)]
     pub name: Option<String>,
@@ -262,6 +274,66 @@ pub(super) struct Compile {
     #[arg(long, conflicts_with = "fit_camera")]
     pub no_fit_camera: bool,
 }
+#[derive(Subcommand)]
+pub(super) enum CacheCommand {
+    /// Start a new simulation and cache scheduled accepted states, with no graphics
+    Bake(Box<CacheBake>),
+    /// Inspect metadata and the committed prefix; never continue a solver
+    Inspect {
+        cache: PathBuf,
+        #[arg(long)]
+        allow_partial: bool,
+    },
+    /// Validate binary frames; --full independently recomputes canonical hashes
+    Validate {
+        cache: PathBuf,
+        #[arg(long)]
+        allow_partial: bool,
+        #[arg(long)]
+        full: bool,
+    },
+}
+#[derive(Args)]
+pub(super) struct CacheBake {
+    #[command(flatten)]
+    pub inputs: Inputs,
+    #[command(flatten)]
+    pub selection: Selection,
+    #[command(flatten)]
+    pub limit: Limit,
+    /// Sample accepted steps, retaining both endpoints
+    #[arg(long, default_value_t = 4)]
+    pub frame_stride: u64,
+    /// New cache directory; never overwrite existing output
+    #[arg(short, long)]
+    pub output: PathBuf,
+}
+#[derive(Args)]
+pub(super) struct CacheRender {
+    pub cache: PathBuf,
+    /// New image sequence directory
+    #[arg(short, long)]
+    pub output: PathBuf,
+    #[command(flatten)]
+    pub presentation: PresentationOptions,
+    /// Single cache-frame index; conflicts with range selection
+    #[arg(long, conflicts_with_all=["first_frame","last_frame","every"])]
+    pub frame: Option<u64>,
+    #[arg(long)]
+    pub first_frame: Option<u64>,
+    #[arg(long)]
+    pub last_frame: Option<u64>,
+    /// Increment in cached-frame indices, not fluid timesteps
+    #[arg(long)]
+    pub every: Option<u64>,
+    /// Render only an explicitly selected receipt-backed incomplete prefix
+    #[arg(long)]
+    pub allow_partial: bool,
+    #[arg(long, default_value_t = 0)]
+    pub graphics_adapter: usize,
+    #[arg(long)]
+    pub software: bool,
+}
 #[derive(Args)]
 pub(super) struct Play {
     /// Run ID, completed export directory or manifest.json
@@ -284,6 +356,21 @@ pub(super) struct Play {
 }
 #[derive(Args)]
 pub(super) struct View {
+    /// Open saved observations without creating a solver
+    #[arg(long, conflicts_with_all=["scene", "config", "numerical_mode", "overrides", "refine_timestep", "backend", "threads", "device", "block_size", "execution", "steps", "duration"])]
+    pub cache: Option<PathBuf>,
+    /// Particle read-ahead budget in MiB (includes decode workspace)
+    #[arg(long, default_value_t = 128)]
+    pub cache_memory_mb: usize,
+    /// Follow recorded time or present every observation (cached viewing only)
+    #[arg(long, requires="cache", value_parser=["real-time", "frame-accurate"])]
+    pub cache_playback: Option<String>,
+    /// Explicitly open an incomplete cache's committed prefix
+    #[arg(long, requires = "cache")]
+    pub allow_partial: bool,
+    /// Cached preview geometry; indexed matches offline exports
+    #[arg(long, default_value="indexed", value_parser=["indexed", "impostor"])]
+    pub preview_renderer: String,
     #[command(flatten)]
     pub inputs: Inputs,
     #[command(flatten)]
@@ -371,5 +458,49 @@ pub(super) enum ExportSource {
         steps: u64,
         #[command(flatten)]
         selection: Selection,
+    },
+}
+
+#[derive(Args)]
+pub(super) struct Video {
+    #[command(subcommand)]
+    pub source: VideoSource,
+    #[arg(short, long, global = true)]
+    pub output: Option<PathBuf>,
+    /// Constant video frame rate, independent of simulation frequency
+    #[arg(long, global = true, default_value_t = 60.0)]
+    pub fps: f64,
+    /// H.264 quality: 0 highest quality, 18 high quality, 51 lowest quality
+    #[arg(long, global=true, default_value_t=18, value_parser=clap::value_parser!(u8).range(0..=51))]
+    pub crf: u8,
+    #[arg(long, global = true, default_value = "ffmpeg")]
+    pub ffmpeg: PathBuf,
+    #[arg(long, global = true)]
+    pub width: Option<u32>,
+    #[arg(long, global = true)]
+    pub height: Option<u32>,
+    #[arg(long, global = true)]
+    pub first_frame: Option<u64>,
+    #[arg(long, global = true)]
+    pub last_frame: Option<u64>,
+    #[arg(long, global = true, default_value_t = 1)]
+    pub every: u64,
+    /// Explicitly omit the final selected observation from the video
+    #[arg(long, global = true)]
+    pub omit_terminal: bool,
+}
+#[derive(Subcommand)]
+pub(super) enum VideoSource {
+    /// Encode a validated PNG bundle; no cache needed
+    Images { sequence: PathBuf },
+    /// Stream cached rendering directly to FFmpeg
+    Cache {
+        cache: PathBuf,
+        #[arg(long)]
+        render_config: PathBuf,
+        #[arg(long, default_value_t = 0)]
+        graphics_adapter: usize,
+        #[arg(long)]
+        software: bool,
     },
 }

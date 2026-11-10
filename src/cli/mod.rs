@@ -5,6 +5,7 @@
 mod arguments;
 mod bundle;
 mod bundled;
+mod cache;
 #[cfg(feature = "render")]
 mod export;
 mod inputs;
@@ -16,6 +17,7 @@ mod presentation;
 mod scenes;
 mod selection;
 mod storage;
+mod video;
 #[cfg(feature = "viewer")]
 mod viewer;
 
@@ -149,6 +151,9 @@ fn execute(cli: &Cli) -> Result<u8, CliError> {
         Command::Completions { shell } => management::completions(shell),
         Command::Runs { command } => bundle::manage(cli, &storage, command),
         Command::Compile(args) => bundle::compile(cli, &storage, args),
+        Command::Cache { command } => cache::manage(cli, &storage, command),
+        Command::Render(args) => cache::render(cli, args),
+        Command::Video(args) => video::launch(cli, args),
         Command::Validate(inputs) | Command::Inspect { inputs, .. } => {
             let resolved = inputs::resolve_in(inputs, &storage)?;
             let default_presentation = arguments::PresentationOptions::default();

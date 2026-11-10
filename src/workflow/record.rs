@@ -6,7 +6,6 @@ use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 
-#[cfg(any(feature = "render", test))]
 #[path = "snapshot_json.rs"]
 mod snapshot_json;
 
@@ -111,6 +110,19 @@ pub struct SnapshotRecord {
 }
 
 impl SnapshotRecord {
+    /// Validates owned observation data without constructing a simulation.
+    pub(crate) fn from_particles(
+        particles: Vec<Particle>,
+        completed_steps: u64,
+    ) -> Result<Self, RecordError> {
+        let record = Self {
+            schema_version: SCHEMA_VERSION,
+            completed_steps,
+            particles: particles.iter().map(ParticleRecord::from).collect(),
+        };
+        record.validate()?;
+        Ok(record)
+    }
     /// Copies a solver snapshot into a portable record. Call between steps so
     /// observation remains outside the primary solver timing boundary.
     #[must_use]
@@ -277,6 +289,15 @@ impl RecordedInput {
     /// Reconstructs and validates the recorded values without applying defaults
     /// or re-resolving external files. Derived values must still match exactly.
     pub fn resolve(&self) -> Result<ResolvedScene, RecordError> {
+        self.resolve_checked(true)
+    }
+
+    /// Cache rendering validates records and display inputs without acquiring a solver.
+    pub(crate) fn resolve_observation(&self) -> Result<ResolvedScene, RecordError> {
+        self.resolve_checked(false)
+    }
+
+    fn resolve_checked(&self, solver_validation: bool) -> Result<ResolvedScene, RecordError> {
         version(self.schema_version)?;
         scene_version(self.scene_schema_version)?;
         if self.scene_schema_version != self.configuration.schema_version {
@@ -399,7 +420,14 @@ impl RecordedInput {
                 .map(ParticleRecord::particle)
                 .collect(),
         };
-        SerialSimulation::from_scene(&scene)?;
+        if solver_validation {
+            SerialSimulation::from_scene(&scene)?;
+        } else {
+            scene
+                .configuration
+                .pbf_parameters()
+                .map_err(StepError::from)?;
+        }
         if scene.comparison_key() != self.comparison_key {
             return Err(RecordError::Invalid(
                 "scene comparison key disagrees with values".into(),

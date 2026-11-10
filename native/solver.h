@@ -27,6 +27,9 @@ struct SolverSettings {
     std::uint32_t stride, span;
     std::uint64_t entries;
     float xsph, vorticity;
+    // Zero selects compact CSR; one selects identity-ordered rows interleaved
+    // in tiles of 32. Tile offsets reuse the finished cell sort's second half.
+    std::uint32_t neighbour_layout;
 };
 struct SolverBuffers {
     Vector *old_position, *old_velocity, *position, *velocity;
@@ -42,6 +45,6 @@ struct SolverBuffers {
 };
 static_assert(sizeof(Vector) == 12 && sizeof(DevicePlane) == 16 && sizeof(Cell) == 32);
 static_assert(sizeof(PendingJacobi) == 16);
-static_assert(sizeof(SolverSettings) == 96 && offsetof(SolverSettings, width) == 64);
+static_assert(sizeof(SolverSettings) == 104 && offsetof(SolverSettings, width) == 64);
 static_assert(sizeof(SolverBuffers) == 128 && offsetof(SolverBuffers,diagnostic) == 112 &&
               offsetof(SolverBuffers,first_operation) == 120);

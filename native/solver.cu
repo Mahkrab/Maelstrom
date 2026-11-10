@@ -101,7 +101,12 @@ extern "C" __global__ void solver(SolverBuffers b, SolverSettings s, unsigned in
         const auto owner=static_cast<unsigned int>(row);
         const auto start=b.offsets[owner], stop=b.offsets[owner+1];
         if (b.errors[owner] || start>stop || stop>s.entries) return;
-        if (start!=stop) sort_row_cooperatively(b.neighbours+start,stop-start,threadIdx.x%32);
+        if (start!=stop) {
+            if (s.neighbour_layout==1) {
+                const auto offsets=reinterpret_cast<const std::uint64_t *>(b.cells+s.padded);
+                sort_row_cooperatively<32>(b.neighbours+offsets[owner/32]+owner%32,stop-start,threadIdx.x%32);
+            } else sort_row_cooperatively(b.neighbours+start,stop-start,threadIdx.x%32);
+        }
         return;
     }
     if (lane>=s.count) return;

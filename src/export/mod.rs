@@ -1,7 +1,10 @@
 //! Offline sequences sample accepted step indices. One CPU frame job overlaps
 //! later simulation and drawing; ordered publication applies bounded backpressure.
 
+mod cached;
 mod encoding;
+pub mod video;
+pub use cached::{CacheSelection, CachedRenderRequest, render_cache};
 mod offscreen;
 mod source;
 mod timing;
@@ -446,7 +449,17 @@ fn collect_frame(
     progress: &mut Value,
     progress_time: &mut std::time::Duration,
 ) -> Result<(), ExportError> {
-    if let Some(frame) = writer.collect()? {
+    collect_frame_cancellable(writer, frames, progress, progress_time, &mut || false)
+}
+
+fn collect_frame_cancellable(
+    writer: &mut offscreen::FrameWriter<'_>,
+    frames: &mut Vec<Frame>,
+    progress: &mut Value,
+    progress_time: &mut std::time::Duration,
+    cancelled: &mut impl FnMut() -> bool,
+) -> Result<(), ExportError> {
+    if let Some(frame) = writer.collect_with_cancellation(cancelled)? {
         if progress["source_mode"] == "saved" || progress.get("accepted_steps").is_none() {
             progress["accepted_steps"] = json!(frame.step);
         }

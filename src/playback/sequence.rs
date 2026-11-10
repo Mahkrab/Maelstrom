@@ -16,6 +16,14 @@ use std::{
 #[derive(Deserialize)]
 struct Manifest {
     schema_version: u32,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    source_cache: Option<CacheSource>,
+    #[serde(default)]
+    cache_selection: Option<crate::export::CacheSelection>,
+    #[serde(default)]
+    timestep_bits: Option<u32>,
     complete: bool,
     frame_count: usize,
     accepted_steps: String,
@@ -23,6 +31,12 @@ struct Manifest {
     #[serde(deserialize_with = "frames")]
     frames: Vec<Frame>,
     render: Dimensions,
+}
+#[derive(Deserialize)]
+struct CacheSource {
+    steps: String,
+    stride: String,
+    frames: u64,
 }
 #[derive(Deserialize)]
 struct Dimensions {
@@ -137,9 +151,9 @@ impl Sequence {
             .map_err(|e| error(format!("sequence manifest: {}", e.kind())))?;
         let m: Manifest = serde_json::from_reader(BufReader::new(file))
             .map_err(|e| error(format!("sequence manifest: {e}")))?;
-        if m.schema_version != 1 || !m.complete {
+        if !matches!(m.schema_version, 1 | 2) || !m.complete {
             return Err(error(
-                "play requires a completed sequence with manifest schema 1",
+                "play requires a completed sequence with manifest schema 1 or 2",
             ));
         }
         if m.render.format != "png"
@@ -160,23 +174,69 @@ impl Sequence {
             .checked_div(stride)
             .and_then(|n| n.checked_add(1))
             .and_then(|n| n.checked_add(u64::from(!last.is_multiple_of(stride))));
+        let cached = if m.schema_version == 2 {
+            if m.kind.as_deref() != Some("maelstrom-cache-render") {
+                return Err(error("unsupported schema-2 render kind"));
+            }
+            let source = m
+                .source_cache
+                .as_ref()
+                .ok_or_else(|| error("missing source cache schedule"))?;
+            let selection = m
+                .cache_selection
+                .ok_or_else(|| error("missing cached frame selection"))?;
+            let schedule = crate::cache::Schedule::new(
+                source
+                    .steps
+                    .parse()
+                    .map_err(|_| error("invalid cached steps"))?,
+                source
+                    .stride
+                    .parse()
+                    .map_err(|_| error("invalid cached stride"))?,
+            )
+            .map_err(|e| error(e.to_string()))?;
+            if source.frames > schedule.len() {
+                return Err(error("invalid cached frame availability"));
+            }
+            let selected = selection
+                .count(source.frames)
+                .map_err(|e| error(e.to_string()))?;
+            let dt = f32::from_bits(
+                m.timestep_bits
+                    .ok_or_else(|| error("missing cached timestep"))?,
+            );
+            if !dt.is_finite() || dt <= 0.0 || selected != m.frames.len() as u64 {
+                return Err(error("invalid cached timestep or selection count"));
+            }
+            Some((schedule, selection, f64::from(dt)))
+        } else {
+            None
+        };
         if m.frames.is_empty()
             || m.frames.len() > 1_000_000
             || m.frame_count != m.frames.len()
-            || count != Some(m.frames.len() as u64)
+            || (cached.is_none() && count != Some(m.frames.len() as u64))
         {
             return Err(error(
                 "sequence frame count or sampling schedule is inconsistent",
             ));
         }
         for (i, f) in m.frames.iter().enumerate() {
-            let expected_step = (i as u64).checked_mul(stride).unwrap_or(last).min(last);
+            let expected_step = if let Some((schedule, selection, _)) = cached {
+                schedule
+                    .step(selection.first + i as u64 * selection.every)
+                    .ok_or_else(|| error("invalid cached frame mapping"))?
+            } else {
+                (i as u64).checked_mul(stride).unwrap_or(last).min(last)
+            };
             if f.index != i
                 || f.file != format!("frame-{i:08}.png")
                 || f.step != expected_step.to_string()
                 || !f.simulated_seconds.is_finite()
                 || !(0.0..=1e12).contains(&f.simulated_seconds)
-                || (i == 0 && f.simulated_seconds != 0.0)
+                || (cached.is_none() && i == 0 && f.simulated_seconds != 0.0)
+                || cached.is_some_and(|(_, _, dt)| f.simulated_seconds != expected_step as f64 * dt)
                 || (i > 0 && f.simulated_seconds <= m.frames[i - 1].simulated_seconds)
                 || !valid_hash(&f.png_sha256)
                 || !valid_hash(&f.rgba_sha256)
@@ -197,6 +257,16 @@ impl Sequence {
             width: m.render.width,
             height: m.render.height,
         })
+    }
+
+    /// Validated image dimensions.
+    pub fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    /// Ordered simulation timestamps, independent of video frame rate.
+    pub fn timestamps(&self) -> Vec<f64> {
+        self.frames.iter().map(|f| f.simulated_seconds).collect()
     }
 
     /// Number of recorded images; always at least one.

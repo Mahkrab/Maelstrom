@@ -2,6 +2,10 @@
 //! Solver resources stay on the controller worker; graphics failures request
 //! cooperative shutdown and keep pumping events until that worker has exited.
 
+mod cache_clock;
+mod cached;
+pub use cache_clock::CachePlayback;
+pub use cached::run_cache;
 mod model;
 mod overlay;
 mod profile;
