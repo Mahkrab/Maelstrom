@@ -88,15 +88,10 @@ impl Reader {
                     };
                     drop(s);
                     let started = Instant::now();
-                    let loaded = cache.frame(next).map(|f| {
-                        trace(|| serde_json::json!({"event":"read", "index":next, "timings":f.read_timings()}));
-                        Arc::new(
-                            f.snapshot()
-                                .particles()
-                                .iter()
-                                .map(|p| p.particle())
-                                .collect::<Vec<_>>(),
-                        )
+                    let loaded = cache.frame(next).map_err(|e| e.to_string()).and_then(|frame| {
+                        trace(|| serde_json::json!({"event":"read", "index":next, "timings":frame.read_timings()}));
+                        crate::storage::collect(frame.snapshot().particles().iter().map(|p| p.particle()))
+                            .map(Arc::new).map_err(|e| format!("cached display allocation: {e}"))
                     });
                     trace(|| serde_json::json!({"event":"loaded", "index":next, "seconds":started.elapsed().as_secs_f64()}));
                     let mut s = match lock.lock() {

@@ -74,7 +74,8 @@ for fresh scenes and `export saved` when the necessary observations already exis
 ## Sampling and image settings
 
 Use `--frame-stride N` to select accepted step indices, always including initial and
-final state. It must be positive; schedules are bounded to one million frames.
+final state. It must be positive. Schedules use constant memory and checked `u64` arithmetic;
+image indices must also fit the target's `usize`.
 `--width`, `--height` and `--render-config` control presentation, not physics.
 The [viewer guide](viewer.md) describes camera files, fixed colours and blue-to-red kinetic-energy
 colouring. Compilation uses the same accepted-velocity and mass calculation as live viewing.
@@ -91,9 +92,10 @@ The manifest alone is sufficient for playback and numerical reruns.
 Reproducibility means identical decoded pixels for the qualified binary, adapter/driver,
 settings and accepted observations. Different drivers/devices need not produce identical
 pixels. Encoded PNG bytes and decoded pixels are hashed separately. Playback streams
-the manifest, retaining its frame index and skipping numerical provenance. Large recorded
-particle inputs do not impose a manifest-size cutoff or require recompilation. The index
-is limited to one million frames, PNGs to 300 MiB and dimensions to 8192 per side.
+the manifest, writing a compact private index to temporary storage and skipping numerical provenance.
+Large recorded particle inputs do not impose a manifest-size cutoff or require recompilation.
+Indexing uses bounded memory and 120 temporary bytes per frame. PNGs remain bounded to 300 MiB
+and dimensions to 8192 per side, with a separate 272 MiB decoder budget.
 `runs list` also streams metadata; `runs validate` additionally reconstructs the recorded
 input to check it, so its memory use grows with particle count. `runs show` and numerical
 reruns load the selected document and require memory for that input.
@@ -142,3 +144,14 @@ particle counts, the GPU can finish a solver step then wait while the CPU render
 image. Check `doctor graphics` before compiling: a hardware graphics adapter avoids
 that software rendering cost. PNG encoding, readback and file publication still occur;
 hardware compilation is not expected to match a solver-only `run` timing.
+
+
+CLI exports stream frame metadata, accepted diagnostics and the final manifest. Progress snapshots
+are refreshed at frame counts 1, 2, 4, 8, and so on, then on completion or a handled failure. A
+snapshot can lag a running export; abrupt termination can leave additional closed images beyond
+that snapshot. Neither a progress file nor those images certify completion. Geometric snapshots
+keep total metadata rewriting linear in sequence length. Existing library functions that return
+the complete manifest still materialise that return value; `export_with_summary` and
+`render_cache_with_summary` provide the bounded alternative used by the CLI.
+
+See [scalability and resource limits](scalability.md) for the remaining costs and format boundaries.

@@ -137,15 +137,19 @@ impl Recorded {
         })
     }
     pub fn require_schedule(&self, schedule: &FrameSchedule) -> Result<(), ExportError> {
-        let missing: Vec<_> = schedule
+        let mut missing = schedule
             .steps
             .iter()
-            .filter(|s| !self.snapshots.contains_key(s))
-            .copied()
-            .collect();
-        if !missing.is_empty() {
+            .filter(|s| !self.snapshots.contains_key(s));
+        let prefix: Vec<_> = missing.by_ref().take(16).collect();
+        if !prefix.is_empty() {
+            let suffix = if missing.next().is_some() {
+                " (first 16 shown)"
+            } else {
+                ""
+            };
             return Err(fail(format!(
-                "saved observations missing scheduled indices: {missing:?}"
+                "saved observations missing scheduled indices: {prefix:?}{suffix}"
             )));
         }
         Ok(())

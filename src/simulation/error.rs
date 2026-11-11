@@ -126,3 +126,9 @@ impl std::error::Error for RunFailure {
         Some(&self.error)
     }
 }
+
+impl From<std::collections::TryReserveError> for StepError {
+    fn from(error: std::collections::TryReserveError) -> Self {
+        Self::Numerical(error.into())
+    }
+}

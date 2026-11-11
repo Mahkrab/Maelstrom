@@ -84,8 +84,8 @@ impl Simulation {
     ) -> Result<Self, StepError> {
         Self::new_with_execution(
             &scene.configuration,
-            scene.particles.clone(),
-            scene.planes.clone(),
+            crate::storage::collect(scene.particles.iter().copied())?,
+            crate::storage::collect(scene.planes.iter().copied())?,
             backend,
             execution,
         )
@@ -314,7 +314,7 @@ impl Simulation {
         }
         let model = &self.configuration.numerical;
         let derived = &self.configuration.derived;
-        let mut velocities = Vec::with_capacity(self.accepted.particles.len());
+        let mut velocities = crate::storage::vector(self.accepted.particles.len())?;
         for particle in &self.accepted.particles {
             velocities.push(post_acceleration_velocity(
                 particle.velocity_m_s,
@@ -331,7 +331,7 @@ impl Simulation {
         check_cancellation(cancelled)?;
 
         clock.mark(Stage::ValidationAndAcceleration);
-        let mut positions = Vec::with_capacity(velocities.len());
+        let mut positions = crate::storage::vector(velocities.len())?;
         for (particle, velocity) in self.accepted.particles.iter().zip(velocities) {
             positions.push(predict_position(
                 particle.position_m,
@@ -359,7 +359,7 @@ impl Simulation {
             }
             check_cancellation(cancelled)?;
             clock.mark(Stage::Jacobi);
-            let mut candidates = Vec::with_capacity(positions.len());
+            let mut candidates = crate::storage::vector(positions.len())?;
             for (position, correction) in positions.iter().zip(stage.corrections) {
                 candidates.push(validation::finite_vector_result(
                     "candidate position",
@@ -374,7 +374,7 @@ impl Simulation {
             clock.mark(Stage::Projection);
         }
 
-        let mut particles = Vec::with_capacity(positions.len());
+        let mut particles = crate::storage::vector(positions.len())?;
         for (old, &position_m) in self.accepted.particles.iter().zip(&positions) {
             particles.push(Particle {
                 identity: old.identity,
@@ -388,10 +388,8 @@ impl Simulation {
         }
         if model.vorticity_confinement_enabled && model.vorticity_confinement_strength_m_s != 0.0 {
             check_cancellation(cancelled)?;
-            let velocities: Vec<_> = particles
-                .iter()
-                .map(|particle| particle.velocity_m_s)
-                .collect();
+            let velocities =
+                crate::storage::collect(particles.iter().map(|particle| particle.velocity_m_s))?;
             let confined = crate::velocity::vorticity::with_execution(
                 &positions,
                 &velocities,
@@ -412,10 +410,8 @@ impl Simulation {
         }
         if model.xsph_viscosity_enabled && model.xsph_viscosity_coefficient != 0.0 {
             check_cancellation(cancelled)?;
-            let velocities: Vec<_> = particles
-                .iter()
-                .map(|particle| particle.velocity_m_s)
-                .collect();
+            let velocities =
+                crate::storage::collect(particles.iter().map(|particle| particle.velocity_m_s))?;
             let smoothed = crate::velocity::xsph_with_execution(
                 &positions,
                 &velocities,

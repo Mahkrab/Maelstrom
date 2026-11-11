@@ -6,20 +6,19 @@ use super::{
     particles::resolve_source, separation::validate_separation,
 };
 use crate::config::{ConfigError, ResolvedConfiguration};
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 
-/// Maximum named initial sources accepted in one scene.
-pub const MAX_PARTICLE_GROUPS: usize = 256;
+/// Addressable source-document storage; names and particles need further memory.
+pub const MAX_PARTICLE_GROUPS: usize = isize::MAX as usize / size_of::<ParticleGroup>();
 
 pub(super) fn resolve(
     groups: &[ParticleGroup],
     configuration: &ResolvedConfiguration,
     allow_coincident: bool,
 ) -> Result<Vec<Particle>, SceneError> {
-    if groups.len() > MAX_PARTICLE_GROUPS {
-        return Err(invalid("at most 256 named groups are supported"));
-    }
-    let mut names = BTreeSet::new();
+    // Only membership is observed; document order still owns construction.
+    let mut names = HashSet::new();
+    names.try_reserve(groups.len())?;
     let mut total = 0usize;
     for group in groups {
         if group.name.trim().is_empty() || group.name.chars().any(char::is_control) {
@@ -36,8 +35,15 @@ pub(super) fn resolve(
             return Err(too_many(total as u64));
         }
     }
-    let mut particles: Vec<Particle> = Vec::with_capacity(total);
+    let mut particles: Vec<Particle> = Vec::new();
+    particles.try_reserve_exact(total)?;
     let mut lattice_ranges = Vec::new();
+    lattice_ranges.try_reserve_exact(
+        groups
+            .iter()
+            .filter(|group| matches!(group.source, ParticleSource::Lattice { .. }))
+            .count(),
+    )?;
     for group in groups {
         let automatic = if matches!(
             group.source,

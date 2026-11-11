@@ -35,10 +35,8 @@ pub fn bake(
     let started = Instant::now();
     let schedule = Schedule::new(request.steps, request.stride)?;
     let dt = f64::from(request.scene.configuration.numerical.fixed_timestep_s);
-    if !((request.steps as f64) * dt).is_finite()
-        || request.scene.particles.len() > crate::scene::MAX_SCENE_PARTICLES
-    {
-        return Err(invalid("cache input exceeds supported limits"));
+    if !((request.steps as f64) * dt).is_finite() {
+        return Err(invalid("cache simulated timestamp overflow"));
     }
     if cancelled() {
         return Err(CacheError::Cancelled);
@@ -54,14 +52,20 @@ pub fn bake(
         request.options.execution,
     )
     .map_err(invalid)?;
-    let input = RecordedInput::capture(request.scene, &solver);
-    let input_bytes = serde_json::to_vec_pretty(&input)?;
-    let identities: Vec<_> = solver
-        .snapshot()
-        .particles()
-        .iter()
-        .flat_map(|p| p.identity.to_le_bytes())
-        .collect();
+    let input = RecordedInput::capture(request.scene, &solver).map_err(invalid)?;
+    fs::create_dir(request.destination)?;
+    fs::create_dir(request.destination.join("frames"))?;
+    fs::create_dir(request.destination.join("receipts"))?;
+    let input_sha256 = publish_hashed(&request.destination.join("input.json"), |writer| {
+        serde_json::to_writer_pretty(writer, &input).map_err(io::Error::other)
+    })?;
+    let identities_sha256 =
+        publish_hashed(&request.destination.join("identities.bin"), |writer| {
+            for particle in solver.snapshot().particles() {
+                writer.write_all(&particle.identity.to_le_bytes())?;
+            }
+            Ok(())
+        })?;
     let mut metadata = RunMetadata::new(
         &input,
         request.steps,
@@ -81,8 +85,8 @@ pub fn bake(
             .numerical
             .fixed_timestep_s
             .to_bits(),
-        input_sha256: digest(&input_bytes),
-        identities_sha256: digest(&identities),
+        input_sha256,
+        identities_sha256,
         execution: request.options.execution,
         backend: metadata.backend.clone(),
         metadata: serde_json::to_value(metadata)?,
@@ -90,15 +94,8 @@ pub fn bake(
     };
     let bytes = serde_json::to_vec_pretty(&specification)?;
     let request_hash = digest(&bytes);
-    fs::create_dir(request.destination)?;
-    fs::create_dir(request.destination.join("frames"))?;
-    fs::create_dir(request.destination.join("receipts"))?;
-    publish(&request.destination.join("input.json"), &input_bytes)?;
-    publish(&request.destination.join("identities.bin"), &identities)?;
     publish(&request.destination.join("request.json"), &bytes)?;
     sync_directory(request.destination)?;
-    drop(input_bytes);
-    drop(identities);
     drop(input);
     let file = fs::OpenOptions::new()
         .write(true)
@@ -140,7 +137,7 @@ pub fn bake(
                 writer.collect(&mut cancelled)?;
                 progress(writer.count, schedule.len());
                 let start = Instant::now();
-                let snapshot = SnapshotRecord::capture(solver.snapshot());
+                let snapshot = SnapshotRecord::try_capture(solver.snapshot()).map_err(invalid)?;
                 capture_s += start.elapsed().as_secs_f64();
                 writer.submit(snapshot, next)?;
                 next += 1;

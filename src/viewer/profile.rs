@@ -15,6 +15,7 @@ pub(super) struct Profile {
     output: File,
     start: Instant,
     rows: Vec<String>,
+    truncated: bool,
 }
 impl Profile {
     pub(super) fn from_environment() -> Result<Option<Self>, RenderError> {
@@ -26,6 +27,7 @@ impl Profile {
                     output,
                     start: Instant::now(),
                     rows: Vec::new(),
+                    truncated: false,
                 })
             })
             .transpose()
@@ -40,6 +42,12 @@ impl Profile {
     ) {
         // Bound opt-in memory even when a viewer is left open overnight.
         if self.rows.len() >= 1_000_000 {
+            if !self.truncated {
+                self.truncated = true;
+                eprintln!(
+                    "maelstrom viewer profile reached its 1000000-row memory budget; the trace is incomplete; viewing continues"
+                );
+            }
             return;
         }
         let (generation, step, simulated, solver, snapshot, status) =

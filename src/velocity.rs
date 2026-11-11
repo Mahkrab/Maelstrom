@@ -65,7 +65,7 @@ pub(crate) fn xsph_with_execution(
         validation::finite_vector("XSPH velocity", velocity)?;
     }
     if coefficient == 0.0 {
-        return Ok(velocities.to_vec());
+        return Ok(crate::storage::collect(velocities.iter().copied())?);
     }
     execution.map(positions.len(), |i| {
         let row = interactions

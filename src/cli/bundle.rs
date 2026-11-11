@@ -269,7 +269,7 @@ pub(super) fn compile(cli: &Cli, storage: &Storage, args: &Compile) -> Result<u8
             Ok(_) => maelstrom::cache::Cache::open(cache_path, false)
                 .map_err(|e| maelstrom::export::ExportError(e.to_string()))
                 .and_then(|cache| {
-                    maelstrom::export::render_cache(
+                    maelstrom::export::render_cache_with_summary(
                         maelstrom::export::CachedRenderRequest {
                             selection: maelstrom::export::CacheSelection {
                                 first: 0,
@@ -291,7 +291,7 @@ pub(super) fn compile(cli: &Cli, storage: &Storage, args: &Compile) -> Result<u8
                 }),
         }
     } else {
-        maelstrom::export::export_with_progress(
+        maelstrom::export::export_with_summary(
             ExportRequest {
                 source: Source::Direct {
                     scene,
@@ -309,7 +309,7 @@ pub(super) fn compile(cli: &Cli, storage: &Storage, args: &Compile) -> Result<u8
             || cancel.load(Ordering::Relaxed),
             |done, total| {
                 if terminal && last_update.elapsed() >= std::time::Duration::from_millis(100) {
-                    let filled = done * 30 / total;
+                    let filled = (done as u128 * 30 / total as u128) as usize;
                     eprint!(
                         "\r\x1b[2K[{}{}] {done}/{total} frames",
                         "=".repeat(filled),

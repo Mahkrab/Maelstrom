@@ -156,7 +156,7 @@ fn schedule_has_exact_endpoints_and_rejects_unbounded_frame_counts() {
     assert!(s.step(4).is_none());
     assert!(Schedule::new(1, 0).is_err());
     assert!(Schedule::new(u64::MAX, 1).is_err());
-    assert!(Schedule::new(1_000_000, 1).is_err());
+    assert_eq!(Schedule::new(1_000_000, 1).unwrap().len(), 1_000_001);
 }
 
 #[test]
@@ -380,4 +380,187 @@ fn full_validation_detects_a_self_consistent_false_canonical_claim() {
     // canonical claim even when an external producer rewrites all integrity metadata.
     let cache = Cache::open(&path, false).unwrap();
     assert!(cache.validate_full(|| false).is_err());
+}
+
+#[test]
+fn huge_partial_schedule_indexes_only_the_committed_prefix_and_can_cancel_open() {
+    let t = Temp::new();
+    let path = t.0.join("sparse");
+    bake_at(&path, 0, 1);
+    fs::remove_file(path.join("cache.json")).unwrap();
+    fs::remove_file(path.join("receipts/frame-00000000.json")).unwrap();
+    let mut request: Request =
+        serde_json::from_slice(&fs::read(path.join("request.json")).unwrap()).unwrap();
+    request.steps = (u64::MAX - 1).to_string();
+    fs::write(
+        path.join("request.json"),
+        serde_json::to_vec_pretty(&request).unwrap(),
+    )
+    .unwrap();
+    let cache = Cache::open(&path, true).unwrap();
+    assert_eq!(cache.frame_count(), 0);
+    assert_eq!(cache.info()["expected_frames"], u64::MAX);
+    assert!(matches!(
+        Cache::open_with_cancellation(&path, true, || true),
+        Err(CacheError::Cancelled)
+    ));
+    assert!(!path.join("cache.json").exists());
+}
+
+#[test]
+fn frame_size_is_checked_without_allocating_and_schedules_cross_old_boundaries() {
+    assert!(format::size(usize::MAX).is_err());
+    assert!(format::size(isize::MAX as usize / 24).is_err());
+    for count in [999_999, 1_000_000, 1_000_001] {
+        let schedule = Schedule::new(count - 1, 1).unwrap();
+        assert_eq!(schedule.len(), count);
+        assert_eq!(schedule.step(count - 1), Some(count - 1));
+        assert_eq!(
+            format::size(count as usize).unwrap(),
+            160 + 24 * count as usize
+        );
+    }
+    let schedule = Schedule::new(u64::MAX, 2).unwrap();
+    assert_eq!(schedule.step(schedule.len() - 1), Some(u64::MAX));
+    assert_eq!(schedule.step(schedule.len() - 2), Some(u64::MAX - 1));
+}
+
+#[test]
+#[ignore = "resource qualification: writes and fully validates a million-particle cache"]
+fn million_particle_cache_streams_large_input_and_full_validation() {
+    let t = Temp::new();
+    let path = t.0.join("large");
+    let mut scene = scene();
+    scene.planes.clear();
+    scene.particles = (0..1_000_001u64)
+        .map(|identity| Particle {
+            identity,
+            position_m: Vec3::new(
+                (identity % 101) as f32 * 0.125,
+                (identity / 101 % 100) as f32 * 0.125,
+                (identity / 10100) as f32 * 0.125,
+            ),
+            velocity_m_s: Vec3::new(-0.0, 0.0, 0.0),
+        })
+        .collect();
+    bake(
+        BakeRequest {
+            scene: &scene,
+            steps: 0,
+            stride: 1,
+            options: Default::default(),
+            destination: &path,
+        },
+        || false,
+        |_, _| {},
+    )
+    .unwrap();
+    assert!(fs::metadata(path.join("input.json")).unwrap().len() > 256 * 1024 * 1024);
+    let expected = SnapshotRecord::capture(
+        crate::simulation::Simulation::from_scene(&scene)
+            .unwrap()
+            .snapshot(),
+    )
+    .canonical_sha256()
+    .unwrap();
+    drop(scene);
+    let cache = Cache::open(&path, false).unwrap();
+    assert_eq!(cache.scene().particles.len(), 1_000_001);
+    assert_eq!(cache.frame(0).unwrap().canonical_sha256(), hex(&expected));
+    cache.validate_full(|| false).unwrap();
+    assert!(matches!(
+        cache.validate_full(|| true),
+        Err(CacheError::Cancelled)
+    ));
+    println!(
+        "input_bytes={} frame_bytes={}",
+        fs::metadata(path.join("input.json")).unwrap().len(),
+        fs::metadata(path.join("frames/frame-00000000.mpc"))
+            .unwrap()
+            .len()
+    );
+}
+
+#[test]
+fn diagnostic_file_bound_matches_the_checked_per_record_bound() {
+    let t = Temp::new();
+    let path = t.0.join("diagnostics");
+    bake_at(&path, 1, 1);
+    let original = fs::read(path.join("diagnostics.jsonl")).unwrap();
+    let mut completion: Completion =
+        serde_json::from_slice(&fs::read(path.join("cache.json")).unwrap()).unwrap();
+    for padding in [1024, 2048, 4096] {
+        let mut line = vec![b' '; padding];
+        line.extend_from_slice(&original);
+        completion.diagnostics_sha256 = digest(&line);
+        completion.cache_id = result_id(
+            &completion.request_sha256,
+            &completion.receipts_sha256,
+            &completion.diagnostics_sha256,
+        );
+        fs::write(path.join("diagnostics.jsonl"), &line).unwrap();
+        fs::write(
+            path.join("cache.json"),
+            serde_json::to_vec_pretty(&completion).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(Cache::open(&path, false).is_ok(), line.len() <= 4096);
+    }
+}
+
+#[test]
+fn opening_cancels_during_a_streamed_input_document() {
+    use std::io::Write;
+    let t = Temp::new();
+    let path = t.0.join("cancel-read");
+    bake_at(&path, 0, 1);
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(path.join("input.json"))
+        .unwrap();
+    file.write_all(&[b' '; 128 * 1024]).unwrap();
+    drop(file);
+    let mut polls = 0;
+    let result = Cache::open_with_cancellation(&path, false, || {
+        polls += 1;
+        polls > 5
+    });
+    assert!(matches!(result, Err(CacheError::Cancelled)));
+    assert!(polls > 5);
+}
+
+#[test]
+#[ignore = "resource qualification: streams diagnostics for over a million accepted steps"]
+fn long_empty_bake_has_bounded_diagnostics_and_exact_terminal_step() {
+    let t = Temp::new();
+    let path = t.0.join("long");
+    let mut scene = scene();
+    scene.particles.clear();
+    bake(
+        BakeRequest {
+            scene: &scene,
+            steps: 1_000_001,
+            stride: 500_000,
+            options: Default::default(),
+            destination: &path,
+        },
+        || false,
+        |_, _| {},
+    )
+    .unwrap();
+    let cache = Cache::open(&path, false).unwrap();
+    assert_eq!(cache.frame_count(), 4);
+    assert_eq!(
+        (0..4).map(|i| cache.step(i).unwrap()).collect::<Vec<_>>(),
+        [0, 500_000, 1_000_000, 1_000_001]
+    );
+    assert_eq!(
+        cache.frame(3).unwrap().snapshot().completed_steps(),
+        1_000_001
+    );
+    cache.validate_full(|| false).unwrap();
+    println!(
+        "diagnostics_bytes={}",
+        fs::metadata(path.join("diagnostics.jsonl")).unwrap().len()
+    );
 }

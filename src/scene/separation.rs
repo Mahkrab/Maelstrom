@@ -11,7 +11,8 @@ pub(super) fn validate_separation(
     allow_coincident: bool,
     lattice_ranges: &[Range<usize>],
 ) -> Result<(), SceneError> {
-    let mut cells: HashMap<[i64; 3], Vec<usize>> = HashMap::with_capacity(particles.len());
+    let mut cells: HashMap<[i64; 3], Vec<usize>> = HashMap::new();
+    cells.try_reserve(particles.len())?;
     let tolerance = diameter * PARTICLE_SEPARATION_RELATIVE_TOLERANCE;
     let mut lattice = 0;
     for (index, particle) in particles.iter().enumerate() {
@@ -83,7 +84,9 @@ pub(super) fn validate_separation(
         // One representative suffices for exactly coincident accepted positions:
         // every later distance is identical, including the chosen earliest identity.
         if !coincident {
-            cells.entry(cell).or_default().push(index);
+            let bucket = cells.entry(cell).or_default();
+            bucket.try_reserve(1)?;
+            bucket.push(index);
         }
     }
     Ok(())

@@ -26,12 +26,12 @@ pub const PLANE_UNIT_LENGTH_SQUARED_TOLERANCE: f32 = 1.0e-6;
 pub const PARTICLE_SEPARATION_RELATIVE_TOLERANCE: f32 = 8.0 * f32::EPSILON;
 /// Maximum number of planes in one scene.
 pub const MAX_PLANES: usize = 32;
-/// Maximum explicit particle count before pairwise overlap validation is impractical.
-pub const MAX_EXPLICIT_PARTICLES: usize = 4_096;
-/// Maximum deterministic lattice particle count accepted by scene construction.
+/// Addressable explicit particle storage; allocation may fail below this bound.
+pub const MAX_EXPLICIT_PARTICLES: usize = MAX_SCENE_PARTICLES;
+/// Addressable deterministic lattice particle storage.
 pub const MAX_LATTICE_PARTICLES: usize = MAX_SCENE_PARTICLES;
-/// Maximum total initial particles in a grouped scene.
-pub const MAX_SCENE_PARTICLES: usize = 1_000_000;
+/// Largest contiguous particle vector representable by Rust on this target.
+pub const MAX_SCENE_PARTICLES: usize = isize::MAX as usize / size_of::<Particle>();
 
 /// Position and velocity associated with one stable particle identity.
 ///
@@ -69,6 +69,8 @@ pub struct ResolvedScene {
 /// Scene loading, construction or validation failure.
 #[derive(Debug)]
 pub enum SceneError {
+    /// Host storage could not be reserved without aborting.
+    Allocation(std::collections::TryReserveError),
     /// Resolving the selected numerical configuration failed.
     Configuration(ConfigError),
     /// Loading a scene-selected configuration failed at the named path.
@@ -217,6 +219,9 @@ impl fmt::Display for SceneError {
                     "lattice count on the {axis} axis must be positive"
                 )
             }
+            Self::Allocation(error) => {
+                write!(formatter, "could not allocate scene storage: {error}")
+            }
             Self::ParticleCountTooLarge {
                 construction,
                 maximum,
@@ -262,6 +267,7 @@ impl fmt::Display for SceneError {
 impl std::error::Error for SceneError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Allocation(error) => Some(error),
             Self::ParticleGroup { error, .. } => Some(error.as_ref()),
             Self::Configuration(error) => Some(error),
             Self::ConfigurationFile { error, .. } => Some(error),
@@ -450,5 +456,11 @@ fn io_error(document: &'static str, operation: &'static str, error: io::Error) -
         document,
         operation,
         kind: error.kind(),
+    }
+}
+
+impl From<std::collections::TryReserveError> for SceneError {
+    fn from(error: std::collections::TryReserveError) -> Self {
+        Self::Allocation(error)
     }
 }

@@ -479,7 +479,7 @@ pub fn compute_jacobi_stage(
 ) -> Result<JacobiStage, NumericalError> {
     validate_snapshot(positions, fixed_interactions)?;
     let particle_count = positions.len();
-    let mut active_sets = Vec::with_capacity(particle_count);
+    let mut active_sets = crate::storage::vector(particle_count)?;
     for particle in 0..particle_count {
         let fixed = interaction_row(particle, fixed_interactions)?;
         active_sets.push(active_from_validated_snapshot(
@@ -490,9 +490,9 @@ pub fn compute_jacobi_stage(
         )?);
     }
 
-    let mut normalised_densities = Vec::with_capacity(particle_count);
-    let mut constraints = Vec::with_capacity(particle_count);
-    let mut multipliers = Vec::with_capacity(particle_count);
+    let mut normalised_densities = crate::storage::vector(particle_count)?;
+    let mut constraints = crate::storage::vector(particle_count)?;
+    let mut multipliers = crate::storage::vector(particle_count)?;
 
     for (particle, active) in active_sets.iter().enumerate() {
         let (density, constraint, multiplier) =
@@ -503,7 +503,7 @@ pub fn compute_jacobi_stage(
     }
 
     // Corrections need both particles' multipliers, so finish the full list first.
-    let mut corrections = Vec::with_capacity(particle_count);
+    let mut corrections = crate::storage::vector(particle_count)?;
     for (particle, active) in active_sets.iter().enumerate() {
         corrections.push(particle_correction(
             particle,
@@ -551,9 +551,9 @@ pub fn compute_jacobi_stage_with_execution(
     let values = execution.map(count, |particle| {
         particle_multiplier(particle, positions, &active_sets[particle], parameters)
     })?;
-    let mut normalised_densities = Vec::with_capacity(count);
-    let mut constraints = Vec::with_capacity(count);
-    let mut multipliers = Vec::with_capacity(count);
+    let mut normalised_densities = crate::storage::vector(count)?;
+    let mut constraints = crate::storage::vector(count)?;
+    let mut multipliers = crate::storage::vector(count)?;
     for (density, constraint, multiplier) in values {
         normalised_densities.push(density);
         constraints.push(constraint);
@@ -674,7 +674,7 @@ fn active_from_validated_snapshot(
     fixed: &[usize],
     support_radius: f32,
 ) -> Result<Vec<usize>, NumericalError> {
-    let mut active = Vec::with_capacity(fixed.len());
+    let mut active = crate::storage::vector(fixed.len())?;
     for &neighbour in fixed {
         let (_, distance) = displacement_and_distance(particle, neighbour, positions)?;
         if distance < support_radius {
@@ -723,7 +723,7 @@ fn directions_from_active(
         1.0 / normalised_rest_density,
     )?;
     let mut owner_sum = Vec3::ZERO;
-    let mut neighbour_directions = Vec::with_capacity(active.len());
+    let mut neighbour_directions = crate::storage::vector(active.len())?;
 
     for &neighbour in active {
         let (displacement, _) = displacement_and_distance(particle, neighbour, positions)?;

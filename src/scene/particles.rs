@@ -42,7 +42,8 @@ pub(super) fn resolve_source(
                     requested,
                 });
             }
-            let mut particles = Vec::with_capacity(items.len());
+            let mut particles = Vec::new();
+            particles.try_reserve_exact(items.len())?;
             let mut previous = None;
             for item in items {
                 if let Some(previous) = previous
@@ -138,7 +139,14 @@ fn resolve_lattice(
     let origin = array_to_vec3("lattice origin", origin_m)?;
     let velocity = array_to_vec3("initial velocity", initial_velocity_m_s)?;
     validate_lattice_axes(origin, counts, spacing_m)?;
-    let mut particles = Vec::with_capacity(requested as usize);
+    let mut particles = Vec::new();
+    particles.try_reserve_exact(usize::try_from(requested).map_err(|_| {
+        SceneError::ParticleCountTooLarge {
+            construction: "lattice",
+            maximum: MAX_LATTICE_PARTICLES,
+            requested,
+        }
+    })?)?;
     for x in 0..counts[0] {
         for y in 0..counts[1] {
             for z in 0..counts[2] {
@@ -168,6 +176,22 @@ fn validate_explicit_separation(
     diameter: f32,
     allow_coincident: bool,
 ) -> Result<(), SceneError> {
+    // Preserve the original diagnostic ordering for existing small documents.
+    // Larger explicit inputs share the spatial validator used by grouped sources.
+    // Very remote finite coordinates fall back to the original pairwise check
+    // rather than acquiring a new signed-cell restriction.
+    if particles.len() > 4096
+        && particles.iter().all(|p| {
+            [p.position_m.x, p.position_m.y, p.position_m.z]
+                .iter()
+                .all(|&v| {
+                    let cell = (f64::from(v) / f64::from(diameter)).floor();
+                    cell >= i64::MIN as f64 && cell < i64::MAX as f64
+                })
+        })
+    {
+        return super::separation::validate_separation(particles, diameter, allow_coincident, &[]);
+    }
     for first in 0..particles.len() {
         for second in first + 1..particles.len() {
             let separation = (particles[first].position_m - particles[second].position_m)

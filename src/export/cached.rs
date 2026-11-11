@@ -43,8 +43,26 @@ pub struct CachedRenderRequest<'a> {
 /// Schema-2 image manifests describe sparse schedules explicitly; schema 1 is unchanged.
 pub fn render_cache(
     request: CachedRenderRequest<'_>,
+    cancelled: impl FnMut() -> bool,
+    notify: impl FnMut(usize, usize),
+) -> Result<Value, ExportError> {
+    render_cache_using(request, cancelled, notify, true)
+}
+
+/// Renders with bounded history storage and returns completion metadata.
+pub fn render_cache_with_summary(
+    request: CachedRenderRequest<'_>,
+    cancelled: impl FnMut() -> bool,
+    notify: impl FnMut(usize, usize),
+) -> Result<Value, ExportError> {
+    render_cache_using(request, cancelled, notify, false)
+}
+
+fn render_cache_using(
+    request: CachedRenderRequest<'_>,
     mut cancelled: impl FnMut() -> bool,
     mut notify: impl FnMut(usize, usize),
+    retain_manifest: bool,
 ) -> Result<Value, ExportError> {
     let started = Instant::now();
     let scene = request.cache.scene();
@@ -53,9 +71,11 @@ pub fn render_cache(
         .cache
         .step(request.selection.last)
         .ok_or_else(|| fail("cached frame is unavailable"))?;
-    if last_step as f64 * f64::from(scene.configuration.numerical.fixed_timestep_s) > 1e12 {
-        return Err(fail("cached timestamp exceeds image playback limit"));
+    if !(last_step as f64 * f64::from(scene.configuration.numerical.fixed_timestep_s)).is_finite() {
+        return Err(fail("cached timestamp overflow"));
     }
+    let count_usize = usize::try_from(count)
+        .map_err(|_| fail("frame count exceeds addressable image index range"))?;
     let mut settings = request.settings;
     settings.validate().map_err(fail)?;
     let spacing = f64::from(scene.configuration.numerical.particle_spacing_m);
@@ -101,6 +121,7 @@ pub fn render_cache(
     let mut cache_reading = 0.0;
     let mut cache_validation = 0.0;
     let mut cache_decoding = 0.0;
+    let mut frames = frame_index::FrameIndex::new()?;
     let result = (|| {
         let mut writer = offscreen::FrameWriter {
             operations: offscreen::FrameOperations::default(),
@@ -114,8 +135,7 @@ pub fn render_cache(
             timings: Default::default(),
             worker: encoding::Worker::new()?,
         };
-        let mut frames = Vec::with_capacity(count as usize);
-        notify(0, count as usize);
+        notify(0, count_usize);
         for index in 0..count {
             if cancelled() {
                 return Err(fail("cached rendering cancelled"));
@@ -149,7 +169,7 @@ pub fn render_cache(
                     &mut cancelled,
                 )?;
             }
-            notify(frames.len(), count as usize);
+            notify(frames.len(), count_usize);
         }
         if cancelled() {
             return Err(fail("cached rendering cancelled"));
@@ -165,28 +185,32 @@ pub fn render_cache(
             return Err(fail("cached rendering cancelled before publication"));
         }
         graphics.check().map_err(fail)?;
-        notify(frames.len(), count as usize);
+        notify(frames.len(), count_usize);
         timings.frames = writer.timings;
         let cache = request.cache.info();
         let manifest = json!({"schema_version":2,"kind":"maelstrom-cache-render","complete":true,"source_mode":"cache","status":"cached_observations_rendered","application_version":env!("CARGO_PKG_VERSION"),"build":crate::cache::build_identity(),"source_cache":cache,
-            "cache_selection":request.selection,"timestep_bits":scene.configuration.numerical.fixed_timestep_s.to_bits(),"frame_count":frames.len(),"frames":frames,"render":settings,
-            "input":request.cache.input,"backend":cache["metadata"]["backend"],"execution":cache["execution"],
+            "cache_selection":request.selection,"timestep_bits":scene.configuration.numerical.fixed_timestep_s.to_bits(),"frame_count":frames.len(),"render":settings,
+            "backend":cache["metadata"]["backend"],"execution":cache["execution"],
             "request":{"steps":cache["steps"],"checkpoints":[]},"accepted_steps":request.cache.step(request.cache.frame_count()-1).map(|s|s.to_string()),"step_stride":cache["stride"],
             "renderer":{"revision":"opaque-spheres-lines-v2","shader_sha256":hash(include_bytes!("../render/particles.wgsl")),"format":"Rgba8UnormSrgb","samples":1,"overlays":false},
             "graphics":{"backend":format!("{:?}",graphics.adapter_info.backend),"name":graphics.adapter_info.name,"driver":graphics.adapter_info.driver,"driver_info":graphics.adapter_info.driver_info,"device_type":format!("{:?}",graphics.adapter_info.device_type),"vendor":graphics.adapter_info.vendor,"device":graphics.adapter_info.device,"software_requested":request.graphics.software,"selection_index":request.graphics.index},
             "encoder":{"crate":"png","version":"0.18.1","colour":"RGBA8 sRGB","compression":"Balanced","filter":"Adaptive"},
             "boundary_display_box":{"lower_m":boundaries.lower_m,"upper_m":boundaries.upper_m},
             "timing_seconds":{"solver_steps":0.0,"cache_read_validate":read_validate.as_secs_f64(),"cache_reading":cache_reading,"cache_binary_validation":cache_validation,"cache_decoding":cache_decoding,"cache_canonical_rehashing":0.0,"graphics_readback":timings.frames.graphics_readback.as_secs_f64(),"encoding":timings.frames.png_encoding.as_secs_f64()},"timing_profile":timings.profile(started.elapsed())?});
-        publish_bytes(
-            &request.destination.join("manifest.json"),
-            &serde_json::to_vec_pretty(&manifest).map_err(fail)?,
-        )
-        .map_err(fail)?;
-        Ok(manifest)
+        let path = request.destination.join("manifest.json");
+        manifest::progress(request.destination, &progress, &frames)?;
+        let document = manifest::Manifest {
+            metadata: &manifest,
+            frames: &frames,
+            input: &request.cache.input,
+            diagnostics: None,
+            request: None,
+        };
+        manifest::finish(&path, &manifest, &document, retain_manifest)
     })();
     if let Err(error) = &result {
         progress["failures"] = json!([error.to_string()]);
-        if let Err(output) = write_progress(request.destination, &progress) {
+        if let Err(output) = manifest::progress(request.destination, &progress, &frames) {
             return Err(fail(format!(
                 "{error}; recording incomplete outcome also failed: {output}"
             )));

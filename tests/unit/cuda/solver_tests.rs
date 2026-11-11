@@ -1196,3 +1196,26 @@ fn hardware_spatial_schedule_keeps_identity_rows_and_error_priority() {
         );
     }
 }
+
+#[test]
+fn counts_are_limited_by_index_padding_and_bytes_rather_than_one_million() {
+    let config = crate::config::resolve_effective_configuration(None, None, None).unwrap();
+    for count in [999_999, 1_000_000, 1_000_001] {
+        let settings = settings(&config, count, 0).unwrap();
+        assert_eq!(settings.count as usize, count);
+        assert_eq!(settings.padded, 1_048_576);
+        assert_eq!(storage_sizes(settings).unwrap()[0], count * 12);
+    }
+    assert_eq!(settings(&config, 1 << 31, 0).unwrap().padded, 1 << 31);
+    assert!(matches!(
+        settings(&config, (1 << 31) + 1, 0),
+        Err(StepError::Cuda(CudaError::Capacity))
+    ));
+    assert!(matches!(
+        settings(&config, usize::MAX, 0),
+        Err(StepError::Cuda(CudaError::Capacity))
+    ));
+    let mut s = settings(&config, 1, 0).unwrap();
+    s.entries = u64::MAX;
+    assert_eq!(storage_sizes(s), Err(CudaError::Capacity));
+}

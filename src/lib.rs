@@ -32,6 +32,7 @@ pub mod velocity;
 pub mod viewer;
 pub mod workflow;
 
+mod storage;
 mod validation;
 
 pub use error::NumericalError;

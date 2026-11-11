@@ -180,20 +180,35 @@ impl Execution {
             })
     }
 
-    pub(crate) fn map<T: Send, E: Send>(
+    pub(crate) fn map<T: Send, E: Send + From<std::collections::TryReserveError>>(
         &self,
         count: usize,
         operation: impl Fn(usize) -> Result<T, E> + Sync + Send,
     ) -> Result<Vec<T>, E> {
         match &self.pool {
-            None => (0..count).map(operation).collect(),
+            None => {
+                let mut values = crate::storage::vector(count)?;
+                for index in 0..count {
+                    values.push(operation(index)?);
+                }
+                Ok(values)
+            }
             Some(pool) => {
                 // Collect Result values in index order before inspecting them.
                 // A parallel Result collection could expose whichever error wins
                 // a race, instead of the first failing particle in serial order.
-                let results: Vec<Result<T, E>> =
-                    pool.install(|| (0..count).into_par_iter().map(operation).collect());
-                results.into_iter().collect()
+                let mut results = crate::storage::vector(count)?;
+                let mut values = crate::storage::vector(count)?;
+                pool.install(|| {
+                    (0..count)
+                        .into_par_iter()
+                        .map(operation)
+                        .collect_into_vec(&mut results)
+                });
+                for result in results {
+                    values.push(result?);
+                }
+                Ok(values)
             }
         }
     }
@@ -214,16 +229,25 @@ mod tests {
             let barrier = Barrier::new(2);
             let finished = AtomicUsize::new(0);
             let identities = Mutex::new(Vec::new());
-            let result: Result<Vec<()>, usize> = execution.map(2, |i| {
+            let result: Result<Vec<()>, crate::NumericalError> = execution.map(2, |i| {
                 identities.lock().unwrap().push(std::thread::current().id());
                 barrier.wait();
                 if i == 0 {
                     std::thread::yield_now();
                 }
                 finished.fetch_add(1, Ordering::SeqCst);
-                Err(i)
+                Err(crate::NumericalError::ParticleIndexOutOfBounds {
+                    particle: i,
+                    particle_count: 2,
+                })
             });
-            assert_eq!(result, Err(0));
+            assert_eq!(
+                result,
+                Err(crate::NumericalError::ParticleIndexOutOfBounds {
+                    particle: 0,
+                    particle_count: 2
+                })
+            );
             assert_eq!(finished.load(Ordering::SeqCst), 2);
             let ids = identities.into_inner().unwrap();
             assert_ne!(ids[0], ids[1]);
@@ -255,7 +279,7 @@ mod tests {
             let result = execution
                 .map(3, |i| {
                     barrier.wait();
-                    Ok::<_, ()>(i)
+                    Ok::<_, crate::NumericalError>(i)
                 })
                 .unwrap();
             assert_eq!(result, vec![0, 1, 2]);

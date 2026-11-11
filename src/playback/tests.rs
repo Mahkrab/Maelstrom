@@ -98,14 +98,14 @@ fn pixels_load_without_physical_inputs_or_the_recorded_cuda_device() {
 #[test]
 fn selected_excerpt_starts_playback_at_its_first_image() {
     let mut clock = Clock::new(vec![10.0, 10.25, 10.5], 1.0, false, false).unwrap();
-    assert_eq!(clock.frame(), 0);
-    clock.advance(0.25);
-    assert_eq!(clock.frame(), 1);
-    clock.seek(2);
+    assert_eq!(clock.frame().unwrap(), 0);
+    clock.advance(0.25).unwrap();
+    assert_eq!(clock.frame().unwrap(), 1);
+    clock.seek(2).unwrap();
     assert_eq!(clock.position, 0.5);
     clock.restart();
     assert_eq!(clock.position, 0.0);
-    assert_eq!(clock.frame(), 0);
+    assert_eq!(clock.frame().unwrap(), 0);
 }
 
 #[test]
@@ -292,51 +292,51 @@ fn zero_step_export_is_one_static_frame() {
     f.manifest["accepted_steps"] = json!("0");
     assert_eq!(f.open().unwrap().decode(0).unwrap(), f.rgba);
     let mut c = Clock::new(vec![0.0], 1.0, false, true).unwrap();
-    c.toggle();
+    c.toggle().unwrap();
     c.restart();
-    c.advance(100.0);
+    c.advance(100.0).unwrap();
     assert!(!c.playing);
-    assert_eq!(c.frame(), 0);
+    assert_eq!(c.frame().unwrap(), 0);
 }
 #[test]
 fn clock_uses_recorded_intervals_speed_pause_seek_and_final_hold() {
     let mut c = Clock::new(vec![0.0, 0.2, 0.4, 0.5], 2.0, false, false).unwrap();
-    c.advance(0.099);
-    assert_eq!(c.frame(), 0);
-    c.advance(0.001);
-    assert_eq!(c.frame(), 1);
-    c.toggle();
-    c.advance(5.0);
-    assert_eq!(c.frame(), 1);
-    c.seek(2);
+    c.advance(0.099).unwrap();
+    assert_eq!(c.frame().unwrap(), 0);
+    c.advance(0.001).unwrap();
+    assert_eq!(c.frame().unwrap(), 1);
+    c.toggle().unwrap();
+    c.advance(5.0).unwrap();
+    assert_eq!(c.frame().unwrap(), 1);
+    c.seek(2).unwrap();
     assert!(!c.playing);
     assert_eq!(c.position, 0.4);
-    c.toggle();
-    c.advance(1.0);
-    assert_eq!(c.frame(), 3);
+    c.toggle().unwrap();
+    c.advance(1.0).unwrap();
+    assert_eq!(c.frame().unwrap(), 3);
     assert!(!c.playing);
     assert_eq!(c.position, 0.5);
-    c.advance(100.0);
-    assert_eq!(c.frame(), 3);
-    c.toggle();
-    assert_eq!(c.frame(), 0);
+    c.advance(100.0).unwrap();
+    assert_eq!(c.frame().unwrap(), 3);
+    c.toggle().unwrap();
+    assert_eq!(c.frame().unwrap(), 0);
     assert!(c.playing);
-    c.seek(usize::MAX);
-    assert_eq!(c.frame(), 3);
+    c.seek(usize::MAX).unwrap();
+    assert_eq!(c.frame().unwrap(), 3);
     c.restart();
-    assert_eq!(c.frame(), 0);
+    assert_eq!(c.frame().unwrap(), 0);
     assert!(c.playing);
 }
 #[test]
 fn looping_holds_the_final_image_for_the_previous_interval() {
     let mut c = Clock::new(vec![0.0, 0.2, 0.4, 0.5], 1.0, false, true).unwrap();
-    c.advance(0.55);
-    assert_eq!(c.frame(), 3);
+    c.advance(0.55).unwrap();
+    assert_eq!(c.frame().unwrap(), 3);
     assert!(c.playing);
-    c.advance(0.06);
-    assert_eq!(c.frame(), 0);
-    c.advance(60.0);
-    assert_eq!(c.frame(), 0);
+    c.advance(0.06).unwrap();
+    assert_eq!(c.frame().unwrap(), 0);
+    c.advance(60.0).unwrap();
+    assert_eq!(c.frame().unwrap(), 0);
     for speed in [0.0, -1.0, f64::NAN, f64::INFINITY, 0.009, 100.01] {
         assert!(Clock::new(vec![0.0], speed, false, false).is_err());
     }
@@ -442,4 +442,62 @@ fn saved_pixels_keep_orientation_and_colour_through_the_graphics_pass() {
     drop(mapped);
     buffer.unmap();
     g.check().unwrap();
+}
+
+#[test]
+#[ignore = "resource qualification: streams a million-frame manifest and temporary index"]
+fn million_frame_manifest_uses_disk_index_without_retaining_provenance() {
+    use serde::{Serialize, Serializer, ser::SerializeSeq};
+    use std::io::Write;
+    struct Rows(usize);
+    impl Serialize for Rows {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            let mut seq = serializer.serialize_seq(Some(self.0))?;
+            for index in 0..self.0 {
+                seq.serialize_element(&crate::export::Frame {
+                    index,
+                    step: index.to_string(),
+                    simulated_seconds: index as f64 * 0.25,
+                    file: format!("frame-{index:08}.png"),
+                    png_sha256: hash(b"png"),
+                    rgba_sha256: hash(b"rgba"),
+                    snapshot_sha256: hash(b"snapshot"),
+                })?;
+            }
+            seq.end()
+        }
+    }
+    let fixture = Fixture::new();
+    let path = fixture.root.join("manifest.json");
+    let count = 1_000_001;
+    let mut file = std::io::BufWriter::new(fs::File::create(&path).unwrap());
+    write!(file, "{{\"schema_version\":1,\"complete\":true,\"frame_count\":{count},\"accepted_steps\":\"{}\",\"step_stride\":\"1\",\"render\":{{\"width\":2,\"height\":2,\"format\":\"png\"}},\"frames\":", count - 1).unwrap();
+    serde_json::to_writer(&mut file, &Rows(count)).unwrap();
+    file.write_all(b"}").unwrap();
+    file.flush().unwrap();
+    drop(file);
+    let sequence = Sequence::open(&fixture.root).unwrap();
+    assert_eq!(sequence.frame_count(), count);
+    assert_eq!(sequence.timestamp(0).unwrap(), 0.0);
+    assert_eq!(sequence.timestamp(count - 1).unwrap(), 250_000.0);
+    assert!(sequence.decode(count - 1).is_err()); // No PNG has been invented.
+    println!(
+        "manifest_bytes={} frames={count}",
+        fs::metadata(path).unwrap().len()
+    );
+}
+
+#[test]
+fn long_finite_image_timestamps_have_no_historical_trillion_second_cap() {
+    let mut fixture = Fixture::new();
+    for (frame, time) in fixture.manifest["frames"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .zip([0.0, 2e12, 4e12, 5e12])
+    {
+        frame["simulated_seconds"] = json!(time);
+    }
+    let sequence = fixture.open().unwrap();
+    assert_eq!(sequence.timestamp(3).unwrap(), 5e12);
 }

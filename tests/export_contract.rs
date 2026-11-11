@@ -18,11 +18,21 @@ fn schedules_have_exact_endpoints_without_duplicates_or_overflow() {
         (6, 2, vec![0, 2, 4, 6]),
         (u64::MAX, u64::MAX, vec![0, u64::MAX]),
     ] {
-        assert_eq!(FrameSchedule::new(s, k).unwrap().steps, want);
+        assert_eq!(
+            FrameSchedule::new(s, k)
+                .unwrap()
+                .steps
+                .iter()
+                .collect::<Vec<_>>(),
+            want
+        );
     }
     assert!(FrameSchedule::new(1, 0).is_err());
     assert!(FrameSchedule::new(u64::MAX, 1).is_err());
-    assert!(FrameSchedule::new(1_000_000, 1).is_err());
+    assert_eq!(
+        FrameSchedule::new(1_000_000, 1).unwrap().steps.len(),
+        1_000_001
+    );
     assert_eq!(
         FrameSchedule::new(999_999, 1).unwrap().steps.len(),
         1_000_000

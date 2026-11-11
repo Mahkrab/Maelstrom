@@ -73,8 +73,16 @@ pub(super) fn manage(cli: &Cli, storage: &Storage, command: &CacheCommand) -> Re
             allow_partial,
             ..
         } => {
-            let opened =
-                Cache::open(cache, *allow_partial).map_err(|e| CliError::input(e.to_string()))?;
+            let opened = Cache::open_with_cancellation(cache, *allow_partial, || {
+                cancel.load(Ordering::Relaxed)
+            })
+            .map_err(|e| {
+                if cancel.load(Ordering::Relaxed) {
+                    failure(e, &cancel)
+                } else {
+                    CliError::input(e.to_string())
+                }
+            })?;
             if let CacheCommand::Validate { full, .. } = command {
                 if *full {
                     opened
@@ -116,7 +124,7 @@ pub(super) fn render(_: &Cli, _: &CacheRender) -> Result<u8, CliError> {
 #[cfg(feature = "render")]
 pub(super) fn render(cli: &Cli, args: &CacheRender) -> Result<u8, CliError> {
     use maelstrom::{
-        export::{CacheSelection, CachedRenderRequest, render_cache},
+        export::{CacheSelection, CachedRenderRequest, render_cache_with_summary},
         presentation::CameraMode,
         render::GraphicsSelection,
     };
@@ -144,7 +152,7 @@ pub(super) fn render(cli: &Cli, args: &CacheRender) -> Result<u8, CliError> {
     let selected = super::presentation::resolve(None, &args.presentation)?;
     let cancel = cancellation()?;
     let mut bar = Progress::new();
-    let result = render_cache(
+    let result = render_cache_with_summary(
         CachedRenderRequest {
             cache: &cache,
             settings: selected.effective.settings,

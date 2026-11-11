@@ -1,7 +1,10 @@
 //! The completed manifest owns frame order and timing. Each image is bounded,
 //! checked against both recorded hashes and decoded only when requested.
 
-use crate::{export::Frame, render::RenderError};
+use crate::{
+    export::{Frame, frame_index::FrameIndex},
+    render::RenderError,
+};
 use serde::{
     Deserialize, Deserializer,
     de::{self, SeqAccess, Visitor},
@@ -29,7 +32,7 @@ struct Manifest {
     accepted_steps: String,
     step_stride: String,
     #[serde(deserialize_with = "frames")]
-    frames: Vec<Frame>,
+    frames: FrameIndex,
     render: Dimensions,
 }
 #[derive(Deserialize)]
@@ -45,32 +48,29 @@ struct Dimensions {
     format: String,
 }
 
-fn frames<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Frame>, D::Error> {
+fn frames<'de, D: Deserializer<'de>>(deserializer: D) -> Result<FrameIndex, D::Error> {
     struct Frames;
     impl<'de> Visitor<'de> for Frames {
-        type Value = Vec<Frame>;
+        type Value = FrameIndex;
 
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("at most 1000000 frame records")
+            f.write_str("ordered frame records")
         }
 
         fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-            let mut frames = Vec::new();
+            let mut frames = FrameIndex::new().map_err(de::Error::custom)?;
             while let Some(frame) = seq.next_element::<Frame>()? {
-                if frames.len() == 1_000_000 {
-                    return Err(de::Error::custom("sequence exceeds 1000000 frames"));
-                }
                 // These fields have fixed-format meanings. Bound retained text
                 // before growing the index, including for malformed manifests.
                 if frame.step.len() > 20
-                    || frame.file.len() > 18
+                    || frame.file.len() > 36
                     || frame.png_sha256.len() != 71
                     || frame.rgba_sha256.len() != 71
                     || frame.snapshot_sha256.len() != 71
                 {
                     return Err(de::Error::custom("invalid sequence frame text length"));
                 }
-                frames.push(frame);
+                frames.push(frame).map_err(de::Error::custom)?;
             }
             Ok(frames)
         }
@@ -82,7 +82,7 @@ fn frames<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Frame>, D::E
 /// not interpreted as a request to recreate its simulation backend.
 pub struct Sequence {
     root: PathBuf,
-    pub(super) frames: Vec<Frame>,
+    pub(super) frames: std::sync::Arc<FrameIndex>,
     pub(super) width: u32,
     pub(super) height: u32,
 }
@@ -129,8 +129,8 @@ impl Sequence {
     /// Opens a completed export directory or `manifest.json`. Progress files,
     /// unsupported schemas, unsafe names and inconsistent schedules are rejected
     /// before a window opens. Reads the frame index from a stream, skipping
-    /// numerical provenance without retaining it. Up to one million frames are
-    /// supported, independently of the size of the recorded particle input.
+    /// numerical provenance without retaining it. The validated frame index uses
+    /// temporary disk storage rather than memory proportional to the history.
     pub fn open(path: &Path) -> Result<Self, RenderError> {
         let manifest = if path.is_dir() {
             path.join("manifest.json")
@@ -149,8 +149,16 @@ impl Sequence {
         }
         let file = fs::File::open(&manifest)
             .map_err(|e| error(format!("sequence manifest: {}", e.kind())))?;
-        let m: Manifest = serde_json::from_reader(BufReader::new(file))
+        let length = file
+            .metadata()
+            .map_err(|e| error(format!("sequence manifest: {e}")))?
+            .len();
+        let mut bounded = file.take(length.saturating_add(1));
+        let m: Manifest = serde_json::from_reader(BufReader::new(&mut bounded))
             .map_err(|e| error(format!("sequence manifest: {e}")))?;
+        if bounded.limit() != 1 {
+            return Err(error("sequence manifest changed length while reading"));
+        }
         if !matches!(m.schema_version, 1 | 2) || !m.complete {
             return Err(error(
                 "play requires a completed sequence with manifest schema 1 or 2",
@@ -214,7 +222,6 @@ impl Sequence {
             None
         };
         if m.frames.is_empty()
-            || m.frames.len() > 1_000_000
             || m.frame_count != m.frames.len()
             || (cached.is_none() && count != Some(m.frames.len() as u64))
         {
@@ -222,7 +229,9 @@ impl Sequence {
                 "sequence frame count or sampling schedule is inconsistent",
             ));
         }
-        for (i, f) in m.frames.iter().enumerate() {
+        let mut previous_time = None;
+        for i in 0..m.frames.len() {
+            let f = m.frames.get(i).map_err(|e| error(e.to_string()))?;
             let expected_step = if let Some((schedule, selection, _)) = cached {
                 schedule
                     .step(selection.first + i as u64 * selection.every)
@@ -234,10 +243,10 @@ impl Sequence {
                 || f.file != format!("frame-{i:08}.png")
                 || f.step != expected_step.to_string()
                 || !f.simulated_seconds.is_finite()
-                || !(0.0..=1e12).contains(&f.simulated_seconds)
+                || f.simulated_seconds < 0.0
                 || (cached.is_none() && i == 0 && f.simulated_seconds != 0.0)
                 || cached.is_some_and(|(_, _, dt)| f.simulated_seconds != expected_step as f64 * dt)
-                || (i > 0 && f.simulated_seconds <= m.frames[i - 1].simulated_seconds)
+                || previous_time.is_some_and(|t| f.simulated_seconds <= t)
                 || !valid_hash(&f.png_sha256)
                 || !valid_hash(&f.rgba_sha256)
                 || !valid_hash(&f.snapshot_sha256)
@@ -246,6 +255,7 @@ impl Sequence {
                     "invalid sequence frame {i}: order, filename, step, timestamp or hash"
                 )));
             }
+            previous_time = Some(f.simulated_seconds);
         }
         let root = manifest
             .parent()
@@ -253,7 +263,7 @@ impl Sequence {
             .to_owned();
         Ok(Self {
             root,
-            frames: m.frames,
+            frames: std::sync::Arc::new(m.frames),
             width: m.render.width,
             height: m.render.height,
         })
@@ -265,8 +275,24 @@ impl Sequence {
     }
 
     /// Ordered simulation timestamps, independent of video frame rate.
-    pub fn timestamps(&self) -> Vec<f64> {
-        self.frames.iter().map(|f| f.simulated_seconds).collect()
+    pub fn timestamps(&self) -> Result<Vec<f64>, RenderError> {
+        let mut times = Vec::new();
+        times
+            .try_reserve_exact(self.frames.len())
+            .map_err(|e| error(e.to_string()))?;
+        for i in 0..self.frames.len() {
+            times.push(self.timestamp(i)?);
+        }
+        Ok(times)
+    }
+
+    /// Recorded time at an existing image index, with no timestamp array.
+    pub fn timestamp(&self, index: usize) -> Result<f64, RenderError> {
+        Ok(self
+            .frames
+            .get(index)
+            .map_err(|e| error(e.to_string()))?
+            .simulated_seconds)
     }
 
     /// Number of recorded images; always at least one.
@@ -278,10 +304,7 @@ impl Sequence {
     /// decoded-pixel integrity. Memory is bounded by this frame, not the history.
     /// Missing or altered images fail explicitly; nothing is regenerated.
     pub fn decode(&self, index: usize) -> Result<Vec<u8>, RenderError> {
-        let f = self
-            .frames
-            .get(index)
-            .ok_or_else(|| error("frame index outside sequence"))?;
+        let f = self.frames.get(index).map_err(|e| error(e.to_string()))?;
         let label = format!("sequence frame {index}");
         let bytes = read(&self.root.join(&f.file), 300 * 1024 * 1024, &label)?;
         if hash(&bytes) != f.png_sha256 {
@@ -309,7 +332,9 @@ impl Sequence {
         if reader.output_buffer_size() != Some(expected) {
             return Err(error(format!("{label}: unexpected decoded size")));
         }
-        let mut rgba = vec![0; expected];
+        let mut rgba = crate::storage::vector(expected)
+            .map_err(|e| error(format!("{label}: pixel allocation: {e}")))?;
+        rgba.resize(expected, 0);
         reader
             .next_frame(&mut rgba)
             .map_err(|e| error(format!("{label}: PNG data: {e}")))?;

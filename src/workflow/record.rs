@@ -26,6 +26,8 @@ pub const SCHEMA_VERSION: u32 = 1;
 /// A malformed, unsupported or numerically inconsistent recorded input.
 #[derive(Debug)]
 pub enum RecordError {
+    /// Host storage for a record could not be reserved.
+    Allocation(std::collections::TryReserveError),
     /// JSON does not match the record structure.
     Json(serde_json::Error),
     /// A version, identity, policy or cross-field invariant is invalid.
@@ -37,6 +39,7 @@ pub enum RecordError {
 impl fmt::Display for RecordError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Allocation(error) => write!(f, "could not allocate record storage: {error}"),
             Self::Json(error) => write!(f, "invalid record JSON: {error}"),
             Self::Invalid(message) => write!(f, "invalid record: {message}"),
             Self::Simulation(error) => write!(f, "invalid recorded inputs: {error}"),
@@ -47,6 +50,7 @@ impl fmt::Display for RecordError {
 impl std::error::Error for RecordError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Allocation(error) => Some(error),
             Self::Json(error) => Some(error),
             Self::Simulation(error) => Some(error),
             Self::Invalid(_) => None,
@@ -106,6 +110,7 @@ pub struct SnapshotRecord {
     schema_version: u32,
     #[serde(with = "decimal")]
     completed_steps: u64,
+    #[serde(deserialize_with = "crate::storage::deserialize_vec")]
     particles: Vec<ParticleRecord>,
 }
 
@@ -118,10 +123,20 @@ impl SnapshotRecord {
         let record = Self {
             schema_version: SCHEMA_VERSION,
             completed_steps,
-            particles: particles.iter().map(ParticleRecord::from).collect(),
+            particles: crate::storage::collect(particles.iter().map(ParticleRecord::from))?,
         };
         record.validate()?;
         Ok(record)
+    }
+    /// Copies an observation with a recoverable particle-storage reservation.
+    pub fn try_capture(snapshot: &Snapshot) -> Result<Self, RecordError> {
+        Ok(Self {
+            schema_version: SCHEMA_VERSION,
+            completed_steps: snapshot.completed_steps(),
+            particles: crate::storage::collect(
+                snapshot.particles().iter().map(ParticleRecord::from),
+            )?,
+        })
     }
     /// Copies a solver snapshot into a portable record. Call between steps so
     /// observation remains outside the primary solver timing boundary.
@@ -208,6 +223,7 @@ pub struct RecordedInput {
     randomness: RandomnessPolicy,
     configuration: ConfigurationRecord,
     planes: Vec<PlaneRecord>,
+    #[serde(deserialize_with = "crate::storage::deserialize_vec")]
     particles: Vec<ParticleRecord>,
     comparison_key: String,
 }
@@ -220,11 +236,12 @@ impl RecordedInput {
         (&self.name, &self.configuration.name)
     }
 
-    pub(crate) fn capture(scene: &ResolvedScene, solver: &SerialSimulation) -> Self {
+    pub(crate) fn capture(
+        scene: &ResolvedScene,
+        solver: &SerialSimulation,
+    ) -> Result<Self, RecordError> {
         let config = solver.configuration();
-        let mut ordered = scene.clone();
-        ordered.particles = solver.snapshot().particles().to_vec();
-        Self {
+        Ok(Self {
             schema_version: SCHEMA_VERSION,
             scene_schema_version: scene.schema_version,
             name: scene.name.clone(),
@@ -269,9 +286,15 @@ impl RecordedInput {
                     offset_m: plane.offset(),
                 })
                 .collect(),
-            particles: ordered.particles.iter().map(ParticleRecord::from).collect(),
-            comparison_key: ordered.comparison_key(),
-        }
+            particles: crate::storage::collect(
+                solver
+                    .snapshot()
+                    .particles()
+                    .iter()
+                    .map(ParticleRecord::from),
+            )?,
+            comparison_key: scene.comparison_key_for(solver.snapshot().particles())?,
+        })
     }
 
     /// Exact physical input key, excluding names, descriptions and provenance.
@@ -414,11 +437,9 @@ impl RecordedInput {
             randomness: self.randomness,
             configuration,
             planes,
-            particles: self
-                .particles
-                .iter()
-                .map(ParticleRecord::particle)
-                .collect(),
+            particles: crate::storage::collect(
+                self.particles.iter().map(ParticleRecord::particle),
+            )?,
         };
         if solver_validation {
             SerialSimulation::from_scene(&scene)?;
@@ -428,7 +449,7 @@ impl RecordedInput {
                 .pbf_parameters()
                 .map_err(StepError::from)?;
         }
-        if scene.comparison_key() != self.comparison_key {
+        if scene.comparison_key_for(&scene.particles)? != self.comparison_key {
             return Err(RecordError::Invalid(
                 "scene comparison key disagrees with values".into(),
             ));
@@ -506,5 +527,11 @@ pub(super) mod decimal_vec {
             .into_iter()
             .map(|n| n.0)
             .collect())
+    }
+}
+
+impl From<std::collections::TryReserveError> for RecordError {
+    fn from(error: std::collections::TryReserveError) -> Self {
+        Self::Allocation(error)
     }
 }

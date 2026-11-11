@@ -15,7 +15,7 @@ pub(super) fn launch(cli: &Cli, args: &Video) -> Result<u8, CliError> {
     use maelstrom::{
         export::{
             CacheSelection,
-            video::{VideoTiming, cached_pixels, encode_frames},
+            video::{VideoTiming, cached_pixels, encode_observations},
         },
         presentation::{CameraMode, Presentation},
         render::{BoundaryLines, Graphics, GraphicsSelection},
@@ -88,14 +88,19 @@ pub(super) fn launch(cli: &Cli, args: &Video) -> Result<u8, CliError> {
                 hash.update(&buffer[..n]);
             }
             let source = serde_json::json!({"mode":"validated_png_sequence", "manifest_sha256":hash.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>(),"render":saved.render});
-            encode_frames(
+            encode_observations(
                 output,
                 &args.ffmpeg,
                 dims,
                 (args.width.unwrap_or(dims.0), args.height.unwrap_or(dims.1)),
                 timing,
                 range(opened.frame_count() as u64)?,
-                &opened.timestamps(),
+                opened.frame_count() as u64,
+                |i| {
+                    opened
+                        .timestamp(i as usize)
+                        .map_err(|e| maelstrom::export::ExportError(e.to_string()))
+                },
                 source,
                 |i| {
                     opened
@@ -155,18 +160,22 @@ pub(super) fn launch(cli: &Cli, args: &Video) -> Result<u8, CliError> {
             )
             .map_err(|e| CliError::input(e.to_string()))?;
             let dt = f64::from(scene.configuration.numerical.fixed_timestep_s);
-            let timestamps: Vec<_> = (0..opened.frame_count())
-                .map(|i| opened.step(i).unwrap_or(0) as f64 * dt)
-                .collect();
             let source = serde_json::json!({"cache":opened.info(),"render":settings,"renderer":"opaque-spheres-lines-v2 indexed","solver_steps":0,"timestep_bits":scene.configuration.numerical.fixed_timestep_s.to_bits(),"application_version":env!("CARGO_PKG_VERSION")});
-            encode_frames(
+            encode_observations(
                 output,
                 &args.ffmpeg,
                 (settings.width, settings.height),
                 (settings.width, settings.height),
                 timing,
                 selection,
-                &timestamps,
+                opened.frame_count(),
+                |i| {
+                    opened.step(i).map(|step| step as f64 * dt).ok_or_else(|| {
+                        maelstrom::export::ExportError(
+                            "cache timestamp index outside sequence".into(),
+                        )
+                    })
+                },
                 source,
                 |i| cached_pixels(&opened, &settings, &graphics, &boundaries, i),
                 cancel,
@@ -177,14 +186,28 @@ pub(super) fn launch(cli: &Cli, args: &Video) -> Result<u8, CliError> {
         code: if cancel() { 130 } else { 5 },
         message: e.to_string(),
     })?;
-    super::print_document(
-        cli.format,
-        format!(
-            "Encoded {} frames to {}; no simulation performed.",
-            value["frame_count"],
-            output.display()
-        ),
-        value,
-    )?;
+    if matches!(cli.format, super::arguments::Format::Json) {
+        use std::io::Write;
+        // Preserve the complete JSON response without rebuilding its frame array.
+        let mut name = output.as_os_str().to_os_string();
+        name.push(".json");
+        let mut file = std::fs::File::open(std::path::PathBuf::from(name))
+            .map_err(|e| CliError::output(e.to_string()))?;
+        let mut stdout = std::io::stdout().lock();
+        std::io::copy(&mut file, &mut stdout)
+            .and_then(|_| stdout.write_all(b"\n"))
+            .and_then(|_| stdout.flush())
+            .map_err(|e| CliError::output(format!("stdout: {e}")))?;
+    } else {
+        super::print_document(
+            cli.format,
+            format!(
+                "Encoded {} frames to {}; no simulation performed.",
+                value["frame_count"],
+                output.display()
+            ),
+            value,
+        )?;
+    }
     Ok(0)
 }

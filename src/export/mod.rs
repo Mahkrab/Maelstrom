@@ -3,8 +3,10 @@
 
 mod cached;
 mod encoding;
+pub(crate) mod frame_index;
 pub mod video;
-pub use cached::{CacheSelection, CachedRenderRequest, render_cache};
+pub use cached::{CacheSelection, CachedRenderRequest, render_cache, render_cache_with_summary};
+mod manifest;
 mod offscreen;
 mod source;
 mod timing;
@@ -37,36 +39,70 @@ fn hash(bytes: &[u8]) -> String {
     format_digest(Sha256::digest(bytes).into())
 }
 fn format_digest(bytes: [u8; 32]) -> String {
-    format!(
-        "sha256:{}",
-        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    )
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut digest = String::with_capacity(71);
+    digest.push_str("sha256:");
+    for byte in bytes {
+        digest.push(char::from(HEX[usize::from(byte >> 4)]));
+        digest.push(char::from(HEX[usize::from(byte & 15)]));
+    }
+    digest
 }
 
 /// Ordered, unique accepted boundaries, including initial and requested final state.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct FrameSchedule {
-    /// Zero-based frame order; integers are exact u64 step indices.
-    pub steps: Vec<u64>,
+    /// Constant-space step sequence; no array grows with the requested duration.
+    pub steps: StepIndices,
+}
+
+/// Addressable step sequence used by image export and progress reporting.
+#[derive(Debug, Clone)]
+pub struct StepIndices {
+    schedule: crate::cache::Schedule,
+    count: usize,
+}
+impl StepIndices {
+    /// Number of scheduled frames.
+    pub fn len(&self) -> usize {
+        self.count
+    }
+    /// A schedule always contains its initial state.
+    pub fn is_empty(&self) -> bool {
+        false
+    }
+    /// Exact accepted step at a frame index.
+    pub fn get(&self, index: usize) -> Option<u64> {
+        self.schedule.step(index as u64)
+    }
+    /// Iterates scheduled accepted steps without allocating.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = u64> + '_ {
+        (0..self.count).map(|i| self.schedule.at(i as u64))
+    }
+}
+impl Serialize for FrameSchedule {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        struct Steps<'a>(&'a StepIndices);
+        impl Serialize for Steps<'_> {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.collect_seq(self.0.iter())
+            }
+        }
+        let mut record = serializer.serialize_struct("FrameSchedule", 1)?;
+        record.serialize_field("steps", &Steps(&self.steps))?;
+        record.end()
+    }
 }
 impl FrameSchedule {
-    /// Rejects overflow and schedules exceeding one million frames before allocation.
+    /// Rejects zero stride and counts outside the addressable frame-index range.
     pub fn new(last_step: u64, stride: u64) -> Result<Self, ExportError> {
-        if stride == 0 {
-            return Err(fail("step stride must be positive"));
-        }
-        let count = (last_step / stride)
-            .checked_add(1)
-            .and_then(|n| n.checked_add(u64::from(!last_step.is_multiple_of(stride))))
-            .ok_or_else(|| fail("frame count overflow"))?;
-        if count > 1_000_000 {
-            return Err(fail("frame count exceeds 1000000"));
-        }
-        let mut steps: Vec<_> = (0..=last_step / stride).map(|i| i * stride).collect();
-        if steps.last() != Some(&last_step) {
-            steps.push(last_step);
-        }
-        Ok(Self { steps })
+        let schedule = crate::cache::Schedule::new(last_step, stride).map_err(fail)?;
+        let count = usize::try_from(schedule.len())
+            .map_err(|_| fail("frame count exceeds addressable index range"))?;
+        Ok(Self {
+            steps: StepIndices { schedule, count },
+        })
     }
 }
 
@@ -142,6 +178,23 @@ pub fn export_with_progress(
         cancelled,
         offscreen::FrameOperations::default(),
         progress,
+        true,
+    )
+}
+
+/// Exports with bounded history storage and returns completion metadata.
+/// The complete schema-1 manifest remains at the destination.
+pub fn export_with_summary(
+    request: ExportRequest<'_>,
+    cancelled: impl FnMut() -> bool,
+    progress: impl FnMut(usize, usize),
+) -> Result<Value, ExportError> {
+    export_notifying(
+        request,
+        cancelled,
+        offscreen::FrameOperations::default(),
+        progress,
+        false,
     )
 }
 
@@ -150,7 +203,7 @@ fn export_using(
     cancelled: impl FnMut() -> bool,
     operations: offscreen::FrameOperations,
 ) -> Result<Value, ExportError> {
-    export_notifying(request, cancelled, operations, |_, _| {})
+    export_notifying(request, cancelled, operations, |_, _| {}, true)
 }
 
 fn export_notifying(
@@ -158,6 +211,7 @@ fn export_notifying(
     mut cancelled: impl FnMut() -> bool,
     operations: offscreen::FrameOperations,
     mut notify: impl FnMut(usize, usize),
+    retain_manifest: bool,
 ) -> Result<Value, ExportError> {
     let started = Instant::now();
     let mut timings = timing::ExportTimings::default();
@@ -207,7 +261,7 @@ fn export_notifying(
     let schedule = FrameSchedule::new(last_step, settings.step_stride)?;
     notify(0, schedule.steps.len());
     let dt = f64::from(scene.configuration.numerical.fixed_timestep_s);
-    if schedule.steps.iter().any(|s| !(*s as f64 * dt).is_finite()) {
+    if !(last_step as f64 * dt).is_finite() {
         return Err(fail("simulated timestamp overflow"));
     }
     if mode == "saved" {
@@ -219,12 +273,12 @@ fn export_notifying(
     // Validate solver inputs without acquiring execution resources. Saved mode
     // never constructs the recorded CUDA or threaded backend.
     let initial = Simulation::from_scene(scene).map_err(fail)?;
-    let input = RecordedInput::capture(scene, &initial);
+    let input = RecordedInput::capture(scene, &initial).map_err(fail)?;
     input.resolve().map_err(fail)?;
     if let Some(expected) = recorded.as_ref().and_then(|r| r.snapshots.get(&0)) {
         source::compare(
             expected,
-            &SnapshotRecord::capture(initial.snapshot()),
+            &SnapshotRecord::try_capture(initial.snapshot()).map_err(fail)?,
             crate::execution::ExecutionMode::Serial,
         )?;
     }
@@ -271,8 +325,8 @@ fn export_notifying(
     let mut progress = json!({"schema_version":1,"complete":false,"source_mode":mode,"expected_frames":schedule.steps.len(),"frames":[],"failures":[],"original":recorded.as_ref().map(|r|&r.provenance)});
     write_progress(request.destination, &progress)?;
     timings.progress += start.elapsed();
+    let mut frames = frame_index::FrameIndex::new()?;
     let result = (|| {
-        let mut frames = Vec::with_capacity(schedule.steps.len());
         let mut writer = offscreen::FrameWriter {
             operations,
             graphics: &graphics,
@@ -285,7 +339,8 @@ fn export_notifying(
             timings: timing::FrameTimings::default(),
             worker: encoding::Worker::new()?,
         };
-        let mut diagnostics = Vec::new();
+        let mut diagnostics = crate::storage::JsonLog::new().map_err(fail)?;
+        let mut warnings = false;
         let start = Instant::now();
         let mut solver = if mode == "saved" {
             None
@@ -318,11 +373,13 @@ fn export_notifying(
                 let start = Instant::now();
                 let outcome = s.step_with_cancellation(&mut cancelled).map_err(fail)?;
                 timings.solver_steps += start.elapsed();
-                diagnostics.push(crate::workflow::StepDiagnostic::new(step, outcome.cfl));
+                let diagnostic = crate::workflow::StepDiagnostic::new(step, outcome.cfl);
+                warnings |= diagnostic.warning;
+                diagnostics.push(&diagnostic).map_err(fail)?;
                 progress["accepted_steps"] = json!(step.to_string());
             }
             let start = Instant::now();
-            let snapshot = SnapshotRecord::capture(s.snapshot());
+            let snapshot = SnapshotRecord::try_capture(s.snapshot()).map_err(fail)?;
             timings.snapshot_capture += start.elapsed();
             let start = Instant::now();
             if let Some(expected) = recorded.as_ref().and_then(|r| r.snapshots.get(&step))
@@ -341,7 +398,7 @@ fn export_notifying(
                 return Err(error);
             }
             timings.comparison += start.elapsed();
-            if schedule.steps.get(next) == Some(&step) {
+            if schedule.steps.get(next) == Some(step) {
                 queue_frame(
                     &mut writer,
                     &snapshot,
@@ -364,7 +421,7 @@ fn export_notifying(
                 }
                 let snapshot = r
                     .snapshots
-                    .get(step)
+                    .get(&step)
                     .ok_or_else(|| fail("missing saved frame"))?;
                 queue_frame(
                     &mut writer,
@@ -395,27 +452,31 @@ fn export_notifying(
         let timing_profile = timings.profile(started.elapsed())?;
         let manifest = json!({"schema_version":1,"complete":true,"source_mode":mode,"application_version":env!("CARGO_PKG_VERSION"),
             "build":{"commit":option_env!("MAELSTROM_EXPORT_COMMIT"),"dirty":option_env!("MAELSTROM_EXPORT_DIRTY"),"source_sha256":option_env!("MAELSTROM_EXPORT_SOURCE"),"lock_sha256":option_env!("MAELSTROM_EXPORT_LOCK"),"target":option_env!("MAELSTROM_EXPORT_TARGET"),"rustc":option_env!("MAELSTROM_EXPORT_RUSTC"),"debug_assertions":cfg!(debug_assertions),"profile":option_env!("MAELSTROM_EXPORT_PROFILE"),"opt_level":option_env!("MAELSTROM_EXPORT_OPT_LEVEL"),"rustflags_sha256":option_env!("MAELSTROM_EXPORT_CARGO_ENCODED_RUSTFLAGS"),"features":{"render":true,"viewer":cfg!(feature="viewer"),"cuda":cfg!(feature="cuda")}},
-            "backend":RunMetadata::new(&input,last_step,options.backend,options.execution).backend,"execution":options.execution,"request":{"steps":last_step.to_string(),"checkpoints":schedule.steps.iter().map(u64::to_string).collect::<Vec<_>>()},"input":input,"effective_execution":options.execution,"discovery":format!("{:?}",options.backend),"run_metadata":metadata,"original":recorded.as_ref().map(|r|&r.provenance),
-            "accepted_steps":last_step.to_string(),"status":if mode=="saved" {"saved_observations_rendered"} else if diagnostics.iter().any(|d|d.warning) {"completed_with_warnings"} else {"completed"},"frame_count":frames.len(),"step_stride":settings.step_stride.to_string(),"frames":frames,"render":settings,
+            "backend":RunMetadata::new(&input,last_step,options.backend,options.execution).backend,"execution":options.execution,"effective_execution":options.execution,"discovery":format!("{:?}",options.backend),"run_metadata":metadata,"original":recorded.as_ref().map(|r|&r.provenance),
+            "accepted_steps":last_step.to_string(),"status":if mode=="saved" {"saved_observations_rendered"} else if warnings {"completed_with_warnings"} else {"completed"},"frame_count":frames.len(),"step_stride":settings.step_stride.to_string(),"render":settings,
             "boundary_display_box":{"lower_m":boundaries.lower_m,"upper_m":boundaries.upper_m},
             "renderer":{"revision":"opaque-spheres-lines-v2","shader_sha256":hash(include_bytes!("../render/particles.wgsl")),"format":"Rgba8UnormSrgb","samples":1,"overlays":false},
             "graphics":{"backend":format!("{:?}",graphics.adapter_info.backend),"name":graphics.adapter_info.name,"device_type":format!("{:?}",graphics.adapter_info.device_type),"vendor":graphics.adapter_info.vendor,"device":graphics.adapter_info.device,"driver":graphics.adapter_info.driver,"driver_info":graphics.adapter_info.driver_info,"selection_index":request.graphics.index,"software_requested":request.graphics.software},
             "encoder":{"crate":"png","version":"0.18.1","colour":"RGBA8 sRGB","compression":"Balanced","filter":"Adaptive"},
-            "timing_seconds":{"solver_steps":timings.solver_steps.as_secs_f64(),"graphics_readback":timings.frames.graphics_readback.as_secs_f64(),"encoding":timings.frames.png_encoding.as_secs_f64()},"timing_profile":timing_profile,"accepted_diagnostics":diagnostics,
+            "timing_seconds":{"solver_steps":timings.solver_steps.as_secs_f64(),"graphics_readback":timings.frames.graphics_readback.as_secs_f64(),"encoding":timings.frames.png_encoding.as_secs_f64()},"timing_profile":timing_profile,
             "destination_label":request.destination.file_name().map(|s|s.to_string_lossy())});
-        publish_bytes(
-            &request.destination.join("manifest.json"),
-            &serde_json::to_vec_pretty(&manifest).map_err(fail)?,
-        )
-        .map_err(|e| fail(format!("manifest publication: {}", e.kind())))?;
-        Ok(manifest)
+        let path = request.destination.join("manifest.json");
+        manifest::progress(request.destination, &progress, &frames)?;
+        let document = manifest::Manifest {
+            metadata: &manifest,
+            frames: &frames,
+            input: &input,
+            diagnostics: Some(&diagnostics),
+            request: Some((last_step, &schedule)),
+        };
+        manifest::finish(&path, &manifest, &document, retain_manifest)
     })();
     if let Err(error) = &result {
         progress["failures"]
             .as_array_mut()
             .ok_or_else(|| fail("invalid progress"))?
             .push(json!(error.to_string()));
-        if let Err(output) = write_progress(request.destination, &progress) {
+        if let Err(output) = manifest::progress(request.destination, &progress, &frames) {
             return Err(fail(format!(
                 "{error}; recording incomplete outcome also failed: {output}"
             )));
@@ -428,7 +489,7 @@ fn queue_frame(
     writer: &mut offscreen::FrameWriter<'_>,
     snapshot: &SnapshotRecord,
     index: usize,
-    frames: &mut Vec<Frame>,
+    frames: &mut frame_index::FrameIndex,
     progress: &mut Value,
     progress_time: &mut std::time::Duration,
 ) -> Result<(), ExportError> {
@@ -445,7 +506,7 @@ fn queue_frame(
 
 fn collect_frame(
     writer: &mut offscreen::FrameWriter<'_>,
-    frames: &mut Vec<Frame>,
+    frames: &mut frame_index::FrameIndex,
     progress: &mut Value,
     progress_time: &mut std::time::Duration,
 ) -> Result<(), ExportError> {
@@ -454,7 +515,7 @@ fn collect_frame(
 
 fn collect_frame_cancellable(
     writer: &mut offscreen::FrameWriter<'_>,
-    frames: &mut Vec<Frame>,
+    frames: &mut frame_index::FrameIndex,
     progress: &mut Value,
     progress_time: &mut std::time::Duration,
     cancelled: &mut impl FnMut() -> bool,
@@ -463,10 +524,13 @@ fn collect_frame_cancellable(
         if progress["source_mode"] == "saved" || progress.get("accepted_steps").is_none() {
             progress["accepted_steps"] = json!(frame.step);
         }
-        frames.push(frame);
+        frames.push(frame)?;
         let start = Instant::now();
-        progress["frames"] = serde_json::to_value(&frames).map_err(fail)?;
-        write_progress(writer.destination, progress)?;
+        // Geometric checkpoints keep total progress rewriting linear in frame
+        // count. Completion and every handled failure flush the full prefix.
+        if frames.len().is_power_of_two() {
+            manifest::progress(writer.destination, progress, frames)?;
+        }
         *progress_time += start.elapsed();
     }
     Ok(())

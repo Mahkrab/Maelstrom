@@ -36,7 +36,7 @@ impl fmt::Display for CacheError {
         match self {
             Self::Invalid(s) => f.write_str(s),
             Self::Io(e) => write!(f, "cache I/O: {e}"),
-            Self::Cancelled => f.write_str("cache bake cancelled"),
+            Self::Cancelled => f.write_str("cache operation cancelled"),
             Self::WriterStopped => f.write_str("cache writer stopped before completing its frame"),
         }
     }
@@ -155,17 +155,17 @@ fn directory(path: &Path) -> Result<(), CacheError> {
     Ok(())
 }
 fn read(path: &Path, limit: u64) -> Result<Vec<u8>, CacheError> {
-    let file = regular(path, limit)?;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(usize::try_from(file.metadata()?.len()).map_err(invalid)?)
-        .map_err(invalid)?;
-    file.take(limit + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > limit {
-        return Err(invalid("cache file grew beyond its limit"));
+    let mut file = regular(path, limit)?;
+    let length = usize::try_from(file.metadata()?.len()).map_err(invalid)?;
+    let mut bytes = crate::storage::vector(length).map_err(invalid)?;
+    bytes.resize(length, 0);
+    file.read_exact(&mut bytes)?;
+    if file.read(&mut [0])? != 0 {
+        return Err(invalid("cache file grew while reading"));
     }
     Ok(bytes)
 }
+
 fn sync_directory(path: &Path) -> Result<(), CacheError> {
     #[cfg(unix)]
     fs::File::open(path)?.sync_all()?;
@@ -189,3 +189,85 @@ fn result_id(request: &str, receipts: &str, diagnostics: &str) -> String {
 
 #[cfg(test)]
 mod tests;
+
+// Read only the opened file's observed extent. A changing document cannot grow
+// indefinitely during parsing, and no second whole-document buffer is retained.
+fn input(
+    path: &Path,
+    cancelled: &mut impl FnMut() -> bool,
+) -> Result<(crate::workflow::RecordedInput, String), CacheError> {
+    use std::io::BufReader;
+    let file = regular(path, u64::MAX)?;
+    let length = file.metadata()?.len();
+    struct Hashed<R, F> {
+        cancelled: F,
+        stopped: bool,
+        reader: R,
+        hash: Sha256,
+        bytes: u64,
+    }
+    impl<R: Read, F: FnMut() -> bool> Read for Hashed<R, F> {
+        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+            if (self.cancelled)() {
+                self.stopped = true;
+                return Err(io::Error::other("cache operation cancelled"));
+            }
+            let n = self.reader.read(output)?;
+            self.hash.update(&output[..n]);
+            self.bytes += n as u64;
+            Ok(n)
+        }
+    }
+    let mut reader = Hashed {
+        cancelled,
+        stopped: false,
+        reader: file.take(length.saturating_add(1)),
+        hash: Sha256::new(),
+        bytes: 0,
+    };
+    let input = serde_json::from_reader(BufReader::new(&mut reader));
+    if reader.stopped {
+        return Err(CacheError::Cancelled);
+    }
+    let input = input?;
+    if reader.bytes != length {
+        return Err(invalid("cache input changed length while reading"));
+    }
+    Ok((input, hex(reader.hash.finalize().as_slice())))
+}
+
+fn publish_hashed(
+    path: &Path,
+    write: impl FnOnce(&mut dyn io::Write) -> io::Result<()>,
+) -> Result<String, CacheError> {
+    use io::Write;
+    struct Hashed<W> {
+        writer: W,
+        hash: Sha256,
+    }
+    impl<W: Write> Write for Hashed<W> {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let n = self.writer.write(bytes)?;
+            self.hash.update(&bytes[..n]);
+            Ok(n)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.writer.flush()
+        }
+    }
+    let mut hash = None;
+    crate::workflow::output::publish_with(path, |file| {
+        let mut hashed = Hashed {
+            writer: file,
+            hash: Sha256::new(),
+        };
+        {
+            let mut writer = io::BufWriter::with_capacity(64 * 1024, &mut hashed);
+            write(&mut writer)?;
+            writer.flush()?;
+        }
+        hash = Some(hex(hashed.hash.finalize().as_slice()));
+        Ok(())
+    })?;
+    hash.ok_or_else(|| invalid("cache publication produced no digest"))
+}

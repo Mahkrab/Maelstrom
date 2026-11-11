@@ -29,16 +29,7 @@ pub fn run(
     repeat: bool,
     selection: GraphicsSelection,
 ) -> Result<(), RenderError> {
-    let clock = Clock::new(
-        sequence
-            .frames
-            .iter()
-            .map(|f| f.simulated_seconds)
-            .collect(),
-        speed,
-        paused,
-        repeat,
-    )?;
+    let clock = Clock::indexed(sequence.frames.clone(), speed, paused, repeat)?;
     // Validate the first image before opening a window, without retaining history.
     let first = sequence.decode(0)?;
     #[cfg(target_os = "linux")]
@@ -88,11 +79,12 @@ impl Player {
         self.error = Some(error);
         event_loop.exit();
     }
-    fn tick(&mut self) {
+    fn tick(&mut self) -> Result<(), RenderError> {
         let now = Instant::now();
         self.clock
-            .advance(now.duration_since(self.last_tick).as_secs_f64());
+            .advance(now.duration_since(self.last_tick).as_secs_f64())?;
         self.last_tick = now;
+        Ok(())
     }
     fn redraw(&mut self) -> Result<(), RenderError> {
         self.next_redraw = Instant::now() + Duration::from_millis(16);
@@ -105,7 +97,7 @@ impl Player {
         if self.occluded || size.width == 0 || size.height == 0 {
             return Ok(());
         }
-        let index = self.clock.frame();
+        let index = self.clock.frame()?;
         if self.loaded != Some(index) {
             let rgba = self
                 .first
@@ -116,7 +108,11 @@ impl Player {
             image.upload(&display.graphics, &rgba)?;
             self.loaded = Some(index);
         }
-        let f = &self.sequence.frames[index];
+        let f = self
+            .sequence
+            .frames
+            .get(index)
+            .map_err(|e| RenderError(e.to_string()))?;
         window.set_title(&format!(
             "Maelstrom playback | {} | frame {}/{} | step {} | {:.6} s | {:.2}x",
             if self.clock.playing {
@@ -214,7 +210,10 @@ impl ApplicationHandler for Player {
         if self.window.as_ref().is_none_or(|w| w.id() != id) {
             return;
         }
-        self.tick();
+        if let Err(error) = self.tick() {
+            self.fail(event_loop, error);
+            return;
+        }
         let request_redraw = !matches!(event, WindowEvent::RedrawRequested);
         let result = match event {
             WindowEvent::CloseRequested => {
@@ -231,24 +230,30 @@ impl ApplicationHandler for Player {
             }
             WindowEvent::RedrawRequested => self.redraw(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                match event.logical_key {
-                    Key::Named(NamedKey::Escape) => event_loop.exit(),
-                    Key::Named(NamedKey::Space) if !event.repeat => self.clock.toggle(),
-                    Key::Named(NamedKey::ArrowLeft) => {
-                        self.clock.seek(self.clock.frame().saturating_sub(1))
-                    }
-                    Key::Named(NamedKey::ArrowRight) => self.clock.seek(self.clock.frame() + 1),
-                    Key::Named(NamedKey::Home) => self.clock.seek(0),
-                    Key::Named(NamedKey::End) => self.clock.seek(self.sequence.frame_count() - 1),
-                    Key::Character(key) => match key.as_str() {
-                        "r" | "R" => self.clock.restart(),
-                        "+" | "=" => self.clock.speed = (self.clock.speed * 2.0).min(100.0),
-                        "-" | "_" => self.clock.speed = (self.clock.speed / 2.0).max(0.01),
+                (|| -> Result<(), RenderError> {
+                    match event.logical_key {
+                        Key::Named(NamedKey::Escape) => event_loop.exit(),
+                        Key::Named(NamedKey::Space) if !event.repeat => self.clock.toggle()?,
+                        Key::Named(NamedKey::ArrowLeft) => {
+                            self.clock.seek(self.clock.frame()?.saturating_sub(1))?
+                        }
+                        Key::Named(NamedKey::ArrowRight) => {
+                            self.clock.seek(self.clock.frame()? + 1)?
+                        }
+                        Key::Named(NamedKey::Home) => self.clock.seek(0)?,
+                        Key::Named(NamedKey::End) => {
+                            self.clock.seek(self.sequence.frame_count() - 1)?
+                        }
+                        Key::Character(key) => match key.as_str() {
+                            "r" | "R" => self.clock.restart(),
+                            "+" | "=" => self.clock.speed = (self.clock.speed * 2.0).min(100.0),
+                            "-" | "_" => self.clock.speed = (self.clock.speed / 2.0).max(0.01),
+                            _ => {}
+                        },
                         _ => {}
-                    },
-                    _ => {}
-                }
-                Ok(())
+                    }
+                    Ok(())
+                })()
             }
             _ => return,
         };

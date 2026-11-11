@@ -53,7 +53,7 @@ pub struct Cache {
     complete: bool,
     request_hash: String,
     identity: String,
-    receipt_hashes: Vec<[u8; 32]>,
+    receipt_hashes: crate::storage::Scratch,
 }
 
 impl Cache {
@@ -61,6 +61,18 @@ impl Cache {
     /// Metadata, receipt chain, identities and completed diagnostics are checked here;
     /// particle files are checked by [`Self::frame`] before consumption.
     pub fn open(root: &Path, allow_partial: bool) -> Result<Self, CacheError> {
+        Self::open_with_cancellation(root, allow_partial, || false)
+    }
+    /// Opens metadata and receipt indexes with cooperative cancellation.
+    /// Cancellation never publishes or changes source cache files.
+    pub fn open_with_cancellation(
+        root: &Path,
+        allow_partial: bool,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<Self, CacheError> {
+        if cancelled() {
+            return Err(CacheError::Cancelled);
+        }
         directory(root)?;
         directory(&root.join("frames"))?;
         directory(&root.join("receipts"))?;
@@ -70,39 +82,48 @@ impl Cache {
         let schedule = Schedule::new(decimal(&request.steps)?, decimal(&request.stride)?)?;
         if request.schema_version != 1
             || request.kind != "maelstrom-particle-cache"
-            || request.particle_count > crate::scene::MAX_SCENE_PARTICLES
             || !valid_digest(&request.input_sha256)
             || !valid_digest(&request.identities_sha256)
         {
             return Err(invalid("unsupported or invalid cache request"));
         }
-        let bytes = read(&root.join("input.json"), 256 * 1024 * 1024)?;
-        if digest(&bytes) != request.input_sha256 {
+        format::size(request.particle_count)?;
+        let (input, input_hash) = input(&root.join("input.json"), &mut cancelled)?;
+        if input_hash != request.input_sha256 {
             return Err(invalid("cache input checksum mismatch"));
         }
-        let input: RecordedInput = serde_json::from_slice(&bytes)?;
-        drop(bytes);
         let scene = input.resolve_observation().map_err(invalid)?;
         if scene.particles.len() != request.particle_count
             || scene.configuration.numerical.fixed_timestep_s.to_bits() != request.timestep_bits
         {
             return Err(invalid("cache input count or timestep mismatch"));
         }
-        let bytes = read(
-            &root.join("identities.bin"),
-            8 * request.particle_count as u64,
-        )?;
-        if bytes.len() != 8 * request.particle_count
-            || digest(&bytes) != request.identities_sha256
-            || scene
-                .particles
-                .iter()
-                .zip(bytes.as_chunks::<8>().0.iter())
-                .any(|(p, b)| p.identity.to_le_bytes() != *b)
+        let identity_size = u64::try_from(request.particle_count)
+            .map_err(invalid)?
+            .checked_mul(8)
+            .ok_or_else(|| invalid("cache identity length overflow"))?;
+        let file = regular(&root.join("identities.bin"), identity_size)?;
+        if file.metadata()?.len() != identity_size {
+            return Err(invalid("cache identity table length mismatch"));
+        }
+        let mut reader = BufReader::new(file);
+        let mut hash = Sha256::new();
+        for (index, particle) in scene.particles.iter().enumerate() {
+            if index.is_multiple_of(4096) && cancelled() {
+                return Err(CacheError::Cancelled);
+            }
+            let mut bytes = [0; 8];
+            reader.read_exact(&mut bytes)?;
+            hash.update(bytes);
+            if particle.identity.to_le_bytes() != bytes {
+                return Err(invalid("cache identity table mismatch"));
+            }
+        }
+        if !reader.fill_buf()?.is_empty()
+            || hex(hash.finalize().as_slice()) != request.identities_sha256
         {
             return Err(invalid("cache identity table mismatch"));
         }
-        drop(bytes);
         let completion = match fs::symlink_metadata(root.join("cache.json")) {
             Ok(_) => Some(serde_json::from_slice::<Completion>(&read(
                 &root.join("cache.json"),
@@ -118,11 +139,11 @@ impl Cache {
         }
         let mut chain = Sha256::new();
         let mut frames = 0;
-        let mut receipt_hashes = Vec::new();
-        receipt_hashes
-            .try_reserve_exact(schedule.len() as usize)
-            .map_err(invalid)?;
+        let mut receipt_hashes = crate::storage::Scratch::new()?;
         while frames < schedule.len() {
+            if cancelled() {
+                return Err(CacheError::Cancelled);
+            }
             let path = root.join("receipts").join(receipt_name(frames));
             if completion.is_none()
                 && matches!(fs::symlink_metadata(&path),Err(e) if e.kind()==io::ErrorKind::NotFound)
@@ -133,7 +154,7 @@ impl Cache {
             let receipt: Receipt = serde_json::from_slice(&bytes)?;
             check_receipt(&receipt, frames, schedule, request.particle_count)?;
             chain.update(&bytes);
-            receipt_hashes.push(Sha256::digest(&bytes).into());
+            receipt_hashes.append(Sha256::digest(&bytes).as_slice())?;
             frames += 1;
         }
         let identity = if let Some(c) = &completion {
@@ -151,10 +172,11 @@ impl Cache {
                     "cache completion disagrees with request or receipt chain",
                 ));
             }
-            let (hash, warnings) = diagnostics(
+            let (hash, warnings) = diagnostics_cancellable(
                 &root.join("diagnostics.jsonl"),
                 decimal(&request.steps)?,
                 request.timestep_bits,
+                &mut cancelled,
             )?;
             if hash != c.diagnostics_sha256 || warnings != c.warnings {
                 return Err(invalid(
@@ -221,7 +243,14 @@ impl Cache {
         directory(&self.root.join("receipts"))?;
         let receipt_bytes = read(&self.root.join("receipts").join(receipt_name(index)), 2048)?;
         let actual: [u8; 32] = Sha256::digest(&receipt_bytes).into();
-        if actual != self.receipt_hashes[index as usize] {
+        let mut expected = [0; 32];
+        self.receipt_hashes.read_at(
+            index
+                .checked_mul(32)
+                .ok_or_else(|| invalid("receipt index offset overflow"))?,
+            &mut expected,
+        )?;
+        if actual != expected {
             return Err(invalid("cache receipt changed after opening"));
         }
         let receipt: Receipt = serde_json::from_slice(&receipt_bytes)?;
@@ -278,22 +307,21 @@ fn check_receipt(
     }
     Ok(())
 }
-pub(super) fn diagnostics(
+fn diagnostics_cancellable(
     path: &Path,
     steps: u64,
     timestep_bits: u32,
+    cancelled: &mut impl FnMut() -> bool,
 ) -> Result<(String, u64), CacheError> {
-    let file = regular(
-        path,
-        steps
-            .checked_mul(1024)
-            .ok_or_else(|| invalid("diagnostic length overflow"))?,
-    )?;
+    let file = regular(path, steps.saturating_mul(4096))?;
     let mut reader = BufReader::new(file);
     let mut hash = Sha256::new();
     let mut warnings = 0;
     let mut line = Vec::new();
     for step in 1..=steps {
+        if cancelled() {
+            return Err(CacheError::Cancelled);
+        }
         line.clear();
         reader.by_ref().take(4097).read_until(b'\n', &mut line)?;
         if line.len() > 4096 || line.last() != Some(&b'\n') {

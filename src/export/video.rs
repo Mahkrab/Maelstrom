@@ -260,12 +260,11 @@ impl Encoder {
         }
         Ok(())
     }
-    fn publish(&self, output: &Path, provenance: &Value) -> Result<(), ExportError> {
+    fn publish(&self, output: &Path, provenance: &impl Serialize) -> Result<(), ExportError> {
         fs::File::open(self.stage.join("video.mp4"))
             .and_then(|f| f.sync_all())
             .map_err(fail)?;
-        let bytes = serde_json::to_vec_pretty(provenance).map_err(fail)?;
-        publish_bytes(&self.stage.join("provenance.json"), &bytes).map_err(fail)?;
+        manifest::publish(&self.stage.join("provenance.json"), provenance)?;
         fs::hard_link(self.stage.join("provenance.json"), sidecar(output)).map_err(fail)?;
         if let Err(e) = fs::hard_link(self.stage.join("video.mp4"), output) {
             let _ = fs::remove_file(sidecar(output));
@@ -306,16 +305,88 @@ pub fn encode_frames(
     selection: CacheSelection,
     timestamps: &[f64],
     source: Value,
+    frame: impl FnMut(u64) -> Result<Vec<u8>, ExportError>,
+    cancelled: impl FnMut() -> bool,
+) -> Result<Value, ExportError> {
+    encode_observations_using(
+        output,
+        executable,
+        input_size,
+        output_size,
+        timing,
+        selection,
+        timestamps.len() as u64,
+        |i| Ok(timestamps[i as usize]),
+        source,
+        frame,
+        cancelled,
+        true,
+    )
+}
+
+/// Encodes with disk-backed provenance and indexed timestamps, returning a small
+/// completion summary. No timestamp or selected-frame array is retained.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_observations(
+    output: &Path,
+    executable: &Path,
+    input_size: (u32, u32),
+    output_size: (u32, u32),
+    timing: VideoTiming,
+    selection: CacheSelection,
+    available: u64,
+    timestamp: impl FnMut(u64) -> Result<f64, ExportError>,
+    source: Value,
+    frame: impl FnMut(u64) -> Result<Vec<u8>, ExportError>,
+    cancelled: impl FnMut() -> bool,
+) -> Result<Value, ExportError> {
+    encode_observations_using(
+        output,
+        executable,
+        input_size,
+        output_size,
+        timing,
+        selection,
+        available,
+        timestamp,
+        source,
+        frame,
+        cancelled,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_observations_using(
+    output: &Path,
+    executable: &Path,
+    input_size: (u32, u32),
+    output_size: (u32, u32),
+    timing: VideoTiming,
+    selection: CacheSelection,
+    available: u64,
+    mut timestamp: impl FnMut(u64) -> Result<f64, ExportError>,
+    source: Value,
     mut frame: impl FnMut(u64) -> Result<Vec<u8>, ExportError>,
     mut cancelled: impl FnMut() -> bool,
+    retain_manifest: bool,
 ) -> Result<Value, ExportError> {
-    let count = timing.count(selection, timestamps.len() as u64)?;
-    if timestamps.iter().any(|t| !t.is_finite() || *t < 0.0)
-        || timestamps.windows(2).any(|t| t[1] <= t[0])
-    {
-        return Err(fail(
-            "video source timestamps must be finite, non-negative and strictly increasing",
-        ));
+    let count = timing.count(selection, available)?;
+    let mut previous = None;
+    for i in 0..available {
+        if cancelled() {
+            return Err(fail("video export cancelled"));
+        }
+        let time = timestamp(i)?;
+        if !time.is_finite() || time < 0.0 || previous.is_some_and(|t| time <= t) {
+            return Err(fail(
+                "video source timestamps must be finite, non-negative and strictly increasing",
+            ));
+        }
+        previous = Some(time);
+    }
+    if !(count as f64 / timing.fps).is_finite() {
+        return Err(fail("video duration overflow"));
     }
 
     if cancelled() {
@@ -323,25 +394,54 @@ pub fn encode_frames(
     }
     let (mut encoder, version) = Encoder::new(executable, output, input_size, output_size, timing)?;
     let started = Instant::now();
-    let mut selected = Vec::with_capacity(count as usize);
+    let mut selected = crate::storage::JsonLog::new().map_err(fail)?;
     for n in 0..count {
         if cancelled() {
             return Err(fail("video export cancelled"));
         }
         let index = selection.first + n * selection.every;
         encoder.send(frame(index)?, &mut cancelled)?;
-        selected.push(json!({"source_index":index,"simulated_seconds":timestamps[index as usize],"video_seconds":n as f64/timing.fps}));
+        selected.push(&json!({"source_index":index,"simulated_seconds":timestamp(index)?,"video_seconds":n as f64/timing.fps})).map_err(fail)?;
     }
     encoder.finish(&mut cancelled)?;
     let provenance = json!({"schema_version":1,"kind":"maelstrom-video","complete":true,"source":source,
         "encoder":{"version":version,"executable":executable,"codec":"libx264","container":"mp4","pixel_format":"yuv420p","crf":timing.crf},
-        "timing":timing,"selection":selection,"frames":selected,"frame_count":count,"duration_seconds":count as f64/timing.fps,
+        "timing":timing,"selection":selection,"frame_count":count,"duration_seconds":count as f64/timing.fps,
         "input_dimensions":input_size,"output_dimensions":output_size,"elapsed_seconds":started.elapsed().as_secs_f64()});
     if cancelled() {
         return Err(fail("video export cancelled before publication"));
     }
-    encoder.publish(output, &provenance)?;
-    Ok(provenance)
+    struct Provenance<'a> {
+        metadata: &'a Value,
+        frames: &'a crate::storage::JsonLog,
+    }
+    impl Serialize for Provenance<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            use serde::ser::{Error, SerializeMap};
+            let mut map = serializer.serialize_map(None)?;
+            for (key, value) in self
+                .metadata
+                .as_object()
+                .ok_or_else(|| S::Error::custom("invalid video provenance"))?
+            {
+                map.serialize_entry(key, value)?;
+            }
+            map.serialize_entry("frames", self.frames)?;
+            map.end()
+        }
+    }
+    let document = Provenance {
+        metadata: &provenance,
+        frames: &selected,
+    };
+    if retain_manifest {
+        let value = serde_json::to_value(&document).map_err(fail)?;
+        encoder.publish(output, &value)?;
+        Ok(value)
+    } else {
+        encoder.publish(output, &document)?;
+        Ok(provenance)
+    }
 }
 
 /// Draws exact observations using the same indexed graphics and readback as PNG export.
@@ -353,12 +453,9 @@ pub fn cached_pixels(
     index: u64,
 ) -> Result<Vec<u8>, ExportError> {
     let frame = cache.frame(index).map_err(fail)?;
-    let particles: Vec<_> = frame
-        .snapshot()
-        .particles()
-        .iter()
-        .map(|p| p.particle())
-        .collect();
+    let particles =
+        crate::storage::collect(frame.snapshot().particles().iter().map(|p| p.particle()))
+            .map_err(fail)?;
     let scene = cache.scene();
     super::offscreen::pixels(
         graphics,

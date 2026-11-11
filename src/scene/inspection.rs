@@ -1,4 +1,5 @@
 use super::ResolvedScene;
+use std::fmt::Write;
 
 impl ResolvedScene {
     /// Produces a text representation of the resolved input.
@@ -49,24 +50,61 @@ impl ResolvedScene {
     /// but deliberately excludes names and descriptions.
     #[must_use]
     pub fn comparison_key(&self) -> String {
-        let mut key = format!(
+        let mut key = self.key_prefix();
+        self.append_key(&self.particles, &mut key);
+        key
+    }
+
+    pub(crate) fn comparison_key_for(
+        &self,
+        particles: &[super::Particle],
+    ) -> Result<String, std::collections::TryReserveError> {
+        let mut key = self.key_prefix();
+        // Each particle needs at most 20 identity digits, six 8-digit binary32
+        // tokens and separators. Reserve before formatting to make the large
+        // allocation recoverable and avoid one temporary String per particle.
+        let extra = particles
+            .len()
+            .checked_mul(75)
+            .and_then(|n| {
+                self.planes
+                    .len()
+                    .checked_mul(36)
+                    .and_then(|p| n.checked_add(p))
+            })
+            .and_then(|n| n.checked_add(17))
+            .unwrap_or(usize::MAX);
+        key.try_reserve_exact(extra)?;
+        self.append_key(particles, &mut key);
+        Ok(key)
+    }
+
+    fn key_prefix(&self) -> String {
+        format!(
             "scene-comparison-v1|randomness=none|{}",
             self.configuration.comparison_key()
-        );
+        )
+    }
+
+    fn append_key(&self, particles: &[super::Particle], key: &mut String) {
+        // String formatting itself cannot return fmt::Error; the fallible caller
+        // has already reserved sufficient capacity for every token.
         key.push_str("|planes");
         for plane in &self.planes {
             let normal = plane.normal();
-            key.push_str(&format!(
+            let _ = write!(
+                key,
                 ":{:08x},{:08x},{:08x},{:08x}",
                 normal.x.to_bits(),
                 normal.y.to_bits(),
                 normal.z.to_bits(),
                 plane.offset().to_bits(),
-            ));
+            );
         }
         key.push_str("|particles");
-        for particle in &self.particles {
-            key.push_str(&format!(
+        for particle in particles {
+            let _ = write!(
+                key,
                 ":{}:{:08x},{:08x},{:08x},{:08x},{:08x},{:08x}",
                 particle.identity,
                 particle.position_m.x.to_bits(),
@@ -75,9 +113,8 @@ impl ResolvedScene {
                 particle.velocity_m_s.x.to_bits(),
                 particle.velocity_m_s.y.to_bits(),
                 particle.velocity_m_s.z.to_bits(),
-            ));
+            );
         }
-        key
     }
 }
 

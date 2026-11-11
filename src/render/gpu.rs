@@ -148,6 +148,7 @@ impl Graphics {
         let adapter_info = adapter.get_info();
         let limits = wgpu::Limits {
             max_texture_dimension_2d: 8192.min(adapter.limits().max_texture_dimension_2d),
+            max_buffer_size: adapter.limits().max_buffer_size,
             // Drawing needs no compute resources. Requiring their default
             // limits would reject otherwise usable OpenGL ES 3.0 adapters.
             ..wgpu::Limits::downlevel_webgl2_defaults()
@@ -464,13 +465,26 @@ impl Graphics {
                 "drawing requires ascending particle identities".into(),
             ));
         }
-        let mut centres = Vec::with_capacity(
-            scene
-                .particles
-                .len()
-                .checked_mul(4)
-                .ok_or_else(|| RenderError("particle draw capacity overflow".into()))?,
-        );
+        let count = u32::try_from(scene.particles.len())
+            .map_err(|_| RenderError("particle draw count exceeds u32".into()))?;
+        let centre_count = scene
+            .particles
+            .len()
+            .checked_mul(4)
+            .ok_or_else(|| RenderError("particle draw capacity overflow".into()))?;
+        let centre_bytes = centre_count
+            .checked_mul(size_of::<f32>())
+            .ok_or_else(|| RenderError("particle draw byte size overflow".into()))?;
+        if centre_bytes as u64 > self.device.limits().max_buffer_size {
+            return Err(RenderError(format!(
+                "particle geometry needs {centre_bytes} bytes; graphics buffer limit is {}",
+                self.device.limits().max_buffer_size
+            )));
+        }
+        let mut centres = Vec::new();
+        centres
+            .try_reserve_exact(centre_count)
+            .map_err(|e| RenderError(format!("particle draw allocation: {e}")))?;
         let mut indexed_fallback = false;
         let mut maximum_radius_px = 0.0_f64;
         for particle in scene.particles {
@@ -523,11 +537,16 @@ impl Graphics {
             if size as u64 > self.device.limits().max_buffer_size {
                 return Err(RenderError("geometry exceeds graphics buffer limit".into()));
             }
+            let mut encoded = crate::storage::vector(size)
+                .map_err(|e| RenderError(format!("graphics upload allocation: {e}")))?;
+            for value in data {
+                encoded.extend_from_slice(&value.to_ne_bytes());
+            }
             Ok(self
                 .device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some(label),
-                    contents: &bytes(data),
+                    contents: &encoded,
                     usage: wgpu::BufferUsages::VERTEX,
                 }))
         };
@@ -575,15 +594,14 @@ impl Graphics {
             pass.set_vertex_buffer(0, particle_mesh.vertices.slice(..));
             pass.set_vertex_buffer(1, centres_buffer.slice(..));
             pass.set_index_buffer(particle_mesh.indices.slice(..), wgpu::IndexFormat::Uint16);
-            pass.draw_indexed(
-                0..particle_mesh.count,
-                0,
-                0..u32::try_from(scene.particles.len())
-                    .map_err(|_| RenderError("particle draw count exceeds u32".into()))?,
-            );
+            pass.draw_indexed(0..particle_mesh.count, 0, 0..count);
             pass.set_pipeline(&self.lines);
             pass.set_vertex_buffer(0, line_buffer.slice(..));
-            pass.draw(0..(lines.len() / 3) as u32, 0..1);
+            pass.draw(
+                0..u32::try_from(lines.len() / 3)
+                    .map_err(|_| RenderError("line draw count exceeds u32".into()))?,
+                0..1,
+            );
         }
         if !overlay.is_empty() {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -601,7 +619,11 @@ impl Graphics {
             });
             pass.set_pipeline(&self.overlay);
             pass.set_vertex_buffer(0, overlay_buffer.slice(..));
-            pass.draw(0..(overlay.len() / 5) as u32, 0..1);
+            pass.draw(
+                0..u32::try_from(overlay.len() / 5)
+                    .map_err(|_| RenderError("overlay draw count exceeds u32".into()))?,
+                0..1,
+            );
         }
         self.queue.submit([encoder.finish()]);
         self.check()?;

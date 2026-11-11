@@ -30,6 +30,7 @@ struct AcceptanceTrace {
     file: std::fs::File,
     origin: Instant,
     rows: Vec<(u64, u128)>,
+    truncated: bool,
 }
 impl AcceptanceTrace {
     fn open() -> Option<Self> {
@@ -39,6 +40,7 @@ impl AcceptanceTrace {
                 file,
                 origin: Instant::now(),
                 rows: vec![(0, 0)],
+                truncated: false,
             }),
             Err(error) => {
                 eprintln!("maelstrom acceptance profile unavailable: {error}");
@@ -50,6 +52,11 @@ impl AcceptanceTrace {
         if self.rows.len() < 1_000_000 {
             self.rows
                 .push((step, at.duration_since(self.origin).as_nanos()));
+        } else if !self.truncated {
+            self.truncated = true;
+            eprintln!(
+                "maelstrom acceptance profile reached its 1000000-row memory budget; the trace is incomplete; simulation continues"
+            );
         }
     }
 }

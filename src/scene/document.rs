@@ -79,7 +79,7 @@ pub enum ParticleSource {
     /// Particles listed directly in document order.
     Explicit {
         /// Particle definitions whichs identities must be ascending.
-        #[serde(default)]
+        #[serde(default, deserialize_with = "crate::storage::deserialize_vec")]
         items: Vec<ParticleDocument>,
     },
     /// Particles generated from a regular lattice in the declared order. <sub>mmm lettuce</sub>
@@ -104,6 +104,7 @@ pub enum ParticleSource {
     /// Named initial sources flattened in document order into one fluid model.
     Groups {
         /// Explicit or lattice sources; nested groups are rejected.
+        #[serde(deserialize_with = "crate::storage::deserialize_vec")]
         groups: Vec<ParticleGroup>,
     },
 }

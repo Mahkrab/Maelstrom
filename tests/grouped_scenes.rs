@@ -4,8 +4,8 @@
 use maelstrom::{
     math::Vec3,
     scene::{
-        ContainerBox, MAX_PARTICLE_GROUPS, MAX_PLANES, ParticleDocument, ParticleGroup,
-        ParticleSource, SceneError, parse_scene, resolve_scene,
+        ContainerBox, MAX_PLANES, ParticleDocument, ParticleGroup, ParticleSource, SceneError,
+        parse_scene, resolve_scene,
     },
 };
 
@@ -89,11 +89,16 @@ fn names_ranges_and_external_group_fields_are_checked() {
     };
     assert!(resolve_scene(&doc, None, None).is_err());
     doc.particles = ParticleSource::Groups {
-        groups: (0..=MAX_PARTICLE_GROUPS)
+        groups: (0..257)
             .map(|i| explicit(&format!("group-{i}"), &[]))
             .collect(),
     };
-    assert!(resolve_scene(&doc, None, None).is_err());
+    assert!(
+        resolve_scene(&doc, None, None)
+            .unwrap()
+            .particles
+            .is_empty()
+    );
     let source = format!(
         "{}{}",
         prefix(),
@@ -340,16 +345,20 @@ fn grouped_count_limits_fail_before_generation_and_large_regular_scenes_construc
     let too_many = format!(
         "{}{}{}",
         prefix(),
-        lattice("one", "[0.0,0.0,0.0]", "[500001,1,1]"),
-        lattice("two", "[0.0,0.0,0.0]", "[500001,1,1]")
+        lattice("one", "[0.0,0.0,0.0]", "[4294967295,4294967295,4294967295]"),
+        lattice("two", "[0.0,0.0,0.0]", "[4294967295,4294967295,4294967295]")
     );
     let doc = parse_scene(&too_many).unwrap();
+    let SceneError::ParticleGroup { error, .. } = resolve_scene(&doc, None, None).unwrap_err()
+    else {
+        panic!("overflow must identify its group")
+    };
     assert!(matches!(
-        resolve_scene(&doc, None, None),
-        Err(SceneError::ParticleCountTooLarge {
+        *error,
+        SceneError::ParticleCountTooLarge {
             construction: "groups",
             ..
-        })
+        }
     ));
     let source = format!(
         "{}{}{}",
@@ -385,10 +394,10 @@ fn grouped_explicit_sources_use_the_total_limit_and_empty_sources_remain_valid()
         5000
     );
     doc.particles = group.source;
-    assert!(matches!(
-        resolve_scene(&doc, None, None),
-        Err(SceneError::ParticleCountTooLarge { maximum: 4096, .. })
-    ));
+    assert_eq!(
+        resolve_scene(&doc, None, None).unwrap().particles.len(),
+        5000
+    );
 }
 
 #[test]
@@ -646,4 +655,22 @@ fn lattice_range_exemptions_do_not_extend_to_explicit_sources() {
             second: 2
         })
     ));
+}
+
+#[test]
+fn group_counts_cross_the_previous_256_source_boundary() {
+    for count in [255, 256, 257] {
+        let mut document = empty_document();
+        document.particles = ParticleSource::Groups {
+            groups: (0..count)
+                .map(|i| explicit(&format!("group-{i}"), &[]))
+                .collect(),
+        };
+        assert!(
+            resolve_scene(&document, None, None)
+                .unwrap()
+                .particles
+                .is_empty()
+        );
+    }
 }

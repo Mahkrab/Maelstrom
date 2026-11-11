@@ -11,9 +11,9 @@ use maelstrom::{
     math::Vec3,
     scene::{
         ConfigurationSelection, ConfigurationSource, LatticeEndpointRule, LatticeOrder,
-        MAX_EXPLICIT_PARTICLES, MAX_LATTICE_PARTICLES, MAX_PLANES, ParticleDocument,
-        ParticleSource, PlaneDocument, RandomnessPolicy, SceneDocument, SceneError,
-        load_resolved_scene, parse_scene, resolve_scene,
+        MAX_LATTICE_PARTICLES, MAX_PLANES, ParticleDocument, ParticleSource, PlaneDocument,
+        RandomnessPolicy, SceneDocument, SceneError, load_resolved_scene, parse_scene,
+        resolve_scene,
     },
 };
 
@@ -300,7 +300,7 @@ fn invalid_lattice_geometry_and_impractical_counts_are_rejected() {
         resolve_scene(&spacing, None, None),
         Err(SceneError::ParticleSpacingMismatch { .. })
     ));
-    let excessive = lattice_document([0.0, 0.0, 0.0], [1_001, 1_000, 1]);
+    let excessive = lattice_document([0.0, 0.0, 0.0], [u32::MAX, u32::MAX, u32::MAX]);
     assert!(matches!(
         resolve_scene(&excessive, None, None),
         Err(SceneError::ParticleCountTooLarge {
@@ -316,18 +316,20 @@ fn invalid_lattice_geometry_and_impractical_counts_are_rejected() {
         resolve_scene(&identity_overflow, None, None),
         Err(SceneError::ParticleIdentityOverflow)
     ));
-    let too_many_explicit = explicit_document(
-        (0..=MAX_EXPLICIT_PARTICLES)
-            .map(|index| explicit_particle(index as u64, [0.0, 0.0, 0.0]))
-            .collect(),
-    );
-    assert!(matches!(
-        resolve_scene(&too_many_explicit, None, None),
-        Err(SceneError::ParticleCountTooLarge {
-            maximum: MAX_EXPLICIT_PARTICLES,
-            ..
-        })
-    ));
+    for count in [4095, 4096, 4097] {
+        let explicit = explicit_document(
+            (0..count)
+                .map(|i| explicit_particle(i as u64, [i as f32 * 0.125, 0.0, 0.0]))
+                .collect(),
+        );
+        assert_eq!(
+            resolve_scene(&explicit, None, None)
+                .unwrap()
+                .particles
+                .len(),
+            count
+        );
+    }
     let mut too_many_planes = explicit_document(Vec::new());
     too_many_planes.planes = vec![plane([0.0, 1.0, 0.0], 0.0); MAX_PLANES + 1];
     assert!(matches!(
@@ -557,4 +559,53 @@ fn comparison_metadata_uses_resolved_inputs_not_names_or_descriptions() {
     assert_eq!(first.comparison_key(), renamed.comparison_key());
     assert_ne!(first.canonical_inspection(), renamed.canonical_inspection());
     assert_ne!(first.comparison_key(), second.comparison_key());
+}
+
+#[test]
+fn lattices_cross_the_previous_million_particle_boundary() {
+    for count in [999_999, 1_000_000, 1_000_001] {
+        let document = lattice_document([0.0; 3], [count, 1, 1]);
+        let scene = resolve_scene(&document, None, None).unwrap();
+        assert_eq!(scene.particles.len(), count as usize);
+        assert_eq!(
+            scene.particles.last().unwrap().identity,
+            10 + u64::from(count - 1)
+        );
+    }
+}
+
+#[test]
+fn large_explicit_validation_keeps_overlap_and_coincidence_checks() {
+    let mut document = explicit_document(
+        (0..4097)
+            .map(|i| explicit_particle(i, [i as f32 * 0.125, 0.0, 0.0]))
+            .collect(),
+    );
+    let ParticleSource::Explicit { items } = &mut document.particles else {
+        unreachable!()
+    };
+    items[4096].position_m = [0.01, 0.0, 0.0];
+    assert!(matches!(
+        resolve_scene(&document, None, None),
+        Err(SceneError::OverlappingParticles {
+            first: 0,
+            second: 4096
+        })
+    ));
+    let ParticleSource::Explicit { items } = &mut document.particles else {
+        unreachable!()
+    };
+    items[4096].position_m = [0.0; 3];
+    assert!(matches!(
+        resolve_scene(&document, None, None),
+        Err(SceneError::OverlappingParticles { .. })
+    ));
+    document.allow_coincident_particles = true;
+    assert_eq!(
+        resolve_scene(&document, None, None)
+            .unwrap()
+            .particles
+            .len(),
+        4097
+    );
 }

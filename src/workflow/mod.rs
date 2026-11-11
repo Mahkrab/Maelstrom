@@ -7,7 +7,7 @@
 //! frequency according to the size of their input.
 
 mod measurement;
-mod output;
+pub(crate) mod output;
 mod record;
 
 pub use measurement::{MeasurementMode, RunMeasurements};
@@ -503,7 +503,7 @@ pub fn run_with_observer(
         if let (Some(measurements), Some(start)) = (&mut result.measurements, start) {
             measurements.solver_construction_s = Some(start.elapsed().as_secs_f64());
         }
-        let input = RecordedInput::capture(scene, &solver);
+        let input = RecordedInput::capture(scene, &solver)?;
         // Also validate the portable record, so every admitted input can replay.
         input.resolve()?;
         Ok::<_, RecordError>((solver, input))

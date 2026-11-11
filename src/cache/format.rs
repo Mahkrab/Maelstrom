@@ -14,7 +14,7 @@ pub struct Schedule {
     count: u64,
 }
 impl Schedule {
-    /// Rejects zero stride, overflow and more than one million observations.
+    /// Rejects zero stride and an observation count that cannot fit `u64`.
     pub fn new(last: u64, stride: u64) -> Result<Self, CacheError> {
         if stride == 0 {
             return Err(invalid("step stride must be positive"));
@@ -23,9 +23,6 @@ impl Schedule {
             .checked_add(1)
             .and_then(|n| n.checked_add(u64::from(!last.is_multiple_of(stride))))
             .ok_or_else(|| invalid("frame count overflow"))?;
-        if count > 1_000_000 {
-            return Err(invalid("frame count exceeds 1000000"));
-        }
         Ok(Self {
             last,
             stride,
@@ -40,9 +37,18 @@ impl Schedule {
     pub fn is_empty(self) -> bool {
         false
     }
+    // The iterator owner supplies only indexes below count. All non-terminal
+    // products are bounded by last; the extra terminal index needs no multiply.
+    pub(crate) fn at(self, index: u64) -> u64 {
+        if index == self.count - 1 {
+            self.last
+        } else {
+            index * self.stride
+        }
+    }
     /// Accepted step for an output index, or None outside the schedule.
     pub fn step(self, index: u64) -> Option<u64> {
-        (index < self.count).then(|| index.saturating_mul(self.stride).min(self.last))
+        (index < self.count).then(|| self.at(index))
     }
 }
 
@@ -50,6 +56,7 @@ pub(super) fn size(count: usize) -> Result<usize, CacheError> {
     count
         .checked_mul(24)
         .and_then(|n| n.checked_add(HEADER))
+        .filter(|&n| n <= isize::MAX as usize)
         .ok_or_else(|| invalid("cache frame length overflow"))
 }
 fn put(bytes: &mut [u8], offset: usize, value: u64) {

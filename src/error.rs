@@ -11,6 +11,8 @@ use std::fmt;
 /// the calculation that overflowed or otherwise became non-finite.
 #[derive(Clone, Debug, PartialEq)]
 pub enum NumericalError {
+    /// Host numerical working storage could not be reserved.
+    Allocation,
     /// Neighbour-search storage could not be reserved, including capacity overflow.
     SearchAllocation,
     /// A grid coordinate or adjacent-cell offset cannot be represented safely.
@@ -78,6 +80,7 @@ impl fmt::Display for NumericalError {
                     "smoothing coefficient must be finite and in 0..=1, got {value}"
                 )
             }
+            Self::Allocation => write!(formatter, "could not allocate numerical working storage"),
             Self::SearchAllocation => {
                 write!(formatter, "could not reserve neighbour-search storage")
             }
@@ -168,3 +171,9 @@ impl fmt::Display for NumericalError {
 }
 
 impl std::error::Error for NumericalError {}
+
+impl From<std::collections::TryReserveError> for NumericalError {
+    fn from(_: std::collections::TryReserveError) -> Self {
+        Self::Allocation
+    }
+}

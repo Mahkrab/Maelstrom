@@ -240,7 +240,7 @@ pub(crate) fn publish_bytes(destination: &Path, bytes: &[u8]) -> io::Result<()> 
     publish_with(destination, |file| file.write_all(bytes))
 }
 
-fn publish_with(
+pub(crate) fn publish_with(
     destination: &Path,
     write: impl FnOnce(&mut File) -> io::Result<()>,
 ) -> io::Result<()> {

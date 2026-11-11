@@ -91,7 +91,8 @@ pub(super) fn pixels(graphics: &Graphics, scene: &DrawScene<'_>) -> Result<Vec<u
         }
     }
     let mapped = buffer.get_mapped_range(..).map_err(fail)?;
-    let mut rgba = Vec::with_capacity((u64::from(row) * u64::from(scene.height)) as usize);
+    let count = usize::try_from(u64::from(row) * u64::from(scene.height)).map_err(fail)?;
+    let mut rgba = crate::storage::vector(count).map_err(fail)?;
     for bytes in mapped.chunks_exact(padded as usize) {
         rgba.extend_from_slice(&bytes[..row as usize]);
     }
@@ -102,7 +103,20 @@ pub(super) fn pixels(graphics: &Graphics, scene: &DrawScene<'_>) -> Result<Vec<u
 }
 
 pub(super) fn encode(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, ExportError> {
-    let mut bytes = Vec::new();
+    struct Output(Vec<u8>);
+    impl std::io::Write for Output {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .try_reserve(bytes.len())
+                .map_err(std::io::Error::other)?;
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut bytes = Output(Vec::new());
     {
         let mut encoder = png::Encoder::new(&mut bytes, width, height);
         encoder.set_color(png::ColorType::Rgba);
@@ -114,7 +128,7 @@ pub(super) fn encode(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, Ex
         writer.write_image_data(rgba).map_err(fail)?;
         writer.finish().map_err(fail)?;
     }
-    Ok(bytes)
+    Ok(bytes.0)
 }
 
 pub(super) type EncodePng = fn(u32, u32, &[u8]) -> Result<Vec<u8>, ExportError>;
@@ -174,7 +188,8 @@ impl FrameWriter<'_> {
     ) -> Result<super::encoding::Job, ExportError> {
         let snapshot = observation.snapshot();
         let start = std::time::Instant::now();
-        let particles: Vec<_> = snapshot.particles().iter().map(|p| p.particle()).collect();
+        let particles = crate::storage::collect(snapshot.particles().iter().map(|p| p.particle()))
+            .map_err(fail)?;
         self.timings.particle_copy += start.elapsed();
         let start = std::time::Instant::now();
         let rgba = (self.operations.read_pixels)(

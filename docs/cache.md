@@ -106,9 +106,10 @@ The particle payload for 301 frames is 57,792,000 bytes at 8,000 particles and 7
 110,592 particles, plus 160 bytes/frame, static identities, resolved inputs and small receipts.
 Producer memory holds at most one pending particle frame, a packing buffer, fixed diagnostic/hash
 buffers and the solver/input state. It does not retain particle history or per-step diagnostic arrays.
-Readers retain typed inputs and at most 32 MB of receipt digests under the one-million-frame cap;
-particle arrays are loaded on demand. Image export retains bounded pixel/encoder work and its
-existing bounded-count manifest index.
+Readers retain typed inputs and pin receipt digests in a private temporary index (32 bytes per
+committed frame), without allocating for the uncommitted schedule;
+particle arrays are loaded on demand. CLI image export retains bounded pixel/encoder work and
+streams its frame index and manifest through temporary storage.
 
 ## Completion, cancellation and recovery
 
@@ -159,3 +160,12 @@ concurrent CUDA/graphics workers, compression or surface reconstruction. See
 [interactive playback and MP4 export](video.md) for cache viewing,
 portable cameras and bounded direct video encoding. The live solver viewer retains its existing
 analytic impostor behaviour.
+
+
+Input JSON and identity tables stream through their original SHA-256 checks; input documents have
+no fixed file-size cutoff. The typed initial state and its legacy comparison key still require
+memory proportional to particle count. Receipt indexes use temporary disk space, so opening a
+cache can fail clearly if that storage is unavailable. No source file or format identity changes.
+`Cache::open_with_cancellation` supports cancellation while reading input, receipts and diagnostics;
+`Cache::open` remains the convenience API. Full validation processes one observation at a time,
+including an independent canonical snapshot rehash. See [resource limits](scalability.md).

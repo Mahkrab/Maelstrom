@@ -240,14 +240,20 @@ fn read(path: &Path, kind: &str) -> Result<String, CliError> {
             e.kind()
         ))
     })?;
-    super::storage::read_file(
-        file,
-        if kind == "scene" {
-            64 * 1024 * 1024
-        } else {
-            1024 * 1024
-        },
-    )
+    let limit = if kind == "scene" {
+        let metadata = file
+            .metadata()
+            .map_err(|e| CliError::input(format!("scene metadata: {e}")))?;
+        if !metadata.is_file() {
+            return Err(CliError::input("scene input must be a regular file".into()));
+        }
+        // Bound a read by the opened object, not a historical scene-size cap.
+        // A concurrently growing file cannot turn scene parsing into a stream.
+        metadata.len()
+    } else {
+        1024 * 1024
+    };
+    super::storage::read_file(file, limit)
 }
 
 fn overrides(values: &[String]) -> Result<ConfigurationOverlay, CliError> {
@@ -276,4 +282,13 @@ fn overrides(values: &[String]) -> Result<ConfigurationOverlay, CliError> {
             "--set: {error}; use primary numerical fields shown by 'maelstrom inspect'"
         ))
     })
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod resource_tests {
+    #[test]
+    fn scenes_require_regular_files_before_consuming_bytes() {
+        let error = super::read(std::path::Path::new("/dev/null"), "scene").unwrap_err();
+        assert!(error.message.contains("regular file"));
+    }
 }

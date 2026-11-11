@@ -244,8 +244,10 @@ fields above, after the base document and before command-line overrides.
 `particles.construction = "explicit"` accepts `items`, defaulting to an empty list. Every item
 requires a `u64` integer `identity`, a three-component `position_m` and a three-component
 `velocity_m_s`. Document identities must be unique and strictly ascending; they need not be
-contiguous. At most 4,096 explicit particles are accepted because initial separation is checked
-pairwise. This limit does not apply to replayed recorded lattice inputs.
+contiguous. Explicit and lattice counts are constrained by checked addressable storage and available
+memory. Explicit inputs above 4,096 particles use spatial separation validation; smaller documents
+retain the original pairwise diagnostic order. Remote coordinates outside signed spatial cells fall
+back to pairwise validation rather than acquiring a new coordinate restriction.
 
 ```toml
 schema_version = 1
@@ -275,7 +277,7 @@ For `particles.construction = "lattice"`, the following fields apply:
 | --- | --- |
 | `first_identity` | Required in schema 1; optional in schema 2. Defaults to zero for a standalone lattice, or follows the preceding group; identities increase by one without overflow |
 | `origin_m` | Three finite origin coordinates, metres |
-| `counts` | Three positive `u32` counts; product at most 1,000,000 |
+| `counts` | Three positive `u32` counts; checked product must fit addressable particle storage |
 | `spacing_m` | Required in schema 1; optional in schema 2. Omission inherits numerical spacing; an explicit value must be positive and bitwise equal to it |
 | `endpoint_rule` | `"counted_half_open"`: indices zero through count minus one |
 | `order` | `"x_then_y_then_z"`: X outermost, Z fastest |
@@ -314,7 +316,8 @@ container by default.
 Schema 2 accepts `particles.construction = "groups"` followed by `[[particles.groups]]` tables.
 Each table has a unique, case-sensitive, non-blank `name` and the same `construction = "lattice"`
 or `"explicit"` fields described above. Nested groups and per-group material settings are rejected.
-There are at most 256 groups and one million particles across them; an empty collection is valid.
+Group and total particle counts have no fixed application cap; checked storage sizes and available
+memory govern construction. An empty collection is valid.
 
 Groups retain document order. A lattice without `first_identity` starts at zero if no preceding
 particle exists, otherwise one after the last identity. Explicit particles keep their declared
@@ -325,8 +328,8 @@ one ascending particle vector; group names do not create separate fluids or chan
 Grouped geometry uses a spatial overlap check for explicit sources and between groups.
 Within a generated lattice, the existing ordered-axis checks reject coordinate collapse; nominal
 spacing is established by construction. Rounded decimal coordinates are not compared again against
-the nominal diameter within that same lattice. No coordinates or spacing values are adjusted. Grouped explicit
-sources therefore share the one-million total limit rather than the standalone 4,096-particle cap.
+the nominal diameter within that same lattice. No coordinates or spacing values are adjusted.
+Standalone and grouped explicit sources use the same addressable particle-storage bound.
 Exactly coincident points are admitted only with `allow_coincident_particles = true`; other overlaps
 still fail. Cell coordinates, calculated as world position divided by numerical spacing, must fit
 signed 64-bit integers. These are construction limits, not a backend capacity guarantee.
@@ -367,3 +370,5 @@ rejected. A supported schema is not a promise of bitwise equivalence across comp
 The executable's `--help`, the strict readers in `src/config` and `src/scene`, and their integration
 tests define the implemented interface. The EPQ numerical and comparison records own the research
 experiment; ordinary valid configuration changes do not silently become part of its frozen baseline.
+
+See [scalability and resource limits](scalability.md) for format, memory and device constraints.

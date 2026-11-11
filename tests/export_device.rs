@@ -75,7 +75,7 @@ fn exercise(scene: &ResolvedScene, steps: u64, stride: u64, options: ExecutionOp
         scene,
         RunRequest {
             steps,
-            checkpoints: schedule.steps.clone(),
+            checkpoints: schedule.steps.iter().collect(),
         },
         options,
         || false,
@@ -159,7 +159,7 @@ fn exercise(scene: &ResolvedScene, steps: u64, stride: u64, options: ExecutionOp
         assert_eq!(rgba, decode(&c.0.join(&name)));
         for (dir, m) in [(&a.0, &direct), (&b.0, &saved), (&c.0, &rerun)] {
             let f = &m["frames"][i];
-            assert_eq!(f["step"], schedule.steps[i].to_string());
+            assert_eq!(f["step"], schedule.steps.get(i).unwrap().to_string());
             assert_eq!(f["file"], name);
             assert_eq!(f["png_sha256"], hash(&fs::read(dir.join(&name)).unwrap()));
             assert_eq!(f["rgba_sha256"], hash(&rgba));
@@ -169,7 +169,7 @@ fn exercise(scene: &ResolvedScene, steps: u64, stride: u64, options: ExecutionOp
             );
             assert_eq!(
                 f["simulated_seconds"],
-                schedule.steps[i] as f64
+                schedule.steps.get(i).unwrap() as f64
                     * f64::from(scene.configuration.numerical.fixed_timestep_s)
             );
         }
@@ -178,7 +178,10 @@ fn exercise(scene: &ResolvedScene, steps: u64, stride: u64, options: ExecutionOp
         maelstrom::workflow::replay_options(&direct.to_string()).unwrap();
     assert_eq!(restored.comparison_key(), scene.comparison_key());
     assert_eq!(restored_request.steps, steps);
-    assert_eq!(restored_request.checkpoints, schedule.steps);
+    assert_eq!(
+        restored_request.checkpoints,
+        schedule.steps.iter().collect::<Vec<_>>()
+    );
     assert_eq!(restored_options.execution, options.execution);
     assert!(a.0.join("manifest.json").exists());
     assert!(

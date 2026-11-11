@@ -204,3 +204,10 @@ GPU timestamp diagnostics and limitations in `performance-cached-playback.md`. C
 permanent filesystem/device stalls, physical display delivery, other operating systems and power-loss
 durability remain unqualified. Shutdown still joins a current read. Existing cache identities,
 solver/CUDA sources, PNG schedules and bundle compatibility are unchanged.
+
+
+CLI MP4 export reads timestamps by source index and streams selected-frame provenance to temporary
+storage before publishing the existing sidecar schema. It retains no history-length timestamp or
+provenance array. The library's existing `encode_frames` function returns a complete provenance
+value and therefore materialises that value; `encode_observations` provides the bounded path used
+by the CLI. Temporary-storage failures prevent publication and retain the existing encoder cleanup.

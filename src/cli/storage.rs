@@ -207,14 +207,25 @@ pub(super) fn read(path: &Path, limit: u64) -> Result<String, CliError> {
     )
 }
 pub(super) fn read_file(file: fs::File, limit: u64) -> Result<String, CliError> {
-    let mut text = String::new();
-    file.take(limit + 1)
-        .read_to_string(&mut text)
-        .map_err(|e| CliError::input(format!("read document: {e}")))?;
-    if text.len() as u64 > limit {
-        return Err(CliError::input(
-            "selected document exceeds size limit".into(),
-        ));
+    let mut bytes = Vec::new();
+    let mut file = file.take(limit.saturating_add(1));
+    let mut chunk = [0; 65536];
+    loop {
+        let n = file
+            .read(&mut chunk)
+            .map_err(|e| CliError::input(format!("read document: {e}")))?;
+        if n == 0 {
+            break;
+        }
+        bytes
+            .try_reserve(n)
+            .map_err(|e| CliError::input(format!("document allocation: {e}")))?;
+        bytes.extend_from_slice(&chunk[..n]);
+        if bytes.len() as u64 > limit {
+            return Err(CliError::input(
+                "selected document exceeds size limit".into(),
+            ));
+        }
     }
-    Ok(text)
+    String::from_utf8(bytes).map_err(|e| CliError::input(format!("document must be UTF-8: {e}")))
 }

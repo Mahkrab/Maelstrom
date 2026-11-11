@@ -219,3 +219,6 @@ for Maelstrom alone. The default, `auto`, follows the available display environm
 This is separate from OpenGL/Vulkan and CPU/CUDA selection. On the primary PC,
 X11 is configured because native Wayland tests encountered a WSLg compositor restart;
 live viewing and playback passed through X11 with hardware OpenGL.
+
+The opt-in profiling row budgets do not limit simulation or playback duration. Reaching a budget
+now emits an explicit incomplete-trace diagnostic while simulation and viewing continue.

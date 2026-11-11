@@ -80,7 +80,7 @@ pub(super) fn launch(args: &Export, storage: &super::storage::Storage) -> Result
     let signal = Arc::clone(&cancel);
     ctrlc::set_handler(move || signal.store(true, Ordering::Relaxed))
         .map_err(|e| CliError::input(format!("cancellation handler: {e}")))?;
-    maelstrom::export::export(
+    maelstrom::export::export_with_summary(
         ExportRequest {
             source,
             settings,
@@ -92,6 +92,7 @@ pub(super) fn launch(args: &Export, storage: &super::storage::Storage) -> Result
             destination,
         },
         || cancel.load(Ordering::Relaxed),
+        |_, _| {},
     )
     .map_err(|e| CliError::output(e.to_string()))?;
     Ok(0)
