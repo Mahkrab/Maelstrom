@@ -302,10 +302,14 @@ impl Simulation {
             }
             check_cancellation(cancelled)?;
             cuda.accept()?;
-            self.accepted = Snapshot {
-                completed_steps,
-                particles,
-            };
+            let previous = std::mem::replace(
+                &mut self.accepted,
+                Snapshot {
+                    completed_steps,
+                    particles,
+                },
+            );
+            cuda.recycle_host_particles(previous.particles);
             clock.mark(Stage::Acceptance);
             return Ok(StepOutcome {
                 completed_steps,

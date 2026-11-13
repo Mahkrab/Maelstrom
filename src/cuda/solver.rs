@@ -60,6 +60,9 @@ pub(crate) struct CudaSolver {
     index_capacity: usize,
     resident: bool,
     force_sorted: bool,
+    host_positions: Vec<[f32; 3]>,
+    host_velocities: Vec<u32>,
+    host_particles: Vec<Particle>,
 }
 
 pub(crate) struct CudaStepOutput {
@@ -274,6 +277,9 @@ impl CudaSolver {
             neighbour_capacity: 0,
             index_capacity: 0,
             resident: false,
+            host_positions: Vec::new(),
+            host_velocities: Vec::new(),
+            host_particles: Vec::new(),
             force_sorted: std::env::var_os("MAELSTROM_CUDA_SPATIAL_INDEX").as_deref()
                 == Some(std::ffi::OsStr::new("sort")),
         })
@@ -310,6 +316,11 @@ impl CudaSolver {
     /// immediately and cannot fail. Inputs and planes are immutable for its life.
     pub(crate) fn accept(&mut self) -> Result<(), CudaError> {
         self.context.inner.accept()
+    }
+
+    /// Called only after device promotion and host snapshot replacement succeed.
+    pub(crate) fn recycle_host_particles(&mut self, particles: Vec<Particle>) {
+        self.host_particles = particles;
     }
 
     fn operation(&mut self, s: Settings, operation: u32) -> Result<(), StepError> {
@@ -526,7 +537,9 @@ impl CudaSolver {
             check_cancellation(cancelled)?;
             self.operation(s, 15)?;
         }
-        let positions: Vec<[f32; 3]> = self.context.inner.download(2, particles.len())?;
+        self.context
+            .inner
+            .download_into(2, particles.len(), &mut self.host_positions)?;
         // The trailer is initialized by projection, survives velocity effects,
         // and returns in the same completed copy as the numerical velocities.
         let words = particles
@@ -534,7 +547,10 @@ impl CudaSolver {
             .checked_mul(3)
             .and_then(|n| n.checked_add(if particles.is_empty() { 0 } else { 4 }))
             .ok_or(CudaError::Capacity)?;
-        let velocities: Vec<u32> = self.context.inner.download(3, words)?;
+        self.context
+            .inner
+            .download_into(3, words, &mut self.host_velocities)?;
+        let velocities = &self.host_velocities;
         let planes_checked = if particles.is_empty() {
             true
         } else {
@@ -549,15 +565,24 @@ impl CudaSolver {
                 f32::from_bits(v[2]),
             ]
         });
-        let output = host_values(particles.iter().zip(positions).zip(velocities).map(
-            |((old, p), v)| Particle {
-                identity: old.identity,
-                position_m: vector(p),
-                velocity_m_s: vector(v),
-            },
-        ))?;
+        // The spare is never publicly observable. Failed allocation leaves it
+        // intact; failed attempts cannot modify the accepted snapshot.
+        let additional = particles.len().saturating_sub(self.host_particles.len());
+        super::native::reserve_host(&mut self.host_particles, additional)?;
+        self.host_particles.clear();
+        self.host_particles.extend(
+            particles
+                .iter()
+                .zip(&self.host_positions)
+                .zip(velocities)
+                .map(|((old, &p), v)| Particle {
+                    identity: old.identity,
+                    position_m: vector(p),
+                    velocity_m_s: vector(v),
+                }),
+        );
         Ok(CudaStepOutput {
-            particles: output,
+            particles: std::mem::take(&mut self.host_particles),
             cfl,
             planes_checked,
         })

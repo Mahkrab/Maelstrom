@@ -204,6 +204,28 @@ impl Context {
         offset: usize,
         count: usize,
     ) -> Result<Vec<T>, CudaError> {
+        let mut values = Vec::new();
+        self.download_into_at(slot, offset, count, &mut values)?;
+        Ok(values)
+    }
+
+    /// Reuses initialised host storage; the synchronous bridge never retains it.
+    pub(super) fn download_into<T: Transfer>(
+        &mut self,
+        slot: u32,
+        count: usize,
+        values: &mut Vec<T>,
+    ) -> Result<(), CudaError> {
+        self.download_into_at(slot, 0, count, values)
+    }
+
+    fn download_into_at<T: Transfer>(
+        &mut self,
+        slot: u32,
+        offset: usize,
+        count: usize,
+        values: &mut Vec<T>,
+    ) -> Result<(), CudaError> {
         let offset = offset
             .checked_mul(size_of::<T>())
             .filter(|&n| n <= isize::MAX as usize)
@@ -212,15 +234,12 @@ impl Context {
             .checked_mul(size_of::<T>())
             .filter(|&n| n <= isize::MAX as usize)
             .ok_or(CudaError::Capacity)?;
-        let mut values = Vec::new();
-        values
-            .try_reserve_exact(count)
-            .map_err(|_| CudaError::HostAllocation)?;
-        values.resize(count, T::default());
+        prepare_download(values, count)?;
         let handle = self.handle.ok_or(CudaError::Poisoned)?;
         // SAFETY: Action two writes only the allocated, initialised plain-number
         // slice and finishes before returning. Native code checks offset and length
-        // against slot capacity before forming the device address.
+        // against slot capacity before forming the device address. Failed copies
+        // leave only private staging modified; it is overwritten before reuse.
         unsafe {
             maelstrom_cuda_storage(
                 handle.as_ptr(),
@@ -231,8 +250,7 @@ impl Context {
                 offset,
             )
         }
-        .result()?;
-        Ok(values)
+        .result()
     }
 
     pub(super) fn launch(
@@ -481,5 +499,69 @@ mod tests {
             Err(CudaError::Poisoned)
         );
         assert_eq!(Status { code: 0, stage: 0 }.result(), Ok(()));
+    }
+}
+
+/// Keeps allocation failure recoverable and leaves existing storage intact.
+pub(super) fn reserve_host<T>(values: &mut Vec<T>, additional: usize) -> Result<(), CudaError> {
+    #[cfg(test)]
+    if additional > values.capacity().saturating_sub(values.len()) {
+        FAIL_HOST_RESERVE.with(|fail| {
+            if let Some(remaining) = fail.get() {
+                fail.set(remaining.checked_sub(1));
+                if remaining == 0 {
+                    return Err(CudaError::HostAllocation);
+                }
+            }
+            Ok(())
+        })?;
+    }
+    values
+        .try_reserve_exact(additional)
+        .map_err(|_| CudaError::HostAllocation)
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static FAIL_HOST_RESERVE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+// Reserve before changing length so failed growth preserves existing contents.
+fn prepare_download<T: Transfer>(values: &mut Vec<T>, count: usize) -> Result<(), CudaError> {
+    if count > values.len() {
+        reserve_host(values, count - values.len())?;
+    }
+    values.resize(count, T::default());
+    Ok(())
+}
+
+#[cfg(test)]
+mod host_staging_tests {
+    use super::*;
+
+    #[test]
+    fn reuse_growth_empty_and_failed_growth_preserve_storage() {
+        let mut values = Vec::<u32>::new();
+        prepare_download(&mut values, 0).unwrap();
+        prepare_download(&mut values, 1).unwrap();
+        values[0] = 0xdeadbeef;
+        let pointer = values.as_ptr();
+        prepare_download(&mut values, 1).unwrap();
+        assert_eq!(values.as_ptr(), pointer);
+        assert_eq!(values, [0xdeadbeef]);
+        prepare_download(&mut values, 1_048_576).unwrap();
+        assert_eq!(values[0], 0xdeadbeef);
+        let pointer = values.as_ptr();
+        let capacity = values.capacity();
+        assert!(matches!(
+            prepare_download(&mut values, usize::MAX),
+            Err(CudaError::HostAllocation)
+        ));
+        assert_eq!(values.as_ptr(), pointer);
+        assert_eq!(values.capacity(), capacity);
+        assert_eq!(values.len(), 1_048_576);
+        assert_eq!(values[0], 0xdeadbeef);
+        prepare_download(&mut values, 0).unwrap();
+        assert_eq!(values.capacity(), capacity);
     }
 }

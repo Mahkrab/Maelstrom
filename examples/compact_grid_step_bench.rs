@@ -65,10 +65,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = simulation.step()?;
     }
     let profile = std::env::var_os("MAELSTROM_GRID_BENCH_PROFILE").is_some();
+    let mut outcomes = Vec::new();
     let mut times = Vec::new();
     let mut stage_times = Vec::new();
     for _ in 0..steps {
-        let (_, measurement) = simulation.step_measured_with_cancellation(profile, || false)?;
+        let (outcome, measurement) =
+            simulation.step_measured_with_cancellation(profile, || false)?;
+        outcomes.push(outcome);
         times.push(measurement.total_s);
         stage_times.push(measurement.stages);
     }
@@ -89,12 +92,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let digest: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    let mut diagnostics = Sha256::new();
+    for outcome in outcomes {
+        diagnostics.update(outcome.completed_steps.to_le_bytes());
+        diagnostics.update(outcome.cfl.maximum_speed.to_bits().to_le_bytes());
+        match outcome.cfl.limit {
+            maelstrom::diagnostics::CflLimit::Unbounded => diagnostics.update([0]),
+            maelstrom::diagnostics::CflLimit::Finite(value) => {
+                diagnostics.update([1]);
+                diagnostics.update(value.to_bits().to_le_bytes());
+            }
+        }
+        diagnostics.update([u8::from(outcome.cfl.warning)]);
+    }
+    let diagnostics_digest: String = diagnostics
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     println!(
         "{}",
         serde_json::json!({
             "policy": std::env::var("MAELSTROM_CUDA_SPATIAL_INDEX").unwrap_or_else(|_| "grid".into()),
             "particles": count, "distribution": args[2], "warmup_steps": warmup, "steps_s": times, "stage_times": stage_times,
-            "accepted_state_sha256": digest, "solver_iterations": config.numerical.solver_iterations,
+            "accepted_state_sha256": digest, "diagnostics_sha256": diagnostics_digest, "solver_iterations": config.numerical.solver_iterations,
             "timestep_s": config.numerical.fixed_timestep_s, "support_radius_m": config.derived.support_radius_m,
             "source_sha256": env!("MAELSTROM_EXPORT_SOURCE"),
         })
