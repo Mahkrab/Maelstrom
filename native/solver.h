@@ -28,8 +28,14 @@ struct SolverSettings {
     std::uint64_t entries;
     float xsph, vorticity;
     // Zero selects compact CSR; one selects identity-ordered rows interleaved
-    // in tiles of 32. Tile offsets reuse the finished cell sort's second half.
+    // in tiles of 32. Tile offsets use the grid trailer or finished sort scratch.
     std::uint32_t neighbour_layout;
+    // A zero cell count selects the bounded-memory sorted fallback. Otherwise
+    // slot 10 is u32 grid arrays followed by aligned u64 tile offsets.
+    std::int64_t grid_min[3];
+    std::uint32_t grid_dims[3], grid_cells;
+    std::uint64_t tile_base; // u64 words from slot 10; zero uses legacy layout
+
 };
 struct SolverBuffers {
     Vector *old_position, *old_velocity, *position, *velocity;
@@ -45,6 +51,7 @@ struct SolverBuffers {
 };
 static_assert(sizeof(Vector) == 12 && sizeof(DevicePlane) == 16 && sizeof(Cell) == 32);
 static_assert(sizeof(PendingJacobi) == 16);
-static_assert(sizeof(SolverSettings) == 104 && offsetof(SolverSettings, width) == 64);
+static_assert(sizeof(SolverSettings) == 152 && offsetof(SolverSettings, width) == 64 &&
+              offsetof(SolverSettings, grid_min) == 104 && offsetof(SolverSettings, tile_base) == 144);
 static_assert(sizeof(SolverBuffers) == 128 && offsetof(SolverBuffers,diagnostic) == 112 &&
               offsetof(SolverBuffers,first_operation) == 120);

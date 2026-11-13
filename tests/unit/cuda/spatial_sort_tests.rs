@@ -20,6 +20,10 @@ fn hardware_spatial_sort_preserves_full_keys_padding_and_reused_storage() {
             ];
             let s = settings(&config, count, 0).unwrap();
             gpu.prepare(s, &particles, &[]).unwrap();
+            gpu.context
+                .inner
+                .reserve(10, storage_sizes(s).unwrap()[10])
+                .unwrap();
             let coordinates = [i64::MIN, -(1_i64 << 52), -1, 0, 1, 1_i64 << 52, i64::MAX];
             let mut keys: Vec<_> = (0..count)
                 .map(|i| {

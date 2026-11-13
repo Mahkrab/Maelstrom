@@ -675,6 +675,7 @@ fn hardware_failed_fill_does_not_sort_invalid_rows_and_can_retry() {
         s.radius = 0.1;
         s.width = 0.125;
         s.entries = 6;
+        gpu.select_grid(&mut s, Vec3::ZERO, Vec3::ZERO);
         let before = vec![99_u32; 6];
         gpu.context.inner.upload(11, &before).unwrap();
         // Every range is reversed or beyond storage. No lane may access it.
@@ -715,6 +716,7 @@ fn hardware_compact_rows_grow_shrink_and_reject_inconsistent_offsets() {
     let mut s = settings(&config, 2, 0).unwrap();
     s.width = 0.125;
     s.entries = 2;
+    gpu.select_grid(&mut s, Vec3::ZERO, Vec3::ZERO);
     // A bad row must fail before writing past its reserved range. This private
     // injection does not expose arbitrary native buffers through the public API.
     gpu.context.inner.upload(13, &[0_u64, 0, 2]).unwrap();

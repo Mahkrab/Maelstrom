@@ -187,6 +187,43 @@ static void ready(Resource &r) {
     assert(observed.pops == 1);
 }
 
+static void compact_grid_submissions() {
+    for (unsigned int failure=0;failure<=6;++failure) {
+        observed={};Resource r;ready(r);
+        SolverSettings s{};s.count=5;s.padded=8;s.radius=1;s.width=1;
+        s.grid_dims[0]=4;s.grid_dims[1]=s.grid_dims[2]=1;s.grid_cells=4;s.tile_base=12;
+        for (unsigned int slot=0;slot<14;++slot)
+            assert(maelstrom_cuda_storage(&r,slot,nullptr,512,0).code==0);
+        assert(maelstrom_cuda_begin_attempt(&r).code==0);
+        auto bad=s;bad.grid_dims[0]=UINT32_MAX;
+        assert(maelstrom_cuda_solver(&r,bad,26,128).stage==7 && !r.poisoned);
+        bad=s;bad.tile_base++;
+        assert(maelstrom_cuda_solver(&r,bad,26,128).stage==7 && !r.poisoned);
+        bad=s;bad.width=0.5;
+        assert(maelstrom_cuda_solver(&r,bad,26,128).stage==7 && !r.poisoned);
+        for (auto operation : {2U,3U,13U})
+            assert(maelstrom_cuda_solver(&r,s,operation,128).stage==7 && !r.poisoned);
+        observed.record_solver=true;observed.fail_launch=failure;
+        const auto completions=observed.completions;
+        const auto status=maelstrom_cuda_solver(&r,s,26,128);
+        assert(observed.launches.size()==(failure ? failure : 6));
+        for (unsigned int k=0;k<observed.launches.size();++k) {
+            assert(observed.launches[k].operation==27+k);
+            assert(observed.launches[k].block==256);
+        }
+        assert(status.code ? r.poisoned && observed.completions==completions+1 :
+            !r.poisoned && observed.completions==completions && r.pending);
+    }
+    observed={};Resource r;ready(r);
+    assert(maelstrom_cuda_storage(&r,10,nullptr,64,0).code==0);
+    const auto original=r.slots[10];
+    observed.fail=7;
+    assert(maelstrom_cuda_storage(&r,10,nullptr,1024,0).stage==7 && !r.poisoned);
+    assert(r.slots[10]==original && r.capacities[10]==64);
+    observed.fail=0;
+    assert(maelstrom_cuda_storage(&r,10,nullptr,1024,0).code==0);
+}
+
 static void sort_batches() {
     for (auto threads : {32U,64U,128U,256U}) {
         observed={};
@@ -692,6 +729,7 @@ int main() {
     compact_observation_failures();
     submission_boundaries();
     accepted_vectors();
+    compact_grid_submissions();
     sort_batches();
     merge_sort_submissions();
     row_sort_batches();

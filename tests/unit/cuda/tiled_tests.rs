@@ -211,7 +211,7 @@ fn tiled_density_matches_independent_intermediates_for_fixed_rows() {
                 assert_eq!(
                     gpu.context
                         .inner
-                        .download_at::<u64>(10, s.padded as usize * 4, tile_offsets.len())
+                        .download_at::<u64>(10, tile_base(s), tile_offsets.len())
                         .unwrap(),
                     tile_offsets
                 );

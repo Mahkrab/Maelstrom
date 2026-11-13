@@ -60,16 +60,22 @@ pageable uploads finish before dependent kernels read them. No shared primary-co
 reset or process-wide stream is used.
 
 Device data uses separate packed binary32 vectors (12 bytes), planes (16 bytes) and
-cell entries (32 bytes); probe records use a checked 24-byte layout. u64 identities
-remain in stable host order. The GPU sorts occupied cells and searches 27 neighbouring
-cells using conservative power-of-two widths and strict binary32 distance membership.
+u32 compact-grid arrays; probe records use a checked 24-byte layout. u64 identities
+remain in stable host order. The GPU builds a histogram, exclusive cell prefix and
+particle-index scatter, then traverses adjacent cell ranges directly. Conservative
+power-of-two widths guarantee width >= support radius, so the search covers the
+27 adjacent cells with the existing strict binary32 distance membership. Large or
+sparse domains retain sorted 32-byte cells as a bounded-memory fallback. See
+[compact-grid maintenance and verification](compact-grid.md) for admission limits,
+layout, regression controls and benchmark commands.
 An unsafe bounding diagonal retains distant-pair overflow checks rather than silently
 discarding them.
 
 Fixed prediction membership uses contiguous u32 neighbour indices and `N + 1` u64
-row offsets. Count and fill assign adjacent lanes to particles in sorted cell order, improving
-locality without reordering particle state. Each lane still writes its owner's identity-indexed
-row and error record; candidate visitation and final ascending row order are unchanged.
+row offsets. Count and fill assign adjacent lanes to particles grouped by cell,
+without reordering particle state. Each lane writes its owner's identity-indexed
+row and error record. Atomic scatter order may vary; the retained row sort restores
+exact ascending identity order before any PBF reduction.
 A counting pass determines exact row lengths, followed on the same stream by
 checked integer prefix kernels. Block scans, a scan of block totals and carry addition produce
 the exact exclusive row offsets. Counts are checked against the row bound before use; only the
@@ -126,16 +132,14 @@ after submission, while host transfers and growing reservations wait before acce
 Reservations within capacity and empty transfers require no driver call. Synchronous host
 copies finish their borrows before returning and add no empty stream wait. Numerical checks and their stage,
 particle and expression ordering remain unchanged. Final state still returns for inspection.
-Cell generation, spatial sorting and neighbour counting run in order on the private stream,
-with one completion at the checked count. Spatial sorting first orders block-sized tiles in
-shared memory, then merges adjacent runs through two equally sized cell buffers. The final
-merge always lands at the original cell-array address, without a copy-back pass. Ordering
-uses all three signed 64-bit coordinates and the particle-index tie-breaker; padding sentinels
-are retained. A separate sorting entry point keeps its shared-memory allocation out of the
-numerical kernels. At block size 128 this takes seven sorting launches for 8,000 particles
-and eleven for 110,592, replacing 91 and 153 global bitonic passes. The second buffer costs
-32 bytes per padded entry (256 KiB and 4 MiB respectively), retained across timesteps. Their kernels and dependencies are
-unchanged. Immediate submission failure stops the batch and drains outstanding work;
+Grid construction and neighbour counting run in order on the private stream,
+with one completion at the checked count. The compact grid uses six launches for
+clear, histogram, block scan, block-total scan, carry/cursor initialisation and scatter.
+Cell arrays and scan scratch share one reusable allocation; the normal path allocates
+neither padded cell records nor merge buffers. The sorted fallback still orders block
+sized tiles in shared memory and merges adjacent runs through two cell buffers.
+It retains the full signed coordinates, identity tie-breaker and padding sentinels.
+Immediate submission failure stops the batch and drains outstanding work;
 completion faults take precedence and invalidate the context before returning. An unchecked
 submission can report success before a device fault is observed; the next diagnostic or
 host access reports that completion failure. Failed completion prevents copies, allocation
@@ -212,8 +216,8 @@ For inputs of at least 32,000 particles, neighbour rows are interleaved in tiles
 32 identities. Each tile reserves its longest row for every lane; readers still
 visit exactly the original identity-sorted members, excluding padding. Compact
 CSR offsets retain logical row lengths, while a checked integer prefix supplies
-the physical allocation size. Tile offsets reuse the cell sort's finished scratch
-half. Cooperative row sorting uses the same network and unrestricted dense-row
+the physical allocation size. Tile offsets occupy an aligned trailer of the
+compact grid allocation, or the finished merge scratch half on the fallback path. Cooperative row sorting uses the same network and unrestricted dense-row
 fallback with a stride of 32. Small inputs retain compact rows because their
 measured timestep saving did not repay tiled construction. This storage choice
 changes neither prediction membership nor the arithmetic/cancellation sequence.

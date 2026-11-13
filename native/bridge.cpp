@@ -62,6 +62,7 @@ struct Resource {
     CUfunction spatial_sort = nullptr;
     CUfunction observe_state = nullptr;
     CUfunction prefix_counts = nullptr;
+    CUfunction compact_grid = nullptr;
     CUdeviceptr diagnostic = 0;
     void *host_diagnostic = nullptr;
     bool diagnostic_clear = false;
@@ -109,6 +110,7 @@ static Status initialise(Resource &r, int ordinal, const char *ptx,
     if (!status.code && (code = d.cuModuleGetFunction_fn(&r.spatial_sort, r.module, "spatial_sort")) != CUDA_SUCCESS) status = {code, 5};
     if (!status.code && (code = d.cuModuleGetFunction_fn(&r.observe_state, r.module, "observe_state")) != CUDA_SUCCESS) status = {code, 5};
     if (!status.code && (code = d.cuModuleGetFunction_fn(&r.prefix_counts, r.module, "prefix_counts")) != CUDA_SUCCESS) status = {code, 5};
+    if (!status.code && (code = d.cuModuleGetFunction_fn(&r.compact_grid, r.module, "compact_grid")) != CUDA_SUCCESS) status = {code, 5};
     // Pageable uploads may return before DMA finishes on the legacy stream.
     // This private stream must inherit that dependency before reading the data.
     if (!status.code && (code = d.cuStreamCreate_fn(&r.stream, CU_STREAM_DEFAULT)) != CUDA_SUCCESS) status = {code, 6};
@@ -277,10 +279,29 @@ static Status solver(Resource &r, SolverSettings settings, unsigned int operatio
     const bool state=observation==Observation::State;
     const bool prefix=observation==Observation::CountPrefix || observation==Observation::Prefix;
     const bool tiled=settings.neighbour_layout==1;
+    const bool grid_build=operation==26;
+    std::uint64_t index_bytes=static_cast<std::uint64_t>(settings.padded)*64;
+    if (settings.grid_cells) {
+        if (operation==2 || operation==3 || operation==13) return {CUDA_ERROR_INVALID_VALUE,7};
+        // Mirror the Rust admission policy at the native trust boundary. All
+        // arithmetic below is u64 and capped before computing buffer addresses.
+        std::uint64_t cells=1;
+        for (unsigned int axis=0;axis<3;++axis) {
+            const auto dimension=settings.grid_dims[axis];
+            if (!dimension || dimension>16777216 || settings.grid_min[axis]<-(1LL<<51) || settings.grid_min[axis]>(1LL<<51)) return {CUDA_ERROR_INVALID_VALUE,7};
+            cells*=dimension;
+            if (cells>16777216) return {CUDA_ERROR_INVALID_VALUE,7};
+        }
+        if (cells!=settings.grid_cells || cells>std::max<std::uint64_t>(4096,static_cast<std::uint64_t>(settings.count)*8)) return {CUDA_ERROR_INVALID_VALUE,7};
+        const auto words=3*cells+1+2*static_cast<std::uint64_t>(settings.count)+(cells+256)/256;
+        if (settings.tile_base!=(words+1)/2 || !std::isfinite(settings.width) ||
+            !std::isfinite(settings.radius) || settings.radius<=0 || settings.width<settings.radius) return {CUDA_ERROR_INVALID_VALUE,7};
+        index_bytes=(settings.tile_base+(static_cast<std::uint64_t>(settings.count)+31)/32+1)*8;
+    } else if (grid_build || settings.tile_base) return {CUDA_ERROR_INVALID_VALUE,7};
     if (settings.neighbour_layout>1 || (observation!=Observation::None && (!diagnostic || grouped)) ||
         (state && operation>1) || (prefix && operation!=4) ||
         (grouped && (!diagnostic || (operation!=5 && operation!=9))) ||
-        (operation>17 && operation!=24) || ((operation==2 || (operation==4 && observation!=Observation::Prefix) || operation==12) && (!std::isfinite(settings.width) || settings.width<=0)) ||
+        (operation>17 && operation!=24 && !grid_build) || ((operation==2 || (operation==4 && observation!=Observation::Prefix) || operation==12) && (!std::isfinite(settings.width) || settings.width<=0)) ||
         (threads!=32 && threads!=64 && threads!=128 && threads!=256) ||
         settings.padded==0 || (settings.padded&(settings.padded-1)) ||
         settings.count>settings.padded || settings.entries>static_cast<std::uint64_t>(PTRDIFF_MAX)/4 ||
@@ -292,8 +313,13 @@ static Status solver(Resource &r, SolverSettings settings, unsigned int operatio
     std::uint64_t required[14]={n*12,velocity_bytes,n*12,velocity_bytes,n*4,n*4,n*4,n ? std::max<std::uint64_t>(n*12,32) : (prefix ? 32 : 0),n*(grouped && operation==5 ? sizeof(PendingJacobi) : sizeof(Vector)),
         static_cast<std::uint64_t>(settings.planes)*16,static_cast<std::uint64_t>(settings.padded)*64,
         settings.entries*4,n*4,(n+1)*8};
+    const bool lookup=operation==2 || operation==3 || operation==13 || grid_build ||
+        (operation==4 && observation!=Observation::Prefix) || operation==12;
+    const bool needs_tiles=tiled && !state && (n || prefix);
+    const auto tile_base=settings.tile_base ? settings.tile_base : static_cast<std::uint64_t>(settings.padded)*4;
+    required[10]=lookup && n ? index_bytes : needs_tiles ? (tile_base+(n+31)/32+1)*8 : 0;
     for (unsigned int slot=0;slot<14;++slot) if (required[slot]>r.capacities[slot]) return {CUDA_ERROR_INVALID_VALUE,7};
-    if (diagnostic && !r.diagnostic_clear) return {CUDA_ERROR_INVALID_VALUE,7};
+    if ((diagnostic || grid_build) && !r.diagnostic_clear) return {CUDA_ERROR_INVALID_VALUE,7};
     if (!settings.count && !prefix) {
         // Empty observations still complete an attempt's queued reset, so
         // acceptance and deferred driver errors obey the non-empty contract.
@@ -307,7 +333,11 @@ static Status solver(Resource &r, SolverSettings settings, unsigned int operatio
         return status;
     }
     const unsigned int passes=grouped ? (operation==5 ? 4 : 2) : 1;
-    const unsigned int record_count=prefix || (state && operation==0) ? 2 : passes;
+    // Grid build owns slot two; count and neighbour-prefix errors own zero
+    // and one. Its completed failure gates both discovery stages without
+    // racing their own particle-priority reductions.
+    const unsigned int record_count=prefix && settings.grid_cells ? 3 :
+        prefix || (state && operation==0) ? 2 : passes;
     std::uint64_t records[4]={UINT64_MAX,UINT64_MAX,UINT64_MAX,UINT64_MAX};
     if (diagnostic) r.diagnostic_clear=false;
     const auto status=solver_call(r,diagnostic ? Boundary::Observe : Boundary::Submit,[&]() -> Status {
@@ -318,6 +348,7 @@ static Status solver(Resource &r, SolverSettings settings, unsigned int operatio
         buffers.diagnostic=nullptr;
         buffers.first_operation=grouped ? operation : 0;
         if (diagnostic) __builtin_memcpy(&buffers.diagnostic,&r.diagnostic,sizeof(r.diagnostic));
+        if (grid_build) __builtin_memcpy(&buffers.diagnostic,&r.diagnostic,sizeof(r.diagnostic));
         const bool sort=operation==13;
         unsigned int kernel_operation=sort ? 3 : operation;
         void *args[]={&buffers,&settings,&kernel_operation};
@@ -331,6 +362,19 @@ static Status solver(Resource &r, SolverSettings settings, unsigned int operatio
                 1,1,threads,1,1,0,r.stream,args,nullptr);
             return {code,code==CUDA_SUCCESS ? 0 : 9};
         };
+        if (grid_build) {
+            function=r.compact_grid;
+            // Fixed scan block size is independent of the numerical block policy.
+            threads=256;
+            for (kernel_operation=27;kernel_operation<=32;++kernel_operation) {
+                count=kernel_operation==27 ? settings.grid_cells :
+                    (kernel_operation==28 || kernel_operation==32) ? settings.count :
+                    kernel_operation==30 ? 256 : static_cast<std::uint64_t>(settings.grid_cells)+1;
+                const auto result=launch();
+                if (result.code) return result;
+            }
+            return {0,0};
+        }
         if (!sort) {
             for (unsigned int pass=0;observation!=Observation::Prefix && (!prefix || settings.count) && pass<passes;++pass) {
                 kernel_operation=operation+pass;

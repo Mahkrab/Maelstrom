@@ -103,16 +103,19 @@ extern "C" __global__ void solver(SolverBuffers b, SolverSettings s, unsigned in
         if (b.errors[owner] || start>stop || stop>s.entries) return;
         if (start!=stop) {
             if (s.neighbour_layout==1) {
-                const auto offsets=reinterpret_cast<const std::uint64_t *>(b.cells+s.padded);
+                const auto offsets=tile_offsets(b,s);
                 sort_row_cooperatively<32>(b.neighbours+offsets[owner/32]+owner%32,stop-start,threadIdx.x%32);
             } else sort_row_cooperatively(b.neighbours+start,stop-start,threadIdx.x%32);
         }
         return;
     }
+    // Build diagnostics are immutable during discovery. Never skip a row on
+    // another row's current-pass error: it may have a lower identity.
+    if ((operation==4 || operation==12) && s.grid_cells && b.diagnostic && b.diagnostic[2]!=ULLONG_MAX) return;
     if (lane>=s.count) return;
     // Adjacent lanes traverse nearby cells, while offsets and diagnostics stay
     // indexed by particle identity. Every particle still owns exactly one row.
-    auto i=(operation==4 || operation==12) ? b.cells[lane].index
+    auto i=(operation==4 || operation==12) ? (s.grid_cells ? grid_indices(b,s)[lane] : b.cells[lane].index)
         : static_cast<unsigned int>(lane);
     const auto pass=b.first_operation ? operation-b.first_operation : 0;
     // Earlier kernels have completed on this stream. Their records are no

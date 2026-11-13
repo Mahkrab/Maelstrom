@@ -40,10 +40,16 @@ pub(super) struct Settings {
     xsph: f32,
     vorticity: f32,
     neighbour_layout: u32,
+    grid_min: [i64; 3],
+    grid_dims: [u32; 3],
+    grid_cells: u32,
+    tile_base: u64,
 }
 const _: () = {
-    assert!(size_of::<Settings>() == 104 && align_of::<Settings>() == 8);
+    assert!(size_of::<Settings>() == 152 && align_of::<Settings>() == 8);
     assert!(std::mem::offset_of!(Settings, width) == 64);
+    assert!(std::mem::offset_of!(Settings, grid_min) == 104);
+    assert!(std::mem::offset_of!(Settings, tile_base) == 144);
 };
 
 #[derive(Debug)]
@@ -51,7 +57,9 @@ pub(crate) struct CudaSolver {
     pub(crate) context: CudaContext,
     threads: u32,
     neighbour_capacity: usize,
+    index_capacity: usize,
     resident: bool,
+    force_sorted: bool,
 }
 
 pub(crate) struct CudaStepOutput {
@@ -112,6 +120,66 @@ fn settings(
     })
 }
 
+// Dense-grid admission is bounded both absolutely and relative to occupied
+// particles. Sparse volumes retain the existing sorted GPU path. Width is the
+// shared exact power of two >= radius, keeping the adjacent-cell radius at one.
+const MAX_GRID_CELLS: u64 = 16 * 1024 * 1024;
+fn tile_base(s: Settings) -> usize {
+    if s.tile_base == 0 {
+        s.padded as usize * 4
+    } else {
+        s.tile_base as usize
+    }
+}
+fn configure_grid(s: &mut Settings, lower: Vec3, upper: Vec3) {
+    if s.count == 0 || !s.width.is_finite() || s.width < f64::from(s.radius) || s.width <= 0.0 {
+        return;
+    }
+    let mut cells = 1_u64;
+    for (axis, (low, high)) in array(lower).into_iter().zip(array(upper)).enumerate() {
+        let lo = (f64::from(low) / s.width).floor();
+        let hi = (f64::from(high) / s.width).floor();
+        // The width policy bounds live coordinates by 2^50. Check before any
+        // integer cast so this helper also rejects malformed/extreme settings.
+        if !lo.is_finite()
+            || !hi.is_finite()
+            || lo < -(1_i64 << 51) as f64
+            || hi > (1_i64 << 51) as f64
+            || lo > hi
+        {
+            return;
+        }
+        let dimension = hi as i64 - lo as i64 + 1;
+        let Ok(dimension) = u32::try_from(dimension) else {
+            return;
+        };
+        let Some(product) = cells.checked_mul(u64::from(dimension)) else {
+            return;
+        };
+        cells = product;
+        if cells > MAX_GRID_CELLS || cells > (u64::from(s.count) * 8).max(4096) {
+            return;
+        }
+        s.grid_min[axis] = lo as i64;
+        s.grid_dims[axis] = dimension;
+    }
+    s.grid_cells = cells as u32;
+    let words = 3 * cells + 1 + 2 * u64::from(s.count) + (cells + 1).div_ceil(256);
+    s.tile_base = words.div_ceil(2);
+}
+
+fn max_index_bytes(s: Settings) -> Result<usize, CudaError> {
+    let n = u128::from(s.count);
+    let cells = u128::from(MAX_GRID_CELLS).min((n * 8).max(4096));
+    let words = 3 * cells + 1 + 2 * n + (cells + 1).div_ceil(256);
+    let grid = (words.div_ceil(2) + n.div_ceil(32) + 1) * 8;
+    let limit = grid.max(u128::from(s.padded) * 64);
+    usize::try_from(limit)
+        .ok()
+        .filter(|&size| size <= isize::MAX as usize)
+        .ok_or(CudaError::Capacity)
+}
+
 fn storage_sizes(s: Settings) -> Result<[usize; 14], CudaError> {
     let n = u128::from(s.count);
     let velocity = if n == 0 { 0 } else { n * 12 + 16 };
@@ -128,7 +196,11 @@ fn storage_sizes(s: Settings) -> Result<[usize; 14], CudaError> {
         // error word; position/velocity candidates later use its vector prefix.
         n * 16,
         u128::from(s.planes) * 16,
-        u128::from(s.padded) * 64,
+        if s.grid_cells == 0 {
+            u128::from(s.padded) * 64
+        } else {
+            (u128::from(s.tile_base) + u128::from(s.count).div_ceil(32) + 1) * 8
+        },
         u128::from(s.entries) * 4,
         n * 4,
         (n + 1) * 8,
@@ -200,7 +272,10 @@ impl CudaSolver {
             context: CudaContext::new(device)?,
             threads,
             neighbour_capacity: 0,
+            index_capacity: 0,
             resident: false,
+            force_sorted: std::env::var_os("MAELSTROM_CUDA_SPATIAL_INDEX").as_deref()
+                == Some(std::ffi::OsStr::new("sort")),
         })
     }
 
@@ -212,7 +287,11 @@ impl CudaSolver {
     ) -> Result<(), CudaError> {
         self.resident = false;
         for (slot, size) in storage_sizes(s)?.into_iter().enumerate() {
-            self.context.inner.reserve(slot as u32, size)?;
+            // The prediction bounds select and reserve the index later. Avoid
+            // a full legacy cell allocation before a compact-grid first step.
+            if slot != 10 {
+                self.context.inner.reserve(slot as u32, size)?;
+            }
         }
         let positions: Vec<_> = host_values(particles.iter().map(|p| array(p.position_m)))?;
         let velocities: Vec<_> = host_values(particles.iter().map(|p| array(p.velocity_m_s)))?;
@@ -235,6 +314,7 @@ impl CudaSolver {
 
     fn operation(&mut self, s: Settings, operation: u32) -> Result<(), StepError> {
         if operation == 2 || operation == 3 {
+            self.reserve_index(s)?;
             return self
                 .context
                 .inner
@@ -275,7 +355,34 @@ impl CudaSolver {
         while s.width < minimum {
             s.width *= 2.0;
         }
+        self.select_grid(s, lower, upper);
         self.discover_with_width(s)
+    }
+
+    fn select_grid(&self, s: &mut Settings, lower: Vec3, upper: Vec3) {
+        s.grid_cells = 0;
+        s.tile_base = 0;
+        if !self.force_sorted {
+            configure_grid(s, lower, upper);
+        }
+    }
+
+    fn reserve_index(&mut self, s: Settings) -> Result<(), CudaError> {
+        let required = storage_sizes(s)?[10];
+        if required > self.index_capacity {
+            // Moving bounds can add a few cells every step. Amortise those
+            // changes without exceeding either representation's validated cap.
+            let limit = max_index_bytes(s)?;
+            let capacity = self
+                .index_capacity
+                .checked_add(self.index_capacity / 2)
+                .unwrap_or(limit)
+                .max(required)
+                .min(limit);
+            self.context.inner.reserve(10, capacity)?;
+            self.index_capacity = capacity;
+        }
+        Ok(())
     }
 
     fn discover_with_width(&mut self, s: &mut Settings) -> Result<(), StepError> {
@@ -284,18 +391,23 @@ impl CudaSolver {
             self.context.inner.upload(13, &[0_u64])?;
             return Ok(());
         }
+        self.reserve_index(*s)?;
         // Cell generation, sorting, counting and checked prefix formation share
         // the stream. The host needs only the total before allocating row storage.
-        self.operation(*s, 2)?;
-        if s.padded > 1 {
-            self.context.inner.launch(*s, 13, self.threads)?;
+        if s.grid_cells != 0 {
+            self.context.inner.launch(*s, 26, self.threads)?;
+        } else {
+            self.operation(*s, 2)?;
+            if s.padded > 1 {
+                self.context.inner.launch(*s, 13, self.threads)?;
+            }
         }
         let record = self.context.inner.prefix(*s, self.threads, true)?;
         diagnostic_error(record, s.count)?;
         s.entries = if s.neighbour_layout == 1 {
             self.context.inner.download_at::<u64>(
                 10,
-                s.padded as usize * 4 + (s.count as usize).div_ceil(32),
+                tile_base(*s) + (s.count as usize).div_ceil(32),
                 1,
             )?[0]
         } else {
@@ -387,6 +499,7 @@ impl CudaSolver {
         // The PC comparison favours compact rows for small inputs. Larger
         // inputs amortise tiled construction across repeated numerical passes.
         s.neighbour_layout = u32::from(particles.len() >= 32_000);
+        self.select_grid(&mut s, lower, upper);
         self.discover_with_width(&mut s)?;
         check_cancellation(cancelled)?;
         clock.mark(Stage::NeighbourSearch);
@@ -572,3 +685,7 @@ mod mirror_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/cuda/tiled_tests.rs"]
 mod tiled_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/cuda/compact_grid_tests.rs"]
+mod compact_grid_tests;

@@ -56,6 +56,7 @@ fn main() {
         "native/solver.h",
         "native/solver.cu",
         "native/neighbours.cuh",
+        "native/compact_grid.cuh",
         "native/row_sort.cuh",
         "native/spatial_sort.cuh",
         "native/state_observation.cuh",

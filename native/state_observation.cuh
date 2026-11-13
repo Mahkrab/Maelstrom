@@ -101,18 +101,18 @@ __device__ void inclusive_block_prefix(std::uint64_t *scan) {
 // dimension, their complete sum fits u64. Invalid counts are diagnosed before
 // later kernels may use the resulting offsets or allocate neighbour storage.
 extern "C" __global__ void prefix_counts(SolverBuffers b, SolverSettings s, unsigned int operation) {
-    if (b.diagnostic[0]!=ULLONG_MAX) return;
+    if (b.diagnostic[0]!=ULLONG_MAX || (s.grid_cells && b.diagnostic[2]!=ULLONG_MAX)) return;
     const auto lane=threadIdx.x;
     __shared__ std::uint64_t scan[256];
     if (operation==25) {
         // CSR offsets are complete and checked. Pad each group of 32 rows to
         // its longest row, then scan tile sizes using contiguous lane-owned
-        // slices. The cell sort has finished with this second scratch half.
+        // slices. The grid trailer or finished sort scratch owns these offsets.
         // A partial tile reserves all 32 lanes, so every numerical row uses
         // the same stride without reading another row's padding.
         if (blockIdx.x || b.diagnostic[1]!=ULLONG_MAX) return;
         const auto tiles=(static_cast<std::uint64_t>(s.count)+31)/32;
-        auto *offsets=reinterpret_cast<std::uint64_t *>(b.cells+s.padded);
+        auto *offsets=tile_offsets(b,s);
         const auto chunk=(tiles+blockDim.x-1)/blockDim.x;
         const auto first=lane*chunk, last=min(first+chunk,tiles);
         std::uint64_t sum=0;
